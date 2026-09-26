@@ -1,0 +1,278 @@
+import json
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from sqlalchemy.orm import Session
+from app.db.database import get_db
+from app.db.repositories import CourseRepository, AssignmentRepository, ClassScheduleRepository
+from app.db.models import Course, Assignment, ClassSchedule, GoogleCredential
+from app.core.logging import logger
+
+
+class ClassroomSyncService:
+    def __init__(self, db: Session):
+        self.db = db
+        self.service = None
+        self._load_credentials()
+
+    def _load_credentials(self) -> bool:
+        """Load Google credentials from database"""
+        cred_row = self.db.query(GoogleCredential).first()
+        if not cred_row:
+            logger.warning("No Google credentials found in database")
+            return False
+
+        try:
+            creds = Credentials(
+                token=cred_row.access_token,
+                refresh_token=cred_row.refresh_token,
+                token_uri=cred_row.token_uri,
+                client_id=cred_row.client_id,
+                client_secret=cred_row.client_secret,
+                scopes=json.loads(cred_row.scopes) if cred_row.scopes else [],
+            )
+
+            if creds.expired and creds.refresh_token:
+                from google.auth.transport.requests import Request
+                creds.refresh(Request())
+                # Update stored token
+                cred_row.access_token = creds.token
+                cred_row.expiry = creds.expiry
+                self.db.commit()
+
+            self.service = build("classroom", "v1", credentials=creds)
+            logger.info("Google Classroom service initialized")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to initialize Classroom service: {e}")
+            return False
+
+    def sync_all(self) -> Dict[str, int]:
+        """Sync all Classroom data"""
+        if not self.service:
+            return {"error": "Service not initialized"}
+
+        results = {
+            "courses": 0,
+            "assignments": 0,
+            "schedules": 0,
+            "errors": []
+        }
+
+        try:
+            courses = self._get_all_courses()
+            for course in courses:
+                try:
+                    self._sync_course(course)
+                    results["courses"] += 1
+                    results["assignments"] += self._sync_coursework(course["id"])
+                    results["schedules"] += self._sync_schedule(course)
+                except Exception as e:
+                    results["errors"].append(f"Course {course.get('id')}: {e}")
+
+            logger.info(f"Classroom sync complete: {results}")
+        except Exception as e:
+            logger.error(f"Sync failed: {e}")
+            results["errors"].append(str(e))
+
+        return results
+
+    def _get_all_courses(self) -> List[Dict]:
+        """Fetch all courses from Classroom API"""
+        courses = []
+        page_token = None
+
+        while True:
+            try:
+                response = self.service.courses().list(
+                    pageToken=page_token,
+                    pageSize=100,
+                    courseStates=["ACTIVE", "ARCHIVED"]
+                ).execute()
+
+                courses.extend(response.get("courses", []))
+                page_token = response.get("nextPageToken")
+
+                if not page_token:
+                    break
+
+            except HttpError as e:
+                logger.error(f"Error fetching courses: {e}")
+                break
+
+        return courses
+
+    def _sync_course(self, course_data: Dict) -> Course:
+        """Sync a single course to database"""
+        repo = CourseRepository(self.db)
+
+        existing = repo.get_by_external_id(course_data["id"])
+        course_dict = {
+            "external_id": course_data["id"],
+            "name": course_data.get("name", ""),
+            "section": course_data.get("section", ""),
+            "description": course_data.get("description", ""),
+            "room": course_data.get("room", ""),
+            "teacher_name": self._get_teacher_name(course_data["id"]),
+            "course_state": course_data.get("courseState", ""),
+            "alternate_link": course_data.get("alternateLink", ""),
+        }
+
+        if existing:
+            for key, value in course_dict.items():
+                setattr(existing, key, value)
+            self.db.commit()
+            return existing
+        else:
+            return repo.create(course_dict)
+
+    def _get_teacher_name(self, course_id: str) -> str:
+        """Get teacher name for a course"""
+        try:
+            teachers = self.service.courses().teachers().list(courseId=course_id).execute()
+            if teachers.get("teachers"):
+                teacher = teachers["teachers"][0]
+                profile = teacher.get("profile", {})
+                return f"{profile.get('name', {}).get('givenName', '')} {profile.get('name', {}).get('familyName', '')}".strip()
+        except HttpError:
+            pass
+        return ""
+
+    def _sync_coursework(self, course_id: str) -> int:
+        """Sync all coursework (assignments) for a course"""
+        repo = AssignmentRepository(self.db)
+        course = self.db.query(Course).filter(Course.external_id == course_id).first()
+        if not course:
+            return 0
+
+        count = 0
+        page_token = None
+
+        while True:
+            try:
+                response = self.service.courses().courseWork().list(
+                    courseId=course_id,
+                    pageToken=page_token,
+                    pageSize=100,
+                    orderBy="dueDate desc, dueTime desc"
+                ).execute()
+
+                for work in response.get("courseWork", []):
+                    self._sync_assignment(course.id, work)
+                    count += 1
+
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    break
+
+            except HttpError as e:
+                logger.error(f"Error fetching coursework for {course_id}: {e}")
+                break
+
+        return count
+
+    def _sync_assignment(self, course_db_id: int, work: Dict) -> Assignment:
+        """Sync a single assignment"""
+        repo = AssignmentRepository(self.db)
+
+        external_id = work["id"]
+        existing = repo.get_by_external_id(external_id)
+
+        # Parse due date
+        due_at = None
+        if work.get("dueDate"):
+            due = work["dueDate"]
+            time = work.get("dueTime", {"hours": 23, "minutes": 59})
+            due_at = datetime(
+                due["year"], due["month"], due["day"],
+                time.get("hours", 23), time.get("minutes", 59),
+                tzinfo=timezone.utc
+            )
+
+        assignment_dict = {
+            "external_id": external_id,
+            "course_id": course_db_id,
+            "title": work.get("title", ""),
+            "description": work.get("description", ""),
+            "due_at": due_at,
+            "due_date": due_at,
+            "url": work.get("alternateLink", ""),
+            "state": work.get("state", "PUBLISHED"),
+            "status": "draft",  # Local status
+        }
+
+        if existing:
+            for key, value in assignment_dict.items():
+                setattr(existing, key, value)
+            existing.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
+            self._sync_materials(existing.id, work.get("materials", []))
+            return existing
+        else:
+            assignment = repo.create(assignment_dict)
+            self._sync_materials(assignment.id, work.get("materials", []))
+            return assignment
+
+    def _sync_materials(self, assignment_db_id: int, materials: List[Dict]):
+        """Sync assignment materials"""
+        from app.db.repositories import AssignmentMaterialRepository
+        from app.db.models import AssignmentMaterial
+
+        repo = AssignmentMaterialRepository(self.db)
+
+        # Clear existing
+        existing = repo.get_by_assignment(assignment_db_id)
+        for m in existing:
+            self.db.delete(m)
+
+        for mat in materials:
+            mat_dict = {
+                "assignment_id": assignment_db_id,
+                "material_type": mat.get("driveFile") and "drive_file" or mat.get("link") and "link" or mat.get("form") and "form" or "other",
+                "title": mat.get("driveFile", {}).get("driveFile", {}).get("title") or mat.get("link", {}).get("title") or mat.get("form", {}).get("title") or "",
+                "url": mat.get("driveFile", {}).get("driveFile", {}).get("alternateLink") or mat.get("link", {}).get("url") or mat.get("form", {}).get("formUrl") or "",
+                "drive_file_id": mat.get("driveFile", {}).get("driveFile", {}).get("id"),
+                "mime_type": mat.get("driveFile", {}).get("driveFile", {}).get("mimeType"),
+            }
+            repo.create(mat_dict)
+
+        self.db.commit()
+
+    def _sync_schedule(self, course_data: Dict) -> int:
+        """Sync course schedule (if available)"""
+        # Classroom API doesn't directly provide schedules
+        # This would need manual input or calendar integration
+        return 0
+
+    def get_student_submissions(self, course_id: str, assignment_id: str) -> List[Dict]:
+        """Get student submissions for an assignment"""
+        try:
+            submissions = self.service.courses().courseWork().studentSubmissions().list(
+                courseId=course_id,
+                courseWorkId=assignment_id,
+                pageSize=100
+            ).execute()
+            return submissions.get("studentSubmissions", [])
+        except HttpError as e:
+            logger.error(f"Error fetching submissions: {e}")
+            return []
+
+    def get_course_students(self, course_id: str) -> List[Dict]:
+        """Get students enrolled in a course"""
+        try:
+            students = self.service.courses().students().list(courseId=course_id, pageSize=200).execute()
+            return students.get("students", [])
+        except HttpError as e:
+            logger.error(f"Error fetching students: {e}")
+            return []
+
+
+def get_classroom_service(db: Session = None) -> Optional[ClassroomSyncService]:
+    """Factory function to get ClassroomSyncService"""
+    if db is None:
+        db = next(get_db())
+    service = ClassroomSyncService(db)
+    return service if service.service else None

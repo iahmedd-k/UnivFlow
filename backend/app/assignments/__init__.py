@@ -1,0 +1,1 @@
+from app.assignments.router import router

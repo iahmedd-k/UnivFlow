@@ -1,0 +1,1 @@
+from app.notifications.router import router
