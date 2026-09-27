@@ -1,4 +1,5 @@
 import json
+import hashlib
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from google.oauth2.credentials import Credentials
@@ -6,8 +7,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from sqlalchemy.orm import Session
 from app.db.database import get_db
-from app.db.repositories import CourseRepository, AssignmentRepository, ClassScheduleRepository
-from app.db.models import Course, Assignment, ClassSchedule, GoogleCredential
+from app.db.repositories import CourseRepository, AssignmentRepository, ClassScheduleRepository, AnnouncementRepository
+from app.db.models import Course, Assignment, ClassSchedule, GoogleCredential, SubmissionState, Setting
 from app.core.logging import logger
 
 
@@ -50,15 +51,41 @@ class ClassroomSyncService:
             logger.error(f"Failed to initialize Classroom service: {e}")
             return False
 
-    def sync_all(self) -> Dict[str, int]:
-        """Sync all Classroom data"""
+    def _get_configured_since_date(self) -> Optional[datetime]:
+        """Get semester start date from database settings if configured"""
+        setting = self.db.query(Setting).filter(Setting.key == "semester_start_date").first()
+        if setting and setting.value:
+            try:
+                # Value can be ISO format YYYY-MM-DD or full timestamp
+                val = setting.value.strip().replace('"', '')
+                if len(val) == 10:
+                    dt = datetime.fromisoformat(f"{val}T00:00:00+00:00")
+                else:
+                    dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except Exception as e:
+                logger.warning(f"Could not parse stored semester_start_date: {e}")
+        return None
+
+    def sync_all(self, since_date: Optional[datetime] = None) -> Dict[str, Any]:
+        """Sync all Classroom data from the given since_date / semester start onwards"""
         if not self.service:
             return {"error": "Service not initialized"}
+
+        if since_date is None:
+            since_date = self._get_configured_since_date()
+        elif since_date.tzinfo is None:
+            since_date = since_date.replace(tzinfo=timezone.utc)
 
         results = {
             "courses": 0,
             "assignments": 0,
+            "announcements": 0,
+            "submission_states": 0,
             "schedules": 0,
+            "since_date": since_date.isoformat() if since_date else None,
             "errors": []
         }
 
@@ -68,12 +95,14 @@ class ClassroomSyncService:
                 try:
                     self._sync_course(course)
                     results["courses"] += 1
-                    results["assignments"] += self._sync_coursework(course["id"])
+                    results["assignments"] += self._sync_coursework(course["id"], since_date=since_date)
+                    results["submission_states"] += self._sync_student_submission_states(course["id"])
+                    results["announcements"] += self._sync_announcements(course, since_date=since_date)
                     results["schedules"] += self._sync_schedule(course)
                 except Exception as e:
                     results["errors"].append(f"Course {course.get('id')}: {e}")
 
-            logger.info(f"Classroom sync complete: {results}")
+            logger.info(f"Classroom sync complete (since {since_date}): {results}")
         except Exception as e:
             logger.error(f"Sync failed: {e}")
             results["errors"].append(str(e))
@@ -81,7 +110,7 @@ class ClassroomSyncService:
         return results
 
     def _get_all_courses(self) -> List[Dict]:
-        """Fetch all courses from Classroom API"""
+        """Fetch active courses from Classroom API"""
         courses = []
         page_token = None
 
@@ -90,7 +119,7 @@ class ClassroomSyncService:
                 response = self.service.courses().list(
                     pageToken=page_token,
                     pageSize=100,
-                    courseStates=["ACTIVE", "ARCHIVED"]
+                    courseStates=["ACTIVE"]
                 ).execute()
 
                 courses.extend(response.get("courses", []))
@@ -141,9 +170,8 @@ class ClassroomSyncService:
             pass
         return ""
 
-    def _sync_coursework(self, course_id: str) -> int:
-        """Sync all coursework (assignments) for a course"""
-        repo = AssignmentRepository(self.db)
+    def _sync_coursework(self, course_id: str, since_date: Optional[datetime] = None) -> int:
+        """Sync coursework (assignments) for a course, skipping items older than since_date"""
         course = self.db.query(Course).filter(Course.external_id == course_id).first()
         if not course:
             return 0
@@ -157,10 +185,37 @@ class ClassroomSyncService:
                     courseId=course_id,
                     pageToken=page_token,
                     pageSize=100,
-                    orderBy="dueDate desc, dueTime desc"
+                    orderBy="updateTime desc"
                 ).execute()
 
                 for work in response.get("courseWork", []):
+                    # Check date filter
+                    if since_date:
+                        # Extract timestamps
+                        creation_str = work.get("creationTime")
+                        update_str = work.get("updateTime")
+                        created_dt = datetime.fromisoformat(creation_str.replace("Z", "+00:00")) if creation_str else None
+                        updated_dt = datetime.fromisoformat(update_str.replace("Z", "+00:00")) if update_str else None
+
+                        # Parse due date
+                        due_at = None
+                        if work.get("dueDate"):
+                            due = work["dueDate"]
+                            time = work.get("dueTime", {"hours": 23, "minutes": 59})
+                            due_at = datetime(
+                                due["year"], due["month"], due["day"],
+                                time.get("hours", 23), time.get("minutes", 59),
+                                tzinfo=timezone.utc
+                            )
+
+                        # If the assignment is past due before the semester start, and created before semester start, skip it
+                        is_current_or_future_due = due_at and due_at >= since_date
+                        is_created_recently = created_dt and created_dt >= since_date
+                        is_updated_recently = updated_dt and updated_dt >= since_date
+
+                        if not (is_current_or_future_due or is_created_recently or is_updated_recently):
+                            continue
+
                     self._sync_assignment(course.id, work)
                     count += 1
 
@@ -196,12 +251,14 @@ class ClassroomSyncService:
             "external_id": external_id,
             "course_id": course_db_id,
             "title": work.get("title", ""),
+            "work_type": work.get("workType", "ASSIGNMENT"),
+            "is_quiz": bool(work.get("quizSettings", {}).get("isQuiz")),
             "description": work.get("description", ""),
             "due_at": due_at,
             "due_date": due_at,
             "url": work.get("alternateLink", ""),
             "state": work.get("state", "PUBLISHED"),
-            "status": "draft",  # Local status
+            "status": "draft",
         }
 
         if existing:
@@ -214,12 +271,99 @@ class ClassroomSyncService:
         else:
             assignment = repo.create(assignment_dict)
             self._sync_materials(assignment.id, work.get("materials", []))
-            return assignment
+        return assignment
+
+    def _sync_student_submission_states(self, course_id: str) -> int:
+        """Update this account's own turned-in/returned state for every course item."""
+        course = self.db.query(Course).filter(Course.external_id == course_id).first()
+        if not course:
+            return 0
+
+        count = 0
+        page_token = None
+        try:
+            while True:
+                response = self.service.courses().courseWork().studentSubmissions().list(
+                    courseId=course_id,
+                    courseWorkId="-",
+                    userId="me",
+                    pageSize=100,
+                    pageToken=page_token,
+                ).execute()
+                for submission in response.get("studentSubmissions", []):
+                    assignment = self.db.query(Assignment).filter(
+                        Assignment.course_id == course.id,
+                        Assignment.external_id == submission.get("courseWorkId"),
+                    ).first()
+                    state = submission.get("state")
+                    if assignment and state and state in SubmissionState.__members__:
+                        assignment.submission_state = SubmissionState[state]
+                        count += 1
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    self.db.commit()
+                    return count
+        except HttpError as error:
+            logger.warning(f"Could not sync own submission states for course {course_id}: {error}")
+            self.db.rollback()
+            return 0
+
+    def _sync_announcements(self, course_data: Dict, since_date: Optional[datetime] = None) -> int:
+        """Sync published Classroom announcements for one course from since_date onwards."""
+        repo = AnnouncementRepository(self.db)
+        count = 0
+        page_token = None
+        course_id = course_data["id"]
+        local_course = self.db.query(Course).filter(Course.external_id == course_id).first()
+        if not local_course:
+            return 0
+        while True:
+            try:
+                response = self.service.courses().announcements().list(
+                    courseId=course_id,
+                    pageSize=100,
+                    pageToken=page_token,
+                    orderBy="updateTime desc",
+                ).execute()
+                for post in response.get("announcements", []):
+                    published = post.get("creationTime")
+                    published_at = datetime.fromisoformat(published.replace("Z", "+00:00")) if published else None
+                    updated = post.get("updateTime") or published or ""
+                    updated_at = datetime.fromisoformat(updated.replace("Z", "+00:00")) if updated else published_at
+
+                    # Filter out announcements created/updated before semester start
+                    if since_date:
+                        check_dt = published_at or updated_at
+                        if check_dt and check_dt < since_date:
+                            continue
+
+                    text = post.get("text", "")
+                    external_id = f"classroom:{course_id}:{post['id']}"
+                    fingerprint = hashlib.sha256(f"{external_id}:{updated}:{text}".encode("utf-8")).hexdigest()
+                    body = text
+                    if post.get("alternateLink"):
+                        body = f"{text}\n\nOpen in Google Classroom: {post['alternateLink']}"
+                    repo.create_or_update({
+                        "external_id": external_id,
+                        "course_id": local_course.id,
+                        "title": (text.strip().splitlines() or ["Google Classroom announcement"])[0][:500],
+                        "content": body,
+                        "url": post.get("alternateLink"),
+                        "source": "Google Classroom",
+                        "fingerprint": fingerprint,
+                        "published_at": published_at,
+                    })
+                    count += 1
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    return count
+            except HttpError as error:
+                logger.warning(f"Could not sync announcements for course {course_id}: {error}")
+                return count
 
     def _sync_materials(self, assignment_db_id: int, materials: List[Dict]):
         """Sync assignment materials"""
         from app.db.repositories import AssignmentMaterialRepository
-        from app.db.models import AssignmentMaterial
 
         repo = AssignmentMaterialRepository(self.db)
 
@@ -242,9 +386,6 @@ class ClassroomSyncService:
         self.db.commit()
 
     def _sync_schedule(self, course_data: Dict) -> int:
-        """Sync course schedule (if available)"""
-        # Classroom API doesn't directly provide schedules
-        # This would need manual input or calendar integration
         return 0
 
     def get_student_submissions(self, course_id: str, assignment_id: str) -> List[Dict]:
@@ -262,12 +403,16 @@ class ClassroomSyncService:
 
     def get_course_students(self, course_id: str) -> List[Dict]:
         """Get students enrolled in a course"""
-        try:
-            students = self.service.courses().students().list(courseId=course_id, pageSize=200).execute()
-            return students.get("students", [])
-        except HttpError as e:
-            logger.error(f"Error fetching students: {e}")
-            return []
+        students = []
+        page_token = None
+        while True:
+            response = self.service.courses().students().list(
+                courseId=course_id, pageSize=200, pageToken=page_token
+            ).execute()
+            students.extend(response.get("students", []))
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                return students
 
 
 def get_classroom_service(db: Session = None) -> Optional[ClassroomSyncService]:

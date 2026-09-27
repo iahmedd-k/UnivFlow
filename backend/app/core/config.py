@@ -15,8 +15,8 @@ class Settings(BaseSettings):
 
     google_client_id: str = ""
     google_client_secret: str = ""
-    google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
-    google_scopes: str = "https://www.googleapis.com/auth/classroom.coursework.students https://www.googleapis.com/auth/classroom.courses.readonly https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
+    google_redirect_uri: str = "http://localhost:8000/api/v1/auth/google"
+    google_scopes: str = "https://www.googleapis.com/auth/classroom.coursework.students https://www.googleapis.com/auth/classroom.coursework.me.readonly https://www.googleapis.com/auth/classroom.announcements.readonly https://www.googleapis.com/auth/classroom.courses.readonly https://www.googleapis.com/auth/classroom.rosters.readonly https://www.googleapis.com/auth/documents.readonly https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
 
     ai_provider: str = "groq"
     groq_api_key: str = ""
@@ -56,7 +56,7 @@ class Settings(BaseSettings):
 
     google_doc_template_id: str = ""
 
-    playwright_headless: bool = True
+    playwright_headless: bool = False
     playwright_browsers_path: str = "~/.cache/ms-playwright"
 
     log_level: str = "INFO"
@@ -99,11 +99,10 @@ class Settings(BaseSettings):
 
     @property
     def supabase_db_url(self) -> str:
+        # A Supabase API key is not the Postgres password. Never synthesize a
+        # database connection string from SUPABASE_URL or SUPABASE_SECRET_KEY.
         if self.database_url and self.database_url.startswith("postgresql"):
             return self.database_url
-        if self.supabase_url:
-            project_ref = self.supabase_url.replace("https://", "").replace(".supabase.co", "")
-            return f"postgresql://postgres:{self.s3_secret_key}@db.{project_ref}.supabase.co:5432/postgres"
         return ""
 
     class Config:

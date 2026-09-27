@@ -19,6 +19,7 @@ class AgentRunTrigger(str, enum.Enum):
 
 class AssignmentStatus(str, enum.Enum):
     DRAFT = "draft"
+    PENDING = "pending"
     GENERATING = "generating"
     GENERATED = "generated"
     VALIDATION_FAILED = "validation_failed"
@@ -135,6 +136,8 @@ class Assignment(Base):
     external_id = Column(String(255), unique=True, nullable=False, index=True)
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
     title = Column(String(500), nullable=False)
+    work_type = Column(String(50), nullable=True)
+    is_quiz = Column(Boolean, default=False, nullable=False)
     description = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -166,6 +169,20 @@ class AssignmentMaterial(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     assignment = relationship("Assignment", back_populates="materials")
+
+
+class AssignmentTemplate(Base):
+    __tablename__ = "assignment_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text)
+    google_doc_id = Column(String(255), nullable=False)
+    google_drive_file_id = Column(String(255))
+    mime_type = Column(String(100))
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
 class AssignmentSolution(Base):
@@ -221,6 +238,24 @@ class ClassSchedule(Base):
     course = relationship("Course", back_populates="schedules")
 
 
+class TimetableEntry(Base):
+    __tablename__ = "timetable_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    external_id = Column(String(64), unique=True, nullable=False, index=True)
+    subject = Column(String(255), nullable=False)
+    weekday = Column(Integer, nullable=False)
+    start_time = Column(String(10), nullable=False)
+    end_time = Column(String(10), nullable=False)
+    teacher = Column(String(255))
+    room = Column(String(100))
+    semester_name = Column(String(120))
+    semester_start = Column(DateTime(timezone=True))
+    semester_end = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
 class AttendanceRecord(Base):
     __tablename__ = "attendance_records"
 
@@ -272,8 +307,10 @@ class Announcement(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     external_id = Column(String(255), unique=True, nullable=False, index=True)
+    course_id = Column(Integer, nullable=True)
     title = Column(String(500))
     content = Column(Text)
+    url = Column(String(1000))
     source = Column(String(50))
     fingerprint = Column(String(64), nullable=False, index=True)
     published_at = Column(DateTime(timezone=True))

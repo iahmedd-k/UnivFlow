@@ -22,6 +22,8 @@ wheels/
 
 # Virtual Environment
 venv/
+.codex-runtime/
+.playwright-browsers/
 env/
 ENV/
 .venv/

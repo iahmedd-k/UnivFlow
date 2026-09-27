@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from typing import List
-from datetime import datetime, timedelta
+from typing import List, Optional
+from datetime import datetime, timedelta, timezone
 
 from app.db.database import get_db
 from app.db.repositories import (
@@ -21,13 +21,38 @@ from app.db.models import (
     Exam,
     Quiz,
     AssignmentStatus,
+    Setting,
 )
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 
+def _get_semester_start_dt(db: Session, override: Optional[str] = None) -> Optional[datetime]:
+    """Get semester start date from database settings if configured"""
+    val = override
+    if not val:
+        setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
+        if setting and setting.value:
+            val = setting.value.strip().replace('"', '')
+    if val:
+        try:
+            if len(val) == 10:
+                dt = datetime.fromisoformat(f"{val}T00:00:00+00:00")
+            else:
+                dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            pass
+    return None
+
+
 @router.get("/overview", response_model=dict)
-def get_dashboard_overview(db: Session = Depends(get_db)):
+def get_dashboard_overview(
+    since: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
     course_repo = CourseRepository(db)
     assignment_repo = AssignmentRepository(db)
     schedule_repo = ClassScheduleRepository(db)
@@ -36,22 +61,62 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
     quiz_repo = QuizRepository(db)
     agent_repo = AgentRunRepository(db)
 
+    since_dt = _get_semester_start_dt(db, since)
+    
     courses = course_repo.get_all()
+    if since_dt:
+        courses = [c for c in courses if (c.created_at and c.created_at >= since_dt) or (c.updated_at and c.updated_at >= since_dt) or c.created_at is None]
+    
     all_assignments = assignment_repo.get_all()
+    if since_dt:
+        all_assignments = [a for a in all_assignments if 
+            (a.due_at and a.due_at >= since_dt) or 
+            (a.due_date and a.due_date >= since_dt) or 
+            (a.due_at is None and (a.created_at and a.created_at >= since_dt or a.updated_at and a.updated_at >= since_dt))
+        ]
+    
     upcoming_schedules = schedule_repo.get_upcoming(7)
+    if since_dt:
+        upcoming_schedules = [s for s in upcoming_schedules if s.date and s.date >= since_dt.date()]
+    
     attendance_records = attendance_repo.get_all()
+    if since_dt:
+        attendance_records = [
+            r for r in attendance_records
+            if (r.last_updated and r.last_updated >= since_dt)
+            or (r.created_at and r.created_at >= since_dt)
+            or (r.last_updated is None and r.created_at is None)
+        ]
+    
     upcoming_exams = exam_repo.get_upcoming(30)
+    if since_dt:
+        upcoming_exams = [e for e in upcoming_exams if e.date and e.date >= since_dt.date()]
+    
     upcoming_quizzes = quiz_repo.get_upcoming(30)
+    if since_dt:
+        upcoming_quizzes = [q for q in upcoming_quizzes if q.date and q.date >= since_dt.date()]
+    
     recent_agent_runs = agent_repo.get_recent(5)
 
-    pending_assignments = [a for a in all_assignments if a.status in [AssignmentStatus.PENDING, AssignmentStatus.READY_FOR_REVIEW]]
-    overdue_assignments = [a for a in all_assignments if a.due_at and a.due_at < datetime.now() and a.status not in [AssignmentStatus.SUBMITTED, AssignmentStatus.APPROVED]]
-    completed_assignments = [a for a in all_assignments if a.status in [AssignmentStatus.SUBMITTED, AssignmentStatus.APPROVED]]
+    submitted_states = {"TURNED_IN", "RETURNED"}
+    is_submitted = lambda assignment: assignment.status in [AssignmentStatus.SUBMITTED, AssignmentStatus.APPROVED] or (assignment.submission_state and assignment.submission_state.value in submitted_states)
+    pending_assignments = [a for a in all_assignments if not is_submitted(a) and a.status in [AssignmentStatus.PENDING, AssignmentStatus.DRAFT, AssignmentStatus.READY_FOR_REVIEW]]
+    def is_past_due(assignment):
+        due_at = assignment.due_at or assignment.due_date
+        if due_at is None:
+            return False
+        if due_at.tzinfo is None:
+            due_at = due_at.replace(tzinfo=timezone.utc)
+        return due_at < datetime.now(timezone.utc)
 
+    overdue_assignments = [a for a in all_assignments if is_past_due(a) and not is_submitted(a)]
+    completed_assignments = [a for a in all_assignments if is_submitted(a)]
+
+    active_courses = [c for c in courses if not c.course_state or c.course_state.upper() == "ACTIVE"]
     avg_attendance = sum(r.percentage for r in attendance_records) / len(attendance_records) if attendance_records else 0
 
     return {
-        "courses_count": len(courses),
+        "courses_count": len(active_courses),
         "assignments": {
             "total": len(all_assignments),
             "pending": len(pending_assignments),
@@ -81,6 +146,7 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
 @router.get("/upcoming", response_model=dict)
 def get_upcoming_items(
     days: int = 7,
+    since: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     schedule_repo = ClassScheduleRepository(db)
@@ -88,15 +154,32 @@ def get_upcoming_items(
     exam_repo = ExamRepository(db)
     quiz_repo = QuizRepository(db)
 
+    since_dt = _get_semester_start_dt(db, since)
+    
     schedules = schedule_repo.get_upcoming(days)
+    if since_dt:
+        schedules = [s for s in schedules if s.date and s.date >= since_dt.date()]
+    
     all_assignments = assignment_repo.get_all()
+    if since_dt:
+        all_assignments = [a for a in all_assignments if 
+            (a.due_at and a.due_at >= since_dt) or 
+            (a.due_date and a.due_date >= since_dt) or 
+            (a.due_at is None and (a.created_at and a.created_at >= since_dt or a.updated_at and a.updated_at >= since_dt))
+        ]
+    
     upcoming_assignments = [
         a for a in all_assignments
-        if a.due_at and a.due_at <= datetime.now() + timedelta(days=days)
+        if a.due_at and a.due_at <= datetime.now(timezone.utc) + timedelta(days=days)
         and a.status not in [AssignmentStatus.SUBMITTED, AssignmentStatus.APPROVED]
     ]
     exams = exam_repo.get_upcoming(days)
+    if since_dt:
+        exams = [e for e in exams if e.date and e.date >= since_dt.date()]
+    
     quizzes = quiz_repo.get_upcoming(days)
+    if since_dt:
+        quizzes = [q for q in quizzes if q.date and q.date >= since_dt.date()]
 
     return {
         "classes": [
@@ -145,12 +228,27 @@ def get_upcoming_items(
 
 
 @router.get("/attendance-summary", response_model=dict)
-def get_attendance_summary(db: Session = Depends(get_db)):
+def get_attendance_summary(
+    since: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
     attendance_repo = AttendanceRecordRepository(db)
     course_repo = CourseRepository(db)
 
+    since_dt = _get_semester_start_dt(db, since)
+    
     records = attendance_repo.get_all()
+    if since_dt:
+        records = [
+            r for r in records
+            if (r.last_updated and r.last_updated >= since_dt)
+            or (r.created_at and r.created_at >= since_dt)
+            or (r.last_updated is None and r.created_at is None)
+        ]
+    
     courses = course_repo.get_all()
+    if since_dt:
+        courses = [c for c in courses if (c.created_at and c.created_at >= since_dt) or (c.updated_at and c.updated_at >= since_dt) or c.created_at is None]
 
     summary = []
     for record in records:
@@ -173,9 +271,16 @@ def get_attendance_summary(db: Session = Depends(get_db)):
 
 
 @router.get("/assignments-by-status", response_model=dict)
-def get_assignments_by_status(db: Session = Depends(get_db)):
+def get_assignments_by_status(
+    since: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
     assignment_repo = AssignmentRepository(db)
     all_assignments = assignment_repo.get_all()
+    
+    since_dt = _get_semester_start_dt(db, since)
+    if since_dt:
+        all_assignments = [a for a in all_assignments if (a.due_at and a.due_at >= since_dt) or (a.created_at and a.created_at >= since_dt) or (a.updated_at and a.updated_at >= since_dt) or a.due_at is None]
 
     by_status = {}
     for status in AssignmentStatus:

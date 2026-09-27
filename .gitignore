@@ -89,8 +89,10 @@ tmp/
 temp/
 *.tmp
 
-# Playwright
+# Playwright & Automation Sessions
 ~/.cache/ms-playwright/
+profiles/
+attendance-report.json
 
 # Supabase local
 .supabase/
