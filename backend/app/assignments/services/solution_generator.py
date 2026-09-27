@@ -364,7 +364,7 @@ Output as JSON:
             if "```json" in json_str:
                 json_str = json_str.split("```json")[1].split("```")[0]
             elif "```" in json_str:
-                json_str = json_str.split("```")[1].split("```)[0]
+                json_str = json_str.split("```")[1].split("```")[0]
             
             result = json.loads(json_str)
             

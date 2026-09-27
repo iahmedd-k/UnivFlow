@@ -197,7 +197,6 @@ async def open_portal_browser(db: Session = Depends(get_db), user: dict = Depend
         "--remote-allow-origins=*",
         "--no-first-run",
         "--no-default-browser-check",
-        "--no-sandbox",
         "--start-maximized",
         url,
     ]
