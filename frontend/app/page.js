@@ -432,9 +432,17 @@ export default function Home() {
       setPortalSessionStatus('ACTIVE');
       setPortalLastSyncedAt(new Date().toISOString());
       if (result.destination_url_saved) setPortalAttendanceUrl(result.destination_url_saved);
-      const latestAttendance = await api.getAttendanceSummary(token);
-      setAttendance(latestAttendance);
-      setNotificationMsg(result.attendance?.length ? `Saved ${result.attendance.length} attendance rows. Session saved & auto-sync destination memorized!` : 'Captured current report page. Direct attendance destination path memorized.');
+
+      await loadDashboardData();
+
+      const details = [];
+      if (result.attendance?.length) details.push(`${result.attendance.length} attendance records`);
+      if (result.timetable?.length) details.push(`${result.timetable.length} timetable classes`);
+      if (result.summary?.cgpa) details.push(`CGPA ${result.summary.cgpa}`);
+      const msg = details.length
+        ? `Captured: Saved ${details.join(', ')}. Auto-sync destination memorized!`
+        : 'Captured current portal view. Destination path memorized for auto-sync.';
+      setNotificationMsg(msg);
     } catch (error) {
       setNotificationMsg(error.message || 'Could not capture the portal report.');
     } finally {
@@ -454,9 +462,17 @@ export default function Home() {
         setPortalSessionStatus('ACTIVE');
         setPortalLastSyncedAt(result.last_synced_at || new Date().toISOString());
         if (result.summary) setPortalReport(result.summary);
-        const latestAttendance = await api.getAttendanceSummary(token);
-        setAttendance(latestAttendance);
-        setNotificationMsg(`Auto-sync success: Refreshed ${result.attendance?.length || 0} attendance records headlessly.`);
+
+        await loadDashboardData();
+
+        const details = [];
+        if (result.attendance?.length) details.push(`${result.attendance.length} attendance rows`);
+        if (result.timetable?.length) details.push(`${result.timetable.length} timetable classes`);
+        if (result.summary?.cgpa) details.push(`CGPA ${result.summary.cgpa}`);
+        const msg = details.length
+          ? `Auto-sync success: Refreshed ${details.join(', ')} across all saved portal destinations.`
+          : 'Auto-sync success: Refreshed portal records.';
+        setNotificationMsg(msg);
       } else {
         setNotificationMsg(result.message || 'Auto-sync completed.');
       }

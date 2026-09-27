@@ -143,6 +143,85 @@ export default function DashboardOverview() {
         </Link>
       </div>
 
+      {/* Academic Performance & GPA Summary */}
+      {data.academic_summary && (data.academic_summary.cgpa || data.academic_summary.sgpa || data.academic_summary.semesters?.length > 0) && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="px-6 py-4 border-b flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">🎓</span>
+              <h2 className="text-lg font-semibold text-gray-900">Academic Standing & GPA Summary</h2>
+            </div>
+            {data.academic_summary.semester_name && (
+              <span className="text-xs font-medium px-2.5 py-1 bg-indigo-50 text-indigo-700 rounded-full">
+                {data.academic_summary.semester_name}
+              </span>
+            )}
+          </div>
+          <div className="p-6 space-y-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div className="p-4 bg-gradient-to-br from-indigo-50 to-blue-50 border border-indigo-100 rounded-xl">
+                <p className="text-xs font-semibold uppercase tracking-wider text-indigo-600">Cumulative GPA (CGPA)</p>
+                <p className="text-3xl font-extrabold text-indigo-950 mt-1">
+                  {data.academic_summary.cgpa ? Number(data.academic_summary.cgpa).toFixed(2) : 'N/A'}
+                  <span className="text-sm font-normal text-indigo-500 ml-1">/ 4.00</span>
+                </p>
+              </div>
+
+              <div className="p-4 bg-gradient-to-br from-purple-50 to-pink-50 border border-purple-100 rounded-xl">
+                <p className="text-xs font-semibold uppercase tracking-wider text-purple-600">Latest Term GPA (SGPA)</p>
+                <p className="text-3xl font-extrabold text-purple-950 mt-1">
+                  {data.academic_summary.sgpa ? Number(data.academic_summary.sgpa).toFixed(2) : 'N/A'}
+                  <span className="text-sm font-normal text-purple-500 ml-1">/ 4.00</span>
+                </p>
+              </div>
+
+              <div className="p-4 bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-100 rounded-xl">
+                <p className="text-xs font-semibold uppercase tracking-wider text-emerald-600">Completed Credits</p>
+                <p className="text-3xl font-extrabold text-emerald-950 mt-1">
+                  {data.academic_summary.earned_credits ?? 'N/A'}
+                  <span className="text-sm font-normal text-emerald-500 ml-1">Cr. Hrs</span>
+                </p>
+              </div>
+
+              <div className="p-4 bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-100 rounded-xl">
+                <p className="text-xs font-semibold uppercase tracking-wider text-amber-600">Terms Completed</p>
+                <p className="text-3xl font-extrabold text-amber-950 mt-1">
+                  {data.academic_summary.semesters?.length ?? 0}
+                  <span className="text-sm font-normal text-amber-500 ml-1">Semesters</span>
+                </p>
+              </div>
+            </div>
+
+            {/* Strategic Advice Preview */}
+            {data.academic_summary.strategy_summary && (
+              <div className="flex items-start gap-3 p-4 bg-blue-50/70 border border-blue-200/80 rounded-xl">
+                <span className="text-xl">💡</span>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wider text-blue-900">Academic Strategy & Improvement Plan</p>
+                  <p className="text-sm text-blue-800 mt-0.5">{data.academic_summary.strategy_summary}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Semester History Pills */}
+            {data.academic_summary.semesters?.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold uppercase text-gray-500 mb-2">Semester Performance Breakdown</p>
+                <div className="flex flex-wrap gap-2">
+                  {data.academic_summary.semesters.map((sem, idx) => (
+                    <div key={idx} className="flex items-center gap-2 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs">
+                      <span className="font-medium text-gray-800">{sem.semester}:</span>
+                      {sem.sgpa && <span className="font-bold text-indigo-600">SGPA {Number(sem.sgpa).toFixed(2)}</span>}
+                      {sem.cgpa && <span className="text-gray-500">(CGPA {Number(sem.cgpa).toFixed(2)})</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Recent Activity */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="px-6 py-4 border-b">
@@ -155,15 +234,15 @@ export default function DashboardOverview() {
               <p className="text-sm text-gray-500 mt-1">Avg Attendance</p>
             </div>
             <div className="text-center p-4 bg-gray-50 rounded-lg">
-              <p className="text-3xl font-bold text-green-600">{data.assignments.completed}</p>
+              <p className="text-3xl font-bold text-green-600">{data.assignments?.completed ?? 0}</p>
               <p className="text-sm text-gray-500 mt-1">Completed</p>
             </div>
             <div className="text-center p-4 bg-gray-50 rounded-lg">
-              <p className="text-3xl font-bold text-red-600">{data.assignments.overdue}</p>
+              <p className="text-3xl font-bold text-red-600">{data.assignments?.overdue ?? 0}</p>
               <p className="text-sm text-gray-500 mt-1">Overdue</p>
             </div>
             <div className="text-center p-4 bg-gray-50 rounded-lg">
-              <p className="text-3xl font-bold text-yellow-600">{data.assignments.pending}</p>
+              <p className="text-3xl font-bold text-yellow-600">{data.assignments?.pending ?? 0}</p>
               <p className="text-sm text-gray-500 mt-1">Pending</p>
             </div>
             <div className="text-center p-4 bg-gray-50 rounded-lg">

@@ -93,14 +93,47 @@ class ClassroomSyncService:
             courses = self._get_all_courses()
             for course in courses:
                 try:
-                    self._sync_course(course)
-                    results["courses"] += 1
-                    results["assignments"] += self._sync_coursework(course["id"], since_date=since_date)
-                    results["submission_states"] += self._sync_student_submission_states(course["id"])
-                    results["announcements"] += self._sync_announcements(course, since_date=since_date)
-                    results["schedules"] += self._sync_schedule(course)
+                    course_id = course["id"]
+                    
+                    # 1. Sync coursework and announcements with since_date filter
+                    assignments_count = self._sync_coursework(course_id, since_date=since_date)
+                    announcements_count = self._sync_announcements(course, since_date=since_date)
+                    
+                    # Determine if course has active activity in current semester
+                    c_update_str = course.get("updateTime") or course.get("creationTime")
+                    c_update_dt = datetime.fromisoformat(c_update_str.replace("Z", "+00:00")) if c_update_str else None
+                    
+                    is_active_semester = True
+                    if since_date:
+                        is_updated_in_semester = c_update_dt and c_update_dt >= since_date
+                        has_semester_items = (assignments_count > 0) or (announcements_count > 0)
+                        if not is_updated_in_semester and not has_semester_items:
+                            is_active_semester = False
+
+                    # 2. Sync course with appropriate active/archived state
+                    db_course = self._sync_course(course, is_active=is_active_semester)
+                    
+                    if is_active_semester:
+                        results["courses"] += 1
+                        results["assignments"] += assignments_count
+                        results["announcements"] += announcements_count
+                        results["submission_states"] += self._sync_student_submission_states(course_id)
+                        results["schedules"] += self._sync_schedule(course)
+                    else:
+                        # Clean up any old assignments attached to this archived course
+                        if since_date:
+                            self.db.query(Assignment).filter(
+                                Assignment.course_id == db_course.id,
+                                (Assignment.due_at < since_date) | (Assignment.due_at.is_(None) & (Assignment.created_at < since_date))
+                            ).delete(synchronize_session=False)
+                            self.db.commit()
+
                 except Exception as e:
                     results["errors"].append(f"Course {course.get('id')}: {e}")
+
+            # Also ensure all database courses older than since_date with no active items are marked ARCHIVED
+            if since_date:
+                self._cleanup_outdated_db_records(since_date)
 
             logger.info(f"Classroom sync complete (since {since_date}): {results}")
         except Exception as e:
@@ -109,17 +142,53 @@ class ClassroomSyncService:
 
         return results
 
+    def _cleanup_outdated_db_records(self, since_date: datetime):
+        """Mark old semester courses as ARCHIVED and remove obsolete past-semester assignments"""
+        try:
+            from app.db.models import AssignmentMaterial, AssignmentSolution, Submission
+            
+            # Find old assignments
+            old_assignments = self.db.query(Assignment).filter(
+                (Assignment.due_at < since_date) |
+                (Assignment.due_at.is_(None) & (Assignment.created_at < since_date))
+            ).all()
+            
+            old_ids = [a.id for a in old_assignments]
+            if old_ids:
+                # Delete dependent records first to satisfy FK constraints
+                self.db.query(AssignmentMaterial).filter(AssignmentMaterial.assignment_id.in_(old_ids)).delete(synchronize_session=False)
+                self.db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id.in_(old_ids)).delete(synchronize_session=False)
+                self.db.query(Submission).filter(Submission.assignment_id.in_(old_ids)).delete(synchronize_session=False)
+                
+                # Now delete assignments
+                self.db.query(Assignment).filter(Assignment.id.in_(old_ids)).delete(synchronize_session=False)
+
+            # Check courses: if course has no active assignments and was created before since_date, mark ARCHIVED
+            all_courses = self.db.query(Course).all()
+            for c in all_courses:
+                has_active_assignments = self.db.query(Assignment).filter(Assignment.course_id == c.id).count() > 0
+                is_recent = c.updated_at and c.updated_at >= since_date
+                if not has_active_assignments and not is_recent and c.created_at and c.created_at < since_date:
+                    c.course_state = "ARCHIVED"
+
+            self.db.commit()
+        except Exception as err:
+            logger.warning(f"Error during outdated records cleanup: {err}")
+            self.db.rollback()
+
     def _get_all_courses(self) -> List[Dict]:
-        """Fetch active courses from Classroom API"""
+        """Fetch active enrolled courses from Classroom API"""
         courses = []
         page_token = None
 
+        # 1. Primary: Fetch only active courses where current user is enrolled student
         while True:
             try:
                 response = self.service.courses().list(
                     pageToken=page_token,
                     pageSize=100,
-                    courseStates=["ACTIVE"]
+                    courseStates=["ACTIVE"],
+                    studentId="me"
                 ).execute()
 
                 courses.extend(response.get("courses", []))
@@ -129,16 +198,38 @@ class ClassroomSyncService:
                     break
 
             except HttpError as e:
-                logger.error(f"Error fetching courses: {e}")
+                logger.warning(f"Fetching student courses with studentId=me returned error: {e}")
                 break
+
+        # 2. Fallback: If no student courses returned, fetch all active courses
+        if not courses:
+            page_token = None
+            while True:
+                try:
+                    response = self.service.courses().list(
+                        pageToken=page_token,
+                        pageSize=100,
+                        courseStates=["ACTIVE"]
+                    ).execute()
+
+                    courses.extend(response.get("courses", []))
+                    page_token = response.get("nextPageToken")
+
+                    if not page_token:
+                        break
+
+                except HttpError as e:
+                    logger.error(f"Error fetching courses: {e}")
+                    break
 
         return courses
 
-    def _sync_course(self, course_data: Dict) -> Course:
+    def _sync_course(self, course_data: Dict, is_active: bool = True) -> Course:
         """Sync a single course to database"""
         repo = CourseRepository(self.db)
 
         existing = repo.get_by_external_id(course_data["id"])
+        state = "ACTIVE" if is_active and course_data.get("courseState") == "ACTIVE" else "ARCHIVED"
         course_dict = {
             "external_id": course_data["id"],
             "name": course_data.get("name", ""),
@@ -146,7 +237,7 @@ class ClassroomSyncService:
             "description": course_data.get("description", ""),
             "room": course_data.get("room", ""),
             "teacher_name": self._get_teacher_name(course_data["id"]),
-            "course_state": course_data.get("courseState", ""),
+            "course_state": state,
             "alternate_link": course_data.get("alternateLink", ""),
         }
 

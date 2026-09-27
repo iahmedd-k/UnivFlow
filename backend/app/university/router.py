@@ -24,6 +24,14 @@ def _semester_start(db: Session, value: Optional[str] = None) -> Optional[dateti
         return None
 
 
+def _is_on_or_after(dt: Optional[datetime], start: Optional[datetime]) -> bool:
+    if not dt or not start:
+        return True
+    dt_aware = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    start_aware = start.replace(tzinfo=timezone.utc) if start.tzinfo is None else start
+    return dt_aware >= start_aware
+
+
 @router.get("/exams", response_model=List[dict])
 def get_exams(
     days: int = Query(30, ge=1, le=365),
@@ -32,7 +40,7 @@ def get_exams(
 ):
     repo = ExamRepository(db)
     start = _semester_start(db, since)
-    exams = [item for item in repo.get_upcoming(days) if not start or not item.date or item.date >= start]
+    exams = [item for item in repo.get_upcoming(days) if _is_on_or_after(item.date, start)]
     return [
         {
             "id": e.id,
@@ -77,7 +85,7 @@ def get_quizzes(
 ):
     repo = QuizRepository(db)
     start = _semester_start(db, since)
-    quizzes = [item for item in repo.get_upcoming(days) if not start or not item.date or item.date >= start]
+    quizzes = [item for item in repo.get_upcoming(days) if _is_on_or_after(item.date, start)]
     return [
         {
             "id": q.id,

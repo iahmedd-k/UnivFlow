@@ -1,3 +1,4 @@
+import json
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -115,6 +116,14 @@ def get_dashboard_overview(
     active_courses = [c for c in courses if not c.course_state or c.course_state.upper() == "ACTIVE"]
     avg_attendance = sum(r.percentage for r in attendance_records) / len(attendance_records) if attendance_records else 0
 
+    academic_setting = db.query(Setting).filter(Setting.key == "portal_academic_summary").first()
+    academic_summary = None
+    if academic_setting and academic_setting.value:
+        try:
+            academic_summary = json.loads(academic_setting.value)
+        except Exception:
+            pass
+
     return {
         "courses_count": len(active_courses),
         "assignments": {
@@ -127,6 +136,7 @@ def get_dashboard_overview(
         "upcoming_exams": len(upcoming_exams),
         "upcoming_quizzes": len(upcoming_quizzes),
         "average_attendance": round(avg_attendance, 2),
+        "academic_summary": academic_summary,
         "recent_agent_runs": [
             {
                 "id": r.id,
