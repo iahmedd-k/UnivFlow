@@ -1,24 +1,32 @@
 {
-  "name": "uniflow-attendance-scraper",
+  "name": "uniflow",
   "version": "1.0.0",
-  "description": "Multi-portal university attendance automation with persistent sessions and one-time login",
-  "type": "module",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js",
-    "test:portal": "node index.js --portal"
-  },
-  "keywords": [
-    "playwright",
-    "attendance",
-    "automation",
-    "scraper",
-    "university-portals"
+  "description": "Uniflow - University Management Platform",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
   ],
-  "author": "",
-  "license": "MIT",
-  "dependencies": {
-    "dotenv": "^16.4.7",
-    "playwright": "^1.50.0"
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && uvicorn app.main:app --reload",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "npm run build:frontend",
+    "build:frontend": "cd frontend && npm run build",
+    "build:backend": "cd backend && pip install -r requirements.txt",
+    "install:all": "npm install && cd backend && pip install -r requirements.txt && cd ../frontend && npm install",
+    "lint": "npm run lint:frontend",
+    "lint:frontend": "cd frontend && npm run lint",
+    "test": "npm run test:backend",
+    "test:backend": "cd backend && pytest",
+    "db:migrate": "cd backend && alembic upgrade head",
+    "db:seed": "cd backend && python scripts/seed.py"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "python": ">=3.11"
   }
 }
