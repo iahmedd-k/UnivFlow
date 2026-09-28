@@ -5,6 +5,7 @@ import { useAuth } from '@clerk/nextjs';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import { api } from '@/app/lib/api';
+import Icon from '@/app/dashboard/Icon';
 
 export default function QuizzesPage() {
   const { getToken } = useAuth();
@@ -54,7 +55,7 @@ export default function QuizzesPage() {
               >
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start gap-3">
-                    <div className="p-2 bg-purple-100 rounded-lg">❓</div>
+                  <div className="p-2 bg-purple-100 rounded-lg"><Icon name="help" size={18}/></div>
                     <div className="min-w-0 flex-1">
                       <h3 className="font-semibold text-gray-900 truncate">{quiz.title}</h3>
                       <p className="text-sm text-gray-500 mt-1">
@@ -69,7 +70,7 @@ export default function QuizzesPage() {
                   }`}>
                     {quiz.date && new Date(quiz.date) < new Date() ? 'Completed' : 'Upcoming'}
                   </span>
-                  <span className="text-gray-300">→</span>
+                  <Icon name="arrowUpRight" size={14} className="text-gray-300" />
                 </div>
               </Link>
             ))}

@@ -5,6 +5,7 @@ import { useAuth } from '@clerk/nextjs';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import { api } from '@/app/lib/api';
+import Icon from '@/app/dashboard/Icon';
 
 export default function AnnouncementsPage() {
   const { getToken } = useAuth();
@@ -63,7 +64,7 @@ export default function AnnouncementsPage() {
                     <span className="px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-700">
                       {ann.source || 'Announcement'}
                     </span>
-                    <span className="text-gray-300">→</span>
+                    <Icon name="arrowUpRight" size={13} className="text-gray-300" />
                   </div>
                 </div>
               </Link>

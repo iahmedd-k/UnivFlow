@@ -7,7 +7,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 def get_database_url() -> str:
-    if settings.database_url and settings.database_url.startswith("postgresql"):
+    if settings.database_url:
         # Ensure psycopg2 driver is used for PostgreSQL
         if settings.database_url.startswith("postgresql://"):
             return settings.database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
@@ -31,7 +31,13 @@ def create_engine_with_fallback(url: str):
         engine = create_engine(
             url,
             echo=settings.database_echo,
-            poolclass=NullPool,
+            # Reuse a small number of healthy connections instead of opening a
+            # new Supabase connection for every API request. The configured
+            # PostgreSQL URL uses Supabase's session pooler (port 5432).
+            pool_size=5,
+            max_overflow=5,
+            pool_timeout=10,
+            pool_recycle=1800,
             pool_pre_ping=True,
             connect_args={"connect_timeout": 10},
         )
@@ -66,4 +72,5 @@ def get_db():
 
 
 def init_db():
+    import app.db.models  # noqa: F401
     Base.metadata.create_all(bind=engine)

@@ -6,6 +6,7 @@ import { useAuth } from '@clerk/nextjs';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import { api } from '@/app/lib/api';
+import Icon from '@/app/dashboard/Icon';
 
 export default function AnnouncementDetailPage() {
   const params = useParams();
@@ -41,7 +42,7 @@ export default function AnnouncementDetailPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <Link href="/dashboard/announcements" className="text-gray-400 hover:text-gray-600">←</Link>
+        <Link href="/dashboard/announcements" className="text-gray-400 hover:text-gray-600" aria-label="Back to announcements"><Icon name="arrowLeft" size={16}/></Link>
         <div>
           <h1 className="text-2xl font-bold text-gray-900">{announcement.title}</h1>
           <p className="text-gray-500 mt-1">Announcement Details</p>
@@ -69,7 +70,7 @@ export default function AnnouncementDetailPage() {
         {announcement.url && (
           <div className="mt-6 pt-6 border-t">
             <a href={announcement.url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">
-              View in Google Classroom →
+              View in Google Classroom <Icon name="externalLink" size={13}/>
             </a>
           </div>
         )}

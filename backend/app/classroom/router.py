@@ -1,24 +1,54 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body
+from fastapi.responses import Response
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timezone
 import json
+import html
+import base64
+import zipfile
+from io import BytesIO
 from googleapiclient.errors import HttpError
 
 from app.db.database import get_db
 from app.db.repositories import CourseRepository, ClassScheduleRepository, AssignmentTemplateRepository
-from app.db.models import Course, ClassSchedule, Announcement, Setting, AssignmentTemplate
+from app.db.models import (
+    Course, Assignment, AssignmentSolution, AssignmentStatus,
+    Submission, SubmissionState, ClassSchedule, Announcement,
+    Setting, AssignmentTemplate
+)
 from app.core.logging import logger
 from app.services.classroom_sync import get_classroom_service
 from app.services.google_docs import get_google_docs_service
+from app.auth.clerk_auth import get_current_user_optional
+import time
+import threading
 
 router = APIRouter(prefix="/classroom", tags=["Classroom"])
 
+# Per-user concurrency sync locks and student roster cache
+_classroom_sync_locks: Dict[str, threading.Lock] = {}
+_sync_lock_mutex = threading.Lock()
+_students_cache: Dict[str, Tuple[float, list]] = {}  # key -> (timestamp, data)
 
-def _get_semester_start_dt(db: Session, override: Optional[str] = None) -> Optional[datetime]:
+
+def _get_user_lock(user_id: str) -> threading.Lock:
+    with _sync_lock_mutex:
+        if user_id not in _classroom_sync_locks:
+            _classroom_sync_locks[user_id] = threading.Lock()
+        return _classroom_sync_locks[user_id]
+
+
+def _get_semester_start_dt(db: Session, override: Optional[str] = None, user_id: str = "default") -> Optional[datetime]:
     val = override
     if not val:
-        setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
+        # Check user specific first, then global fallback
+        setting = None
+        if user_id != "default":
+            setting = db.query(Setting).filter(Setting.key == f"classroom:{user_id}:semester_start_date").first()
+        if not setting:
+            setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
         if setting and setting.value:
             val = setting.value.strip().replace('"', '')
     if val:
@@ -36,9 +66,17 @@ def _get_semester_start_dt(db: Session, override: Optional[str] = None) -> Optio
 
 
 @router.get("/settings", response_model=dict)
-def get_classroom_settings(db: Session = Depends(get_db)):
-    """Get Classroom synchronization and semester settings"""
-    setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
+def get_classroom_settings(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Get Classroom synchronization and semester settings (isolated per-user)"""
+    user_id = clerk_user.get("id") if clerk_user else "default"
+    setting = None
+    if user_id != "default":
+        setting = db.query(Setting).filter(Setting.key == f"classroom:{user_id}:semester_start_date").first()
+    if not setting:
+        setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
     return {
         "semester_start_date": setting.value.strip().replace('"', '') if setting and setting.value else None
     }
@@ -46,12 +84,18 @@ def get_classroom_settings(db: Session = Depends(get_db)):
 
 @router.post("/settings", response_model=dict)
 @router.put("/settings", response_model=dict)
-def save_classroom_settings(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
-    """Save semester start date setting"""
+def save_classroom_settings(
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Save semester start date setting per user"""
+    user_id = clerk_user.get("id") if clerk_user else "default"
     start_date = payload.get("semester_start_date")
-    setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
+    setting_key = f"classroom:{user_id}:semester_start_date" if user_id != "default" else "semester_start_date"
+    setting = db.query(Setting).filter(Setting.key == setting_key).first()
     if not setting:
-        setting = Setting(key="semester_start_date", description="Semester start date filter for syncing")
+        setting = Setting(key=setting_key, description=f"Semester start date filter for user {user_id}")
         db.add(setting)
 
     if start_date:
@@ -142,7 +186,7 @@ def get_course(
     course = db.query(Course).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
-    
+
     since_dt = _get_semester_start_dt(db, since)
     if since_dt:
         if not (course.created_at and course.created_at >= since_dt) and \
@@ -254,11 +298,19 @@ def sync_classroom(
     background_tasks: BackgroundTasks,
     payload: Optional[Dict[str, Any]] = Body(None),
     semester_start_date: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
-    """Trigger full Google Classroom sync from semester start date onwards"""
+    """Trigger full Google Classroom sync from semester start date onwards with concurrency control"""
+    user_id = clerk_user.get("id") if clerk_user else "default"
+    lock = _get_user_lock(user_id)
+
+    if not lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="A synchronization is already running for your account.")
+
     service = get_classroom_service(db)
     if not service:
+        lock.release()
         raise HTTPException(status_code=503, detail="Google Classroom not configured. Complete OAuth first.")
 
     start_date = None
@@ -267,31 +319,34 @@ def sync_classroom(
     elif semester_start_date:
         start_date = semester_start_date
 
+    semester_key = f"classroom:{user_id}:semester_start_date" if user_id != "default" else "semester_start_date"
     if start_date:
-        setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
+        setting = db.query(Setting).filter(Setting.key == semester_key).first()
         if not setting:
-            setting = Setting(key="semester_start_date", description="Semester start date filter for syncing")
+            setting = Setting(key=semester_key, description="Semester start date filter for syncing")
             db.add(setting)
         setting.value = str(start_date).strip().replace('"', '')
         db.commit()
 
-    run_status = db.query(Setting).filter(Setting.key == "classroom_sync_status").first()
+    status_key = f"classroom:{user_id}:sync_status" if user_id != "default" else "classroom_sync_status"
+    run_status = db.query(Setting).filter(Setting.key == status_key).first()
     if not run_status:
-        run_status = Setting(key="classroom_sync_status", description="Most recent Google Classroom sync run")
+        run_status = Setting(key=status_key, description="Most recent Google Classroom sync run")
         db.add(run_status)
     run_status.value = json.dumps({"status": "running", "started_at": datetime.now(timezone.utc).isoformat()})
     db.commit()
 
-    def run_sync():
+    def run_sync(uid: str, s_key: str):
         from app.db.database import SessionLocal
         sync_db = SessionLocal()
+        u_lock = _get_user_lock(uid)
         try:
             svc = get_classroom_service(sync_db)
             if svc:
                 result = svc.sync_all()
-                logger.info(f"Classroom sync result: {result}")
+                logger.info(f"Classroom sync result for {uid}: {result}")
                 status = "failed" if result.get("errors") else "completed"
-                run = sync_db.query(Setting).filter(Setting.key == "classroom_sync_status").first()
+                run = sync_db.query(Setting).filter(Setting.key == s_key).first()
                 if run:
                     previous = json.loads(run.value or "{}")
                     run.value = json.dumps({**previous, "status": status, "finished_at": datetime.now(timezone.utc).isoformat(), "result": result})
@@ -299,7 +354,7 @@ def sync_classroom(
             else:
                 raise RuntimeError("Google Classroom credentials could not be loaded.")
         except Exception as error:
-            run = sync_db.query(Setting).filter(Setting.key == "classroom_sync_status").first()
+            run = sync_db.query(Setting).filter(Setting.key == s_key).first()
             if run:
                 previous = json.loads(run.value or "{}")
                 run.value = json.dumps({**previous, "status": "failed", "error": str(error), "finished_at": datetime.now(timezone.utc).isoformat()})
@@ -307,8 +362,10 @@ def sync_classroom(
             logger.exception("Google Classroom sync failed")
         finally:
             sync_db.close()
+            if u_lock.locked():
+                u_lock.release()
 
-    background_tasks.add_task(run_sync)
+    background_tasks.add_task(run_sync, user_id, status_key)
     return {"message": "Classroom sync started in background", "status": "started"}
 
 
@@ -341,19 +398,31 @@ def sync_single_course(course_external_id: str, background_tasks: BackgroundTask
 
 
 @router.get("/sync/status", response_model=dict)
-def sync_status(db: Session = Depends(get_db)):
-    """Get sync status and stats"""
+def sync_status(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Get sync status and stats isolated per user"""
     from sqlalchemy import func
     from app.db.models import Assignment, GoogleCredential
+    user_id = clerk_user.get("id") if clerk_user else "default"
+
     course_count = db.query(func.count(Course.id)).scalar() or 0
     assignment_count = db.query(func.count(Assignment.id)).scalar() or 0
 
     cred = db.query(GoogleCredential).first()
     has_creds = cred is not None
-    run = db.query(Setting).filter(Setting.key == "classroom_sync_status").first()
+
+    status_key = f"classroom:{user_id}:sync_status" if user_id != "default" else "classroom_sync_status"
+    run = db.query(Setting).filter(Setting.key == status_key).first()
+    if not run and user_id != "default":
+        run = db.query(Setting).filter(Setting.key == "classroom_sync_status").first()
     sync_run = json.loads(run.value) if run and run.value else None
 
-    setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
+    sem_key = f"classroom:{user_id}:semester_start_date" if user_id != "default" else "semester_start_date"
+    setting = db.query(Setting).filter(Setting.key == sem_key).first()
+    if not setting and user_id != "default":
+        setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
     semester_start = setting.value.strip().replace('"', '') if setting and setting.value else None
 
     return {
@@ -370,13 +439,15 @@ def sync_status(db: Session = Depends(get_db)):
 def get_course_assignments(
     course_id: int,
     since: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """Get assignments for a specific course (from local DB)"""
     from app.db.models import Assignment
+    user_id = clerk_user.get("id") if clerk_user else "default"
     query = db.query(Assignment).filter(Assignment.course_id == course_id)
     
-    since_dt = _get_semester_start_dt(db, since)
+    since_dt = _get_semester_start_dt(db, since, user_id=user_id)
     if since_dt:
         query = query.filter(
             (Assignment.due_at >= since_dt) |
@@ -405,7 +476,13 @@ def get_course_assignments(
 
 @router.get("/courses/{course_id}/students", response_model=List[dict])
 def get_course_students(course_id: int, db: Session = Depends(get_db)):
-    """Get students for a course from Google Classroom API"""
+    """Get students for a course from Google Classroom API with in-memory TTL caching"""
+    cache_key = f"roster_{course_id}"
+    cached = _students_cache.get(cache_key)
+    now = time.time()
+    if cached and (now - cached[0] < 300):  # 5 minutes TTL
+        return cached[1]
+
     service = get_classroom_service(db)
     if not service:
         raise HTTPException(status_code=503, detail="Google Classroom not configured")
@@ -423,7 +500,8 @@ def get_course_students(course_id: int, db: Session = Depends(get_db)):
                 detail="Google Classroom needs roster access. Reconnect your Google account and approve the updated permissions.",
             ) from error
         raise HTTPException(status_code=502, detail="Google Classroom could not return this roster.") from error
-    return [
+
+    result = [
         {
             "id": s.get("userId"),
             "name": s.get("profile", {}).get("name", {}).get("fullName", "Student"),
@@ -434,6 +512,8 @@ def get_course_students(course_id: int, db: Session = Depends(get_db)):
         }
         for s in students
     ]
+    _students_cache[cache_key] = (now, result)
+    return result
 
 
 # ===== Assignment Templates =====
@@ -459,6 +539,42 @@ def get_assignment_templates(db: Session = Depends(get_db)):
     ]
 
 
+@router.post("/templates/starter", response_model=dict)
+def create_starter_assignment_template(db: Session = Depends(get_db)):
+    """Create a real editable report template in the connected user's Google Drive."""
+    repo = AssignmentTemplateRepository(db)
+    current = repo.get_default()
+    if current:
+        return {"id": current.id, "name": current.name, "description": current.description,
+                "google_doc_id": current.google_doc_id, "google_drive_file_id": current.google_drive_file_id,
+                "mime_type": current.mime_type, "is_default": True, "already_exists": True}
+    docs_service = get_google_docs_service(db)
+    if not docs_service:
+        raise HTTPException(status_code=503, detail="Connect Google Drive before creating a report template.")
+    content = (
+        "UNIVERSITY ASSIGNMENT REPORT\n\n"
+        "Student: {{STUDENT_NAME}}\nStudent email: {{EMAIL}}\nStudent ID / roll number: {{ROLL_NO}}\n"
+        "Program / section: {{CLASS}}\nUniversity: {{UNIVERSITY_NAME}}\n\n"
+        "Course: {{SUBJECT_NAME}}\nCourse code: {{COURSE_CODE}}\nAssignment: {{ASSIGNMENT_TITLE}}\n"
+        "Instructor: {{INSTRUCTOR_NAME}}\nSubmission date: {{SUBMISSION_DATE}}\n\n"
+        "REPORT / SOLUTION\n{{SOLUTION_CONTENT}}"
+    )
+    doc = docs_service.create_document("Uniflow Academic Report Template", content)
+    if not doc or not doc.get("documentId"):
+        raise HTTPException(status_code=502, detail="Google Docs could not create the report template.")
+    template = repo.create({
+        "name": "Uniflow Academic Report Template",
+        "description": "Editable cover page with assignment, student, course, and solution placeholders.",
+        "google_doc_id": doc["documentId"],
+        "google_drive_file_id": doc["documentId"],
+        "mime_type": "application/vnd.google-apps.document",
+        "is_default": True,
+    })
+    return {"id": template.id, "name": template.name, "description": template.description,
+            "google_doc_id": template.google_doc_id, "google_drive_file_id": template.google_drive_file_id,
+            "mime_type": template.mime_type, "is_default": True}
+
+
 @router.post("/templates", response_model=dict)
 def create_assignment_template(
     name: str = Body(...),
@@ -473,13 +589,14 @@ def create_assignment_template(
     repo = AssignmentTemplateRepository(db)
     docs_service = get_google_docs_service(db)
     
-    if not docs_service:
-        raise HTTPException(status_code=503, detail="Google Docs not configured")
-    
-    # Verify the document exists
-    doc = docs_service.get_document(google_doc_id)
-    if not doc:
-        raise HTTPException(status_code=400, detail="Google Doc not found or not accessible")
+    doc_mime = mime_type or "application/vnd.google-apps.document"
+    if docs_service:
+        try:
+            doc = docs_service.get_document(google_doc_id)
+            if doc and "mimeType" in doc:
+                doc_mime = doc["mimeType"]
+        except Exception as e:
+            logger.warning(f"Could not fetch doc metadata from Google API: {e}")
     
     if is_default:
         # Unset any existing default
@@ -491,8 +608,8 @@ def create_assignment_template(
         "name": name,
         "description": description,
         "google_doc_id": google_doc_id,
-        "google_drive_file_id": google_drive_file_id,
-        "mime_type": mime_type or doc.get("mimeType"),
+        "google_drive_file_id": google_drive_file_id or google_doc_id,
+        "mime_type": doc_mime,
         "is_default": is_default,
     })
     return {
@@ -558,13 +675,16 @@ def list_drive_docs_for_templates(
     ]
 
 
-# ===== Student Turn-in =====
+class TurnInPayload(BaseModel):
+    template_id: Optional[int] = None
+    drive_file_ids: Optional[List[str]] = None
+
 
 @router.post("/assignments/{assignment_id}/turn-in", response_model=dict)
 def turn_in_assignment(
     assignment_id: int,
-    template_id: Optional[int] = Body(None),
-    drive_file_ids: Optional[List[str]] = Body(None),
+    payload: Optional[TurnInPayload] = Body(None),
+    template_id: Optional[int] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Student turn-in: copy template (or create blank doc), attach files, submit to Classroom"""
@@ -587,10 +707,13 @@ def turn_in_assignment(
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
     
-    # Determine template
-    if template_id:
+    # Determine template from either JSON body or query parameter
+    chosen_template_id = (payload.template_id if payload and payload.template_id is not None else None) or template_id
+    drive_file_ids = (payload.drive_file_ids if payload and payload.drive_file_ids else [])
+
+    if chosen_template_id:
         repo = AssignmentTemplateRepository(db)
-        template = repo.get_by_id(template_id)
+        template = repo.get_by_id(chosen_template_id)
     else:
         repo = AssignmentTemplateRepository(db)
         template = repo.get_default()
@@ -617,6 +740,32 @@ def turn_in_assignment(
     
     if not student_doc_id:
         raise HTTPException(status_code=500, detail="Failed to create submission document")
+
+    # Fill report cover placeholders in the copied student submission document.
+    if template:
+        profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).order_by(Setting.updated_at.desc()).first()
+        profile = {}
+        if profile_row and profile_row.value:
+            try:
+                profile = json.loads(profile_row.value)
+            except (TypeError, json.JSONDecodeError):
+                profile = {}
+        student_name = " ".join(part for part in (profile.get("first_name"), profile.get("last_name")) if part).strip()
+        today = datetime.now().strftime("%B %d, %Y")
+        fields = {
+            "{{STUDENT_NAME}}": student_name,
+            "{{EMAIL}}": profile.get("email", ""),
+            "{{STUDENT_ID}}": "", "{{ROLL_NO}}": "", "{{UNIVERSITY_NAME}}": "",
+            "{{CLASS}}": course.section or "", "{{SECTION}}": course.section or "",
+            "{{SUBJECT_NAME}}": course.name or "", "{{COURSE_NAME}}": course.name or "",
+            "{{COURSE_CODE}}": "", "{{ASSIGNMENT_TITLE}}": assignment.title or "",
+            "{{INSTRUCTOR_NAME}}": course.teacher_name or "",
+            "{{SUBMISSION_DATE}}": today,
+            "{{DUE_DATE}}": assignment.due_at.isoformat() if assignment.due_at else "",
+            "{{SEMESTER}}": "", "{{SOLUTION_CONTENT}}": "",
+        }
+        for placeholder, value in fields.items():
+            docs_service.replace_text(student_doc_id, placeholder, str(value or ""))
     
     # Attach additional files if provided
     if drive_file_ids:
@@ -668,76 +817,401 @@ def turn_in_assignment(
     }
 
 
-# ===== AI Solution Generation =====
+# ===== AI Solution Generation & Agentic Flow =====
+
+class GenerateSolutionRequest(BaseModel):
+    provider: Optional[str] = "crewai"
+    model: Optional[str] = None
+    create_google_doc: Optional[bool] = True
+
 
 @router.post("/assignments/{assignment_id}/solution/generate", response_model=dict)
 def generate_assignment_solution(
     assignment_id: int,
-    provider: str = Body("groq"),
-    model: str = Body("openai/gpt-oss-120b"),
+    payload: Optional[GenerateSolutionRequest] = None,
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db)
 ):
-    """Generate AI solution for assignment (async)"""
-    from app.db.models import AssignmentSolution
-    
+    """Trigger the multi-agent assignment solver flow (async with background tasks)."""
+    from app.db.models import AssignmentSolution, AssignmentStatus
+
+    req = payload or GenerateSolutionRequest()
+    provider = req.provider or "groq"
+    model = req.model or "openai/gpt-oss-120b"
+    create_google_doc = req.create_google_doc if req.create_google_doc is not None else True
+
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
-    
     # Get or create solution record
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+    if assignment.status == AssignmentStatus.GENERATING:
+        started = solution.generated_at if solution else None
+        if started and started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        is_stale = not started or (datetime.now(timezone.utc) - started).total_seconds() > 20 * 60
+        if not is_stale:
+            raise HTTPException(status_code=409, detail="A solution is already being generated for this assignment.")
     if not solution:
         solution = AssignmentSolution(assignment_id=assignment_id)
         db.add(solution)
-    
+
     solution.ai_provider = provider
     solution.retry_count = 0
     solution.validation_errors = None
+    solution.draft_content = None
+    solution.validated_content = None
+    solution.validated_at = None
+    solution.generated_at = datetime.now(timezone.utc)
+    assignment.status = AssignmentStatus.GENERATING
     db.commit()
-    
+
     def run_generation():
         from app.db.database import SessionLocal
-        from app.services.ai_solution import generate_solution
+        from app.services.ai_solution import generate_agentic_solution
         sync_db = SessionLocal()
         try:
-            result = generate_solution(sync_db, assignment_id, provider, model)
-            logger.info(f"AI solution generated for assignment {assignment_id}: {result}")
+            result = generate_agentic_solution(
+                db=sync_db,
+                assignment_id=assignment_id,
+                provider=provider,
+                model=model,
+                create_google_doc=create_google_doc
+            )
+            logger.info(f"Multi-Agent solution generated for assignment {assignment_id}: status={result.get('status')}")
         except Exception as e:
-            logger.error(f"AI solution generation failed: {e}")
+            logger.error(f"Multi-Agent solution generation failed for assignment {assignment_id}: {e}")
+            try:
+                from app.db.models import Assignment, AssignmentSolution, AssignmentStatus
+                failed_assignment = sync_db.query(Assignment).filter(Assignment.id == assignment_id).first()
+                failed_solution = sync_db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+                if failed_solution:
+                    failed_solution.validation_errors = str(e)
+                if failed_assignment:
+                    failed_assignment.status = AssignmentStatus.FAILED
+                sync_db.commit()
+            except Exception as commit_error:
+                logger.error(f"Could not persist solution failure status for {assignment_id}: {commit_error}")
         finally:
             sync_db.close()
-    
+
     if background_tasks:
         background_tasks.add_task(run_generation)
     else:
-        # Run synchronously for now
         run_generation()
-    
+
     return {
         "status": "started",
         "assignment_id": assignment_id,
-        "message": "AI solution generation started"
+        "message": "Multi-agent assignment workflow started."
+    }
+
+
+@router.post("/assignments/{assignment_id}/export-doc", response_model=dict)
+def export_assignment_doc(assignment_id: int, db: Session = Depends(get_db)):
+    """Export the validated assignment solution directly to a new Google Doc in Google Drive."""
+    from app.db.models import AssignmentSolution
+    from app.services.ai_solution import export_solution_to_google_doc
+
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+    if not solution or not (solution.validated_content or solution.draft_content):
+        raise HTTPException(status_code=400, detail="No solution content found to export. Generate a solution first.")
+
+    content = solution.validated_content or solution.draft_content
+    doc_info = export_solution_to_google_doc(db, assignment, content)
+    if not doc_info:
+        raise HTTPException(status_code=502, detail="Failed to create Google Doc. Please ensure Google account is connected with Drive permissions.")
+
+    return {
+        "success": True,
+        "assignment_id": assignment_id,
+        **doc_info
     }
 
 
 @router.get("/assignments/{assignment_id}/solution/status", response_model=dict)
 def get_solution_status(assignment_id: int, db: Session = Depends(get_db)):
-    """Get AI solution generation status"""
-    from app.db.models import AssignmentSolution
+    """Get AI solution generation status, content, and linked Google Doc."""
+    from app.db.models import AssignmentSolution, Submission
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
     if not solution:
         return {"status": "not_started"}
+
+    from app.services.ai_solution import (
+        extract_code_deliverables, extract_execution_metadata, strip_execution_metadata,
+    )
+    content = solution.validated_content or solution.draft_content or ""
+    deliverables = extract_code_deliverables(strip_execution_metadata(content))
+    execution_results = extract_execution_metadata(content)
+    result_by_name = {item.get("filename"): item for item in execution_results}
+    code_files = []
+    for index, source_file in enumerate(deliverables["files"]):
+        code_files.append({
+            **source_file,
+            "download_url": f"/api/v1/classroom/assignments/{assignment_id}/solution/files/{index}",
+            "run": result_by_name.get(source_file["name"]),
+        })
+
+    terminal_screenshots = []
+    if execution_results:
+        from app.services.terminal_renderer import TerminalCardRenderer
+        for result in execution_results:
+            data_uri = result.get("screenshot_data_uri")
+            if not data_uri:
+                png = TerminalCardRenderer.generate_terminal_png(
+                    result.get("command") or f"Run {result.get('filename') or 'solution file'}",
+                    result.get("terminal_output") or "No terminal output was produced.",
+                    title=f"Assignment run — {result.get('filename') or 'solution'}",
+                )
+                data_uri = f"data:image/png;base64,{base64.b64encode(png).decode('ascii')}"
+            terminal_screenshots.append({
+                "task": result.get("task"),
+                "filename": result.get("filename"),
+                "tool": result.get("tool", "Autonomous Runner"),
+                "data_uri": data_uri,
+            })
+
+    submission = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
+    google_doc_id = submission.google_doc_id if submission else None
+    google_doc_url = f"https://docs.google.com/document/d/{google_doc_id}/edit" if google_doc_id else None
+    progress_row = db.query(Setting).filter(Setting.key == f"assignment_crew_progress_{assignment_id}").first()
+    try:
+        crew_progress = json.loads(progress_row.value) if progress_row and progress_row.value else None
+    except (TypeError, json.JSONDecodeError):
+        crew_progress = None
+
+    is_completed = bool(solution.validated_content)
+    is_generating = bool(solution.draft_content or solution.ai_provider) and not is_completed and not solution.validation_errors
+    is_failed = bool(solution.validation_errors) and not is_completed
+
     return {
-        "status": "completed" if solution.validated_content else "generating" if solution.draft_content else "not_started",
-        "draft_content": solution.draft_content,
-        "validated_content": solution.validated_content,
+        "status": "completed" if is_completed else "failed" if is_failed else "generating" if is_generating else "not_started",
+        "draft_content": strip_execution_metadata(solution.draft_content or ""),
+        "validated_content": strip_execution_metadata(solution.validated_content or ""),
+        "generated_files": code_files,
+        "terminal_outputs": execution_results,
+        "terminal_screenshots": terminal_screenshots,
+        "generated_images": _assignment_generated_images(db, assignment_id),
+        "crew_progress": crew_progress,
+        "code_files_download_url": f"/api/v1/classroom/assignments/{assignment_id}/solution/files" if deliverables["files"] else None,
         "validation_errors": solution.validation_errors,
         "retry_count": solution.retry_count,
         "ai_provider": solution.ai_provider,
         "generated_at": solution.generated_at,
         "validated_at": solution.validated_at,
+        "google_doc_id": google_doc_id,
+        "google_doc_url": google_doc_url,
     }
+
+
+@router.get("/assignments/{assignment_id}/solution/files")
+def download_solution_files(assignment_id: int, db: Session = Depends(get_db)):
+    """Download one source file per generated task in a ZIP archive."""
+    from app.services.ai_solution import extract_code_deliverables, extract_execution_metadata, strip_execution_metadata
+
+    solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+    if not solution or not (solution.validated_content or solution.draft_content):
+        raise HTTPException(status_code=404, detail="No generated solution is available.")
+    deliverables = extract_code_deliverables(strip_execution_metadata(solution.validated_content or solution.draft_content or ""))
+    files = deliverables["files"]
+    if not files:
+        raise HTTPException(status_code=404, detail="No task source code files were found in this solution.")
+
+    archive = BytesIO()
+    with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        for source_file in files:
+            bundle.writestr(source_file["name"], source_file["content"])
+        execution_results = extract_execution_metadata(solution.validated_content or solution.draft_content or "")
+        for index, output in enumerate(execution_results or deliverables["terminal_outputs"]):
+            filename = output.get("filename") or f"terminal_output_task_{output.get('task', index + 1)}.txt"
+            text = output.get("terminal_output") or output.get("content") or "No terminal output was produced."
+            bundle.writestr(f"terminal_output_{filename}.txt", text + "\n")
+    return Response(
+        content=archive.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="assignment_{assignment_id}_code.zip"'},
+    )
+
+
+@router.get("/assignments/{assignment_id}/solution/files/{file_index}")
+def download_solution_file(assignment_id: int, file_index: int, db: Session = Depends(get_db)):
+    """Download one generated source file by its stable list position."""
+    from app.services.ai_solution import extract_code_deliverables, strip_execution_metadata
+
+    solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+    if not solution or not (solution.validated_content or solution.draft_content):
+        raise HTTPException(status_code=404, detail="No generated solution is available.")
+    content = strip_execution_metadata(solution.validated_content or solution.draft_content or "")
+    files = extract_code_deliverables(content)["files"]
+    if file_index < 0 or file_index >= len(files):
+        raise HTTPException(status_code=404, detail="Generated source file not found.")
+    source_file = files[file_index]
+    safe_name = source_file["name"].replace('"', "")
+    return Response(
+        content=source_file["content"],
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
+
+
+@router.get("/assignments/{assignment_id}/solution/report")
+def download_solution_report(assignment_id: int, db: Session = Depends(get_db)):
+    """Download a self-contained HTML report with generated code and run screenshots."""
+    from app.services.ai_solution import extract_code_deliverables, extract_execution_metadata, strip_execution_metadata
+    from app.services.terminal_renderer import TerminalCardRenderer
+
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+    if not assignment or not solution or not (solution.validated_content or solution.draft_content):
+        raise HTTPException(status_code=404, detail="No generated solution report is available.")
+
+    content = solution.validated_content or solution.draft_content or ""
+    clean_content = strip_execution_metadata(content)
+    deliverables = extract_code_deliverables(clean_content)
+    execution_results = extract_execution_metadata(content)
+    result_by_name = {item.get("filename"): item for item in execution_results}
+    course = db.query(Course).filter(Course.id == assignment.course_id).first()
+    profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).order_by(Setting.updated_at.desc()).first()
+    profile = {}
+    if profile_row and profile_row.value:
+        try:
+            profile = json.loads(profile_row.value)
+        except (TypeError, json.JSONDecodeError):
+            profile = {}
+    student_name = " ".join(part for part in (profile.get("first_name"), profile.get("last_name")) if part).strip() or "Student"
+    instructor = course.teacher_name if course and course.teacher_name else "Instructor not provided"
+    course_name = course.name if course else "Course"
+
+    sections = []
+    for source_file in deliverables["files"]:
+        result = result_by_name.get(source_file["name"], {})
+        output_text = result.get("terminal_output") or "No terminal output was produced."
+        png = TerminalCardRenderer.generate_terminal_png(
+            result.get("command") or f"Run {source_file['name']}", output_text,
+            title=f"Assignment run — {source_file['name']}",
+        )
+        screenshot = f"data:image/png;base64,{base64.b64encode(png).decode('ascii')}"
+        status = result.get("status", "not_run").replace("_", " ").title()
+        sections.append(
+            f"<section class=\"task\"><h2>Task {html.escape(str(source_file['task']))} · {html.escape(source_file['name'])}</h2>"
+            f"<p class=\"meta\">{html.escape(source_file['language'])} · Run status: {html.escape(status)} · Exit code: {html.escape(str(result.get('exit_code') if result.get('exit_code') is not None else 'n/a'))}</p>"
+            f"<h3>Source code</h3><pre><code>{html.escape(source_file['content'])}</code></pre>"
+            f"<h3>Terminal output</h3><pre><code>{html.escape(output_text)}</code></pre>"
+            f"<figure><img alt=\"Terminal screenshot for {html.escape(source_file['name'])}\" src=\"{screenshot}\"/><figcaption>Run evidence · {html.escape(source_file['name'])}</figcaption></figure></section>"
+        )
+    for generated_image in _assignment_generated_images(db, assignment_id):
+        image_uri = generated_image.get("data_uri", "")
+        prompt = html.escape(generated_image.get("prompt", "Generated assignment illustration"))
+        if image_uri.startswith("data:image/"):
+            sections.append(
+                f'<section class="task"><h2>Generated illustration</h2>'
+                f'<p class="meta">Prompt: {prompt}</p><figure><img alt="Generated assignment illustration" '
+                f'src="{image_uri}"/><figcaption>AI-generated image · review before including in a submission</figcaption></figure></section>'
+            )
+    if not sections:
+        sections.append(f"<section class=\"task\"><h2>Solution</h2><pre><code>{html.escape(clean_content)}</code></pre><p class=\"meta\">No separate code files were extracted from this solution.</p></section>")
+
+    report = f"""<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{html.escape(assignment.title or 'Assignment')} · Solution report</title><style>
+      *{{box-sizing:border-box}}body{{margin:0;background:#f3f4f7;color:#20232d;font:15px/1.55 Arial,sans-serif}}.cover{{min-height:92vh;padding:12vh 12%;display:flex;flex-direction:column;justify-content:center;background:#fff;border-bottom:1px solid #ddd}}.brand{{color:#6557c9;font-weight:700;letter-spacing:.12em;text-transform:uppercase}}h1{{font-size:36px;line-height:1.2;margin:20px 0 30px}}.cover dl{{display:grid;grid-template-columns:180px 1fr;gap:10px 20px;max-width:650px}}dt{{color:#747987}}dd{{margin:0;font-weight:600}}main{{max-width:920px;margin:40px auto;padding:0 20px}}.task{{margin:24px 0;padding:30px;background:#fff;border:1px solid #e3e5eb;border-radius:12px;break-inside:avoid}}h2{{margin:0 0 6px;font-size:21px}}h3{{margin:24px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#717687}}.meta,figcaption{{font-size:12px;color:#737888}}pre{{overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:16px;border-radius:8px;background:#111827;color:#ecf0f8;font:12px/1.6 Consolas,monospace}}figure{{margin:18px 0 0}}img{{display:block;width:100%;height:auto;border-radius:8px}}figcaption{{margin-top:7px}}@media print{{body{{background:white}}.cover{{min-height:95vh;page-break-after:always}}main{{margin:0 auto}}.task{{box-shadow:none}}}}
+      </style></head><body><header class=\"cover\"><p class=\"brand\">Uniflow · Academic report</p><h1>{html.escape(assignment.title or 'Assignment solution')}</h1><dl><dt>Course</dt><dd>{html.escape(course_name)}</dd><dt>Student</dt><dd>{html.escape(student_name)}</dd><dt>Student ID</dt><dd>{html.escape(str(profile.get('student_id') or profile.get('roll_no') or 'Not provided'))}</dd><dt>Instructor</dt><dd>{html.escape(instructor)}</dd><dt>Due date</dt><dd>{html.escape(assignment.due_at.strftime('%B %d, %Y') if assignment.due_at else 'Not specified')}</dd><dt>Report date</dt><dd>{datetime.now().strftime('%B %d, %Y')}</dd></dl></header><main>{''.join(sections)}</main></body></html>"""
+    return Response(
+        content=report,
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="assignment_{assignment_id}_report.html"'},
+    )
+
+
+@router.get("/assignments/{assignment_id}/solution/report/docx")
+def download_solution_report_docx(assignment_id: int, db: Session = Depends(get_db)):
+    """Download a Word report based on the generated Google Doc template, with run screenshots embedded."""
+    from docx import Document
+    from docx.shared import Inches
+    from app.services.ai_solution import extract_code_deliverables, extract_execution_metadata, strip_execution_metadata
+    from app.services.terminal_renderer import TerminalCardRenderer
+
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+    if not assignment or not solution or not (solution.validated_content or solution.draft_content):
+        raise HTTPException(status_code=404, detail="No generated solution report is available.")
+
+    course = db.query(Course).filter(Course.id == assignment.course_id).first()
+    submission = db.query(Submission).filter(Submission.assignment_id == assignment.id).first()
+    docs_service = get_google_docs_service(db)
+    docx_content = docs_service.export_doc_as_docx(submission.google_doc_id) if docs_service and submission and submission.google_doc_id else None
+    document = Document(BytesIO(docx_content)) if docx_content else Document()
+
+    content = solution.validated_content or solution.draft_content or ""
+    clean_content = strip_execution_metadata(content)
+    deliverables = extract_code_deliverables(clean_content)
+    execution_results = extract_execution_metadata(content)
+    results_by_name = {item.get("filename"): item for item in execution_results}
+
+    if not docx_content:
+        profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).order_by(Setting.updated_at.desc()).first()
+        profile = {}
+        if profile_row and profile_row.value:
+            try:
+                profile = json.loads(profile_row.value)
+            except (TypeError, json.JSONDecodeError):
+                profile = {}
+        student = " ".join(part for part in (profile.get("first_name"), profile.get("last_name")) if part).strip() or "Student"
+        document.add_heading("Uniflow · Academic report", 0)
+        document.add_heading(assignment.title or "Assignment solution", level=1)
+        document.add_paragraph(f"Course: {course.name if course else 'Course'}")
+        document.add_paragraph(f"Student: {student}")
+        document.add_paragraph(f"Instructor: {course.teacher_name if course and course.teacher_name else 'Not provided'}")
+        document.add_paragraph(f"Due date: {assignment.due_at.strftime('%B %d, %Y') if assignment.due_at else 'Not specified'}")
+        document.add_page_break()
+        for source_file in deliverables["files"]:
+            document.add_heading(f"Task {source_file['task']} · {source_file['name']}", level=1)
+            document.add_heading("Source code", level=2)
+            document.add_paragraph(source_file["content"])
+            result = results_by_name.get(source_file["name"], {})
+            document.add_heading("Terminal output", level=2)
+            document.add_paragraph(result.get("terminal_output") or "No terminal output was produced.")
+
+    if execution_results:
+        document.add_page_break()
+        document.add_heading("Code execution evidence", level=1)
+        for result in execution_results:
+            file_name = result.get("filename") or "Generated source"
+            document.add_heading(file_name, level=2)
+            run_state = result.get("status", "not_run").replace("_", " ").title()
+            document.add_paragraph(f"Run status: {run_state} · Exit code: {result.get('exit_code') if result.get('exit_code') is not None else 'n/a'}")
+            screenshot = TerminalCardRenderer.generate_terminal_png(
+                result.get("command") or f"Run {file_name}",
+                result.get("terminal_output") or "No terminal output was produced.",
+                title=f"Assignment run — {file_name}",
+            )
+            document.add_picture(BytesIO(screenshot), width=Inches(6.2))
+            document.add_paragraph(f"Run screenshot · {file_name}")
+
+    generated_images = _assignment_generated_images(db, assignment_id)
+    if generated_images:
+        document.add_page_break()
+        document.add_heading("Generated illustrations", level=1)
+        for image in generated_images:
+            prompt = image.get("prompt", "")
+            document.add_paragraph(f"Prompt: {prompt}")
+            data_uri = image.get("data_uri", "")
+            if data_uri.startswith("data:image/") and "," in data_uri:
+                try:
+                    document.add_picture(BytesIO(base64.b64decode(data_uri.split(",", 1)[1])), width=Inches(5.8))
+                    document.add_paragraph("AI-generated illustration · verify content and attribution requirements.")
+                except (ValueError, OSError):
+                    document.add_paragraph("Image data could not be embedded in this Word export.")
+
+    output = BytesIO()
+    document.save(output)
+    return Response(
+        content=output.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="assignment_{assignment_id}_report.docx"'},
+    )
 
 
 @router.get("/assignments/{assignment_id}/submissions", response_model=List[dict])

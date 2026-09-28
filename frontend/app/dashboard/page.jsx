@@ -1,257 +1,116 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useAuth } from '@clerk/nextjs';
+import { useEffect, useMemo, useState } from 'react';
+import { useAuth, useUser } from '@clerk/nextjs';
 import Link from 'next/link';
 import { api } from '@/app/lib/api';
+import Icon from '@/app/dashboard/Icon';
 
-const statCards = [
-  { key: 'courses_count', label: 'Active Courses', icon: '📚', color: 'bg-blue-500' },
-  { key: 'assignments.total', label: 'Total Assignments', icon: '📝', color: 'bg-indigo-500' },
-  { key: 'assignments.pending', label: 'Pending', icon: '⏳', color: 'bg-yellow-500' },
-  { key: 'assignments.overdue', label: 'Overdue', icon: '🔴', color: 'bg-red-500' },
-  { key: 'assignments.completed', label: 'Completed', icon: '✅', color: 'bg-green-500' },
-  { key: 'upcoming_classes', label: 'Upcoming Classes', icon: '📅', color: 'bg-purple-500' },
-  { key: 'upcoming_exams', label: 'Upcoming Exams', icon: '📋', color: 'bg-orange-500' },
-  { key: 'upcoming_quizzes', label: 'Upcoming Quizzes', icon: '❓', color: 'bg-pink-500' },
-];
+function formatDate(value, options = { month: 'short', day: 'numeric' }) {
+  if (!value) return 'Date TBC';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Date TBC' : new Intl.DateTimeFormat('en', options).format(date);
+}
 
-function getNested(obj, path) {
-  return path.split('.').reduce((o, k) => (o || {})[k], obj);
+function StatCard({ label, value, detail, tone, icon }) {
+  return <article className="overview-stat"><span className={`stat-icon ${tone}`}><Icon name={icon} size={19}/></span><div className="stat-text"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div></article>;
 }
 
 export default function DashboardOverview() {
   const { getToken } = useAuth();
-  const [data, setData] = useState(null);
+  const { user } = useUser();
+  const [overview, setOverview] = useState(null);
+  const [upcoming, setUpcoming] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState('');
 
   useEffect(() => {
+    let cancelled = false;
     const load = async () => {
+      setLoading(true);
+      setError('');
       try {
         const token = await getToken();
-        const overview = await api.getOverview(token);
-        setData(overview);
-      } catch (e) {
-        setError(e.message);
+        const results = await Promise.allSettled([api.getOverview(token), api.getUpcoming(7, token)]);
+        if (cancelled) return;
+        if (results[0].status === 'fulfilled') setOverview(results[0].value);
+        else setError(results[0].reason?.message || 'Your overview could not be loaded.');
+        if (results[1].status === 'fulfilled') setUpcoming(results[1].value);
+      } catch (err) {
+        if (!cancelled) setError(err.message || 'Your overview could not be loaded.');
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
     load();
+    return () => { cancelled = true; };
   }, [getToken]);
 
-  if (loading) return <div className="flex items-center justify-center h-64">Loading...</div>;
-  if (error) return <div className="text-red-600">Error: {error}</div>;
-  if (!data) return <div>No data</div>;
+  const events = useMemo(() => {
+    const rows = [
+      ...(upcoming?.assignments || []).map((item) => ({ ...item, kind: 'Assignment', href: '/dashboard/assignments', date: item.due_at, tone: 'event-blue' })),
+      ...(upcoming?.exams || []).map((item) => ({ ...item, kind: 'Exam', href: '/dashboard/exams', date: item.date, tone: 'event-violet' })),
+      ...(upcoming?.quizzes || []).map((item) => ({ ...item, kind: 'Quiz', href: '/dashboard/quizzes', date: item.date, tone: 'event-amber' })),
+    ];
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 7);
+    return rows
+      .filter((item) => {
+        const date = new Date(item.date);
+        return !Number.isNaN(date.getTime()) && date >= start && date < end;
+      })
+      .sort((a, b) => new Date(a.date) - new Date(b.date))
+      .slice(0, 5);
+  }, [upcoming]);
 
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-gray-500 mt-1">Overview of your academic progress</p>
-        </div>
-        <Link
-          href="/dashboard/assignments"
-          className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
-        >
-          <span>+</span> View All Assignments
-        </Link>
-      </div>
+  const summary = overview?.academic_summary;
+  const firstName = user?.firstName || user?.username || 'there';
+  const today = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date());
+  const assignmentCount = overview?.assignments?.pending ?? 0;
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-4">
-        {statCards.map((stat) => (
-          <div key={stat.key} className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-500">{stat.label}</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">
-                  {getNested(data, stat.key) ?? 0}
-                </p>
-              </div>
-              <div className={`${stat.color} p-3 rounded-lg`}>
-                <span className="text-2xl">{stat.icon}</span>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
+  return <div className="overview-page">
+    <section className="overview-heading">
+      <div><p className="eyebrow">{today}</p><h1>Good to see you, {firstName}.</h1><p className="overview-subtitle">Here’s what’s happening across your semester.</p></div>
+      <Link className="primary-action" href="/dashboard/assignments"><Icon name="listChecks" size={15}/> Review assignments</Link>
+    </section>
 
-      {/* Quick Actions */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        <Link href="/dashboard/assignments" className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 hover:border-indigo-300 transition-colors">
-          <div className="flex items-start gap-4">
-            <div className="bg-indigo-100 p-3 rounded-lg">📝</div>
-            <div>
-              <h3 className="font-semibold text-gray-900">Assignments Hub</h3>
-              <p className="text-sm text-gray-500 mt-1">Manage, review, and track course deliverables</p>
-            </div>
-          </div>
-        </Link>
+    {error && <div className="dashboard-alert" role="alert"><Icon name="alert" size={17}/><div><strong>We couldn’t load your latest overview.</strong><p>{error}</p></div></div>}
 
-        <Link href="/dashboard/exams" className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 hover:border-indigo-300 transition-colors">
-          <div className="flex items-start gap-4">
-            <div className="bg-orange-100 p-3 rounded-lg">📋</div>
-            <div>
-              <h3 className="font-semibold text-gray-900">Exams</h3>
-              <p className="text-sm text-gray-500 mt-1">View upcoming exams and details</p>
-            </div>
-          </div>
-        </Link>
+    <section className="overview-stats" aria-label="Academic overview">
+      <StatCard label="Active courses" value={loading ? '—' : overview?.courses_count ?? 0} detail="Across your semester" tone="stat-lilac" icon="book" />
+      <StatCard label="Open assignments" value={loading ? '—' : assignmentCount} detail="Still in your coursework queue" tone="stat-peach" icon="clock" />
+      <StatCard label="Classes this week" value={loading ? '—' : upcoming?.classes?.length ?? overview?.upcoming_classes ?? 0} detail="On your academic calendar" tone="stat-mint" icon="calendar" />
+      <StatCard label="Attendance" value={loading ? '—' : `${Number(overview?.average_attendance || 0).toFixed(0)}%`} detail="Average across courses" tone="stat-blue" icon="chart" />
+    </section>
 
-        <Link href="/dashboard/quizzes" className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 hover:border-indigo-300 transition-colors">
-          <div className="flex items-start gap-4">
-            <div className="bg-pink-100 p-3 rounded-lg">❓</div>
-            <div>
-              <h3 className="font-semibold text-gray-900">Quizzes</h3>
-              <p className="text-sm text-gray-500 mt-1">Track quiz schedule and results</p>
-            </div>
-          </div>
-        </Link>
+    <section className="overview-grid">
+      <article className="surface-card upcoming-card">
+        <header className="card-heading"><div><p className="eyebrow">The next 7 days</p><h2>Coming up</h2></div><Link className="text-link" href="/dashboard/assignments">View assignments <Icon name="arrowUpRight" size={14}/></Link></header>
+        {loading ? <div className="list-placeholder"><span className="loading-dot"/> Gathering your deadlines…</div> : events.length ? <div className="event-list">{events.map((event, index) => <Link className="event-row" href={event.href} key={`${event.kind}-${event.id || event.title}-${index}`}>
+          <span className={`event-marker ${event.tone}`}><span/></span><span className="event-info"><span className="event-title">{event.title || 'Untitled item'}</span><span className="event-meta">{event.kind}{event.room ? ` · ${event.room}` : ''}</span></span><span className="event-date">{formatDate(event.date)}</span><Icon name="arrowUpRight" size={14} className="event-chevron" />
+        </Link>)}</div> : <div className="empty-upcoming"><span className="empty-calendar"><Icon name="checkCircle" size={21}/></span><strong>You’re all caught up</strong><p>No deadlines or assessments due in the next 7 days.</p><Link className="text-link" href="/dashboard/assignments">Open assignments <Icon name="arrowUpRight" size={14}/></Link></div>}
+        {!loading && events.length > 0 && <footer className="upcoming-footer"><span className="status-dot"/> Updated from your academic workspace</footer>}
+      </article>
 
-        <Link href="/dashboard/announcements" className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 hover:border-indigo-300 transition-colors">
-          <div className="flex items-start gap-4">
-            <div className="bg-blue-100 p-3 rounded-lg">📢</div>
-            <div>
-              <h3 className="font-semibold text-gray-900">Announcements</h3>
-              <p className="text-sm text-gray-500 mt-1">Class updates and notifications</p>
-            </div>
-          </div>
-        </Link>
+      <aside className="overview-aside">
+        <article className="surface-card academic-card">
+          <header className="card-heading"><div><p className="eyebrow">Your progress</p><h2>Academic standing</h2></div><span className="standing-icon"><Icon name="graduation" size={18}/></span></header>
+          {summary && (summary.cgpa || summary.sgpa) ? <div className="gpa-content">
+            <div className="gpa-primary"><span>Cumulative GPA</span><strong>{summary.cgpa ? Number(summary.cgpa).toFixed(2) : '—'}<small> / 4.00</small></strong></div>
+            <div className="gpa-divider"/><div className="gpa-secondary"><span>Latest term</span><strong>{summary.sgpa ? Number(summary.sgpa).toFixed(2) : '—'}</strong></div>
+            {summary.semester_name && <p className="semester-label">{summary.semester_name}</p>}
+          </div> : <div className="academic-empty"><strong>Make progress visible</strong><p>Connect your university portal to see GPA and semester results here.</p><span className="academic-empty-icon"><Icon name="globe" size={17}/></span></div>}
+        </article>
+        <article className="focus-card"><div className="focus-orbit orbit-one"/><div className="focus-orbit orbit-two"/><span className="focus-kicker">A little momentum</span><h3>Small steps add up.</h3><p>Pick one task and make a start. Your semester is easier when it’s all in one place.</p><Link href="/dashboard/assignments">Go to assignments <Icon name="arrowUpRight" size={14}/></Link></article>
+      </aside>
+    </section>
 
-        <Link href="/dashboard/schedule" className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 hover:border-indigo-300 transition-colors">
-          <div className="flex items-start gap-4">
-            <div className="bg-purple-100 p-3 rounded-lg">📅</div>
-            <div>
-              <h3 className="font-semibold text-gray-900">Schedule & Attendance</h3>
-              <p className="text-sm text-gray-500 mt-1">View classes, track attendance</p>
-            </div>
-          </div>
-        </Link>
-
-        <Link href="/dashboard/templates" className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 hover:border-indigo-300 transition-colors">
-          <div className="flex items-start gap-4">
-            <div className="bg-green-100 p-3 rounded-lg">📋</div>
-            <div>
-              <h3 className="font-semibold text-gray-900">Templates</h3>
-              <p className="text-sm text-gray-500 mt-1">Manage assignment templates</p>
-            </div>
-          </div>
-        </Link>
-      </div>
-
-      {/* Academic Performance & GPA Summary */}
-      {data.academic_summary && (data.academic_summary.cgpa || data.academic_summary.sgpa || data.academic_summary.semesters?.length > 0) && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="px-6 py-4 border-b flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-xl">🎓</span>
-              <h2 className="text-lg font-semibold text-gray-900">Academic Standing & GPA Summary</h2>
-            </div>
-            {data.academic_summary.semester_name && (
-              <span className="text-xs font-medium px-2.5 py-1 bg-indigo-50 text-indigo-700 rounded-full">
-                {data.academic_summary.semester_name}
-              </span>
-            )}
-          </div>
-          <div className="p-6 space-y-4">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <div className="p-4 bg-gradient-to-br from-indigo-50 to-blue-50 border border-indigo-100 rounded-xl">
-                <p className="text-xs font-semibold uppercase tracking-wider text-indigo-600">Cumulative GPA (CGPA)</p>
-                <p className="text-3xl font-extrabold text-indigo-950 mt-1">
-                  {data.academic_summary.cgpa ? Number(data.academic_summary.cgpa).toFixed(2) : 'N/A'}
-                  <span className="text-sm font-normal text-indigo-500 ml-1">/ 4.00</span>
-                </p>
-              </div>
-
-              <div className="p-4 bg-gradient-to-br from-purple-50 to-pink-50 border border-purple-100 rounded-xl">
-                <p className="text-xs font-semibold uppercase tracking-wider text-purple-600">Latest Term GPA (SGPA)</p>
-                <p className="text-3xl font-extrabold text-purple-950 mt-1">
-                  {data.academic_summary.sgpa ? Number(data.academic_summary.sgpa).toFixed(2) : 'N/A'}
-                  <span className="text-sm font-normal text-purple-500 ml-1">/ 4.00</span>
-                </p>
-              </div>
-
-              <div className="p-4 bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-100 rounded-xl">
-                <p className="text-xs font-semibold uppercase tracking-wider text-emerald-600">Completed Credits</p>
-                <p className="text-3xl font-extrabold text-emerald-950 mt-1">
-                  {data.academic_summary.earned_credits ?? 'N/A'}
-                  <span className="text-sm font-normal text-emerald-500 ml-1">Cr. Hrs</span>
-                </p>
-              </div>
-
-              <div className="p-4 bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-100 rounded-xl">
-                <p className="text-xs font-semibold uppercase tracking-wider text-amber-600">Terms Completed</p>
-                <p className="text-3xl font-extrabold text-amber-950 mt-1">
-                  {data.academic_summary.semesters?.length ?? 0}
-                  <span className="text-sm font-normal text-amber-500 ml-1">Semesters</span>
-                </p>
-              </div>
-            </div>
-
-            {/* Strategic Advice Preview */}
-            {data.academic_summary.strategy_summary && (
-              <div className="flex items-start gap-3 p-4 bg-blue-50/70 border border-blue-200/80 rounded-xl">
-                <span className="text-xl">💡</span>
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-wider text-blue-900">Academic Strategy & Improvement Plan</p>
-                  <p className="text-sm text-blue-800 mt-0.5">{data.academic_summary.strategy_summary}</p>
-                </div>
-              </div>
-            )}
-
-            {/* Semester History Pills */}
-            {data.academic_summary.semesters?.length > 0 && (
-              <div>
-                <p className="text-xs font-semibold uppercase text-gray-500 mb-2">Semester Performance Breakdown</p>
-                <div className="flex flex-wrap gap-2">
-                  {data.academic_summary.semesters.map((sem, idx) => (
-                    <div key={idx} className="flex items-center gap-2 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs">
-                      <span className="font-medium text-gray-800">{sem.semester}:</span>
-                      {sem.sgpa && <span className="font-bold text-indigo-600">SGPA {Number(sem.sgpa).toFixed(2)}</span>}
-                      {sem.cgpa && <span className="text-gray-500">(CGPA {Number(sem.cgpa).toFixed(2)})</span>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Recent Activity */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <div className="px-6 py-4 border-b">
-          <h2 className="text-lg font-semibold text-gray-900">Quick Stats</h2>
-        </div>
-        <div className="p-6">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-            <div className="text-center p-4 bg-gray-50 rounded-lg">
-              <p className="text-3xl font-bold text-indigo-600">{data.average_attendance}%</p>
-              <p className="text-sm text-gray-500 mt-1">Avg Attendance</p>
-            </div>
-            <div className="text-center p-4 bg-gray-50 rounded-lg">
-              <p className="text-3xl font-bold text-green-600">{data.assignments?.completed ?? 0}</p>
-              <p className="text-sm text-gray-500 mt-1">Completed</p>
-            </div>
-            <div className="text-center p-4 bg-gray-50 rounded-lg">
-              <p className="text-3xl font-bold text-red-600">{data.assignments?.overdue ?? 0}</p>
-              <p className="text-sm text-gray-500 mt-1">Overdue</p>
-            </div>
-            <div className="text-center p-4 bg-gray-50 rounded-lg">
-              <p className="text-3xl font-bold text-yellow-600">{data.assignments?.pending ?? 0}</p>
-              <p className="text-sm text-gray-500 mt-1">Pending</p>
-            </div>
-            <div className="text-center p-4 bg-gray-50 rounded-lg">
-              <p className="text-3xl font-bold text-blue-600">{data.announcements_count ?? 0}</p>
-              <p className="text-sm text-gray-500 mt-1">Announcements</p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+    <section className="quick-links-section"><div className="quick-links-heading"><div><p className="eyebrow">Jump back in</p><h2>Your workspace</h2></div></div><div className="quick-links">
+      <Link href="/dashboard/assignments" className="quick-link"><span className="quick-icon quick-blue"><Icon name="listChecks" size={18}/></span><span><strong>Assignments</strong><small>Manage your coursework</small></span><Icon name="arrowUpRight" size={15}/></Link>
+      <Link href="/dashboard/exams" className="quick-link"><span className="quick-icon quick-lilac"><Icon name="calendarCheck" size={18}/></span><span><strong>Exams & quizzes</strong><small>See what’s coming up</small></span><Icon name="arrowUpRight" size={15}/></Link>
+      <Link href="/dashboard/courses" className="quick-link"><span className="quick-icon quick-mint"><Icon name="sparkles" size={18}/></span><span><strong>Study assistant</strong><small>Ask your course documents</small></span><Icon name="arrowUpRight" size={15}/></Link>
+    </div></section>
+  </div>;
 }

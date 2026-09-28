@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import { useAuth } from '@clerk/nextjs';
 import Link from 'next/link';
 import { format } from 'date-fns';
@@ -9,7 +9,6 @@ import { api } from '@/app/lib/api';
 
 export default function ExamDetailPage() {
   const params = useParams();
-  const router = useRouter();
   const { getToken } = useAuth();
   const examId = params.id;
   const [exam, setExam] = useState(null);
@@ -33,57 +32,19 @@ export default function ExamDetailPage() {
     load();
   }, [examId, getToken]);
 
-  if (loading) return <div className="flex items-center justify-center h-64">Loading...</div>;
-  if (error) return <div className="text-red-600 p-4">Error: {error}</div>;
-  if (!exam) return <div className="p-8 text-center">Exam not found</div>;
+  if (loading) return <main className="product-page"><div className="product-empty">Loading exam details…</div></main>;
+  if (error) return <main className="product-page"><div className="product-alert">{error}</div></main>;
+  if (!exam) return <main className="product-page"><div className="product-empty">Exam not found</div></main>;
 
   const examDate = exam.date ? format(new Date(exam.date), 'MMMM d, yyyy') : 'TBA';
   const examTime = exam.time || 'TBA';
   const isPast = exam.date && new Date(exam.date) < new Date();
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div className="flex items-center gap-4">
-          <Link href="/dashboard/exams" className="text-gray-400 hover:text-gray-600">←</Link>
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">{exam.title}</h1>
-            <p className="text-gray-500 mt-1">Exam Details</p>
-          </div>
-        </div>
-        <span className={`px-3 py-1 rounded-full text-sm font-medium ${
-          isPast ? 'bg-gray-100 text-gray-700' : 'bg-blue-100 text-blue-700'
-        }`}>
-          {isPast ? 'Completed' : 'Upcoming'}
-        </span>
-      </div>
-
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          <div className="p-4 bg-gray-50 rounded-lg">
-            <p className="text-sm text-gray-500">Date</p>
-            <p className="font-medium text-gray-900">{examDate}</p>
-          </div>
-          <div className="p-4 bg-gray-50 rounded-lg">
-            <p className="text-sm text-gray-500">Time</p>
-            <p className="font-medium text-gray-900">{examTime}</p>
-          </div>
-          <div className="p-4 bg-gray-50 rounded-lg">
-            <p className="text-sm text-gray-500">Room</p>
-            <p className="font-medium text-gray-900">{exam.room || 'TBA'}</p>
-          </div>
-          <div className="p-4 bg-gray-50 rounded-lg md:col-span-3">
-            <p className="text-sm text-gray-500">Status</p>
-            <p className="font-medium text-gray-900 capitalize">{exam.status || 'scheduled'}</p>
-          </div>
-        </div>
-
-        <div className="flex justify-end gap-2">
-          <Link href="/dashboard/exams" className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
-            Back to Exams
-          </Link>
-        </div>
-      </div>
-    </div>
+    <main className="product-page">
+      <header className="product-heading"><div><p className="eyebrow">EXAM DETAILS</p><h1>{exam.title}</h1><p>Review the date and location, then prepare from the exam list.</p></div><span className={`product-pill ${isPast ? '' : 'success'}`}>{isPast ? 'Completed' : 'Upcoming'}</span></header>
+      <section className="product-grid three"><article className="product-stat"><span>Date</span><strong>{examDate}</strong></article><article className="product-stat"><span>Time</span><strong>{examTime}</strong></article><article className="product-stat"><span>Room</span><strong>{exam.room || 'TBA'}</strong></article></section>
+      <section className="product-card"><header className="product-card-head"><div><p className="eyebrow">SCHEDULE STATUS</p><h2>{exam.status || 'Scheduled'}</h2></div><Link href="/dashboard/exams" className="product-action secondary">Back to exams</Link></header><div className="product-card-body"><p className="product-note">Use the Study Planner on the Exams page to paste your syllabus, select Classroom materials, and create a revision plan for this exam.</p><Link href="/dashboard/exams" className="product-action">Open study planner</Link></div></section>
+    </main>
   );
 }

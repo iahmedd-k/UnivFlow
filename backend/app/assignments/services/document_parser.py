@@ -54,9 +54,24 @@ class PDFParser(DocumentParser):
     
     def _get_pdfplumber(self):
         if self._pdfplumber is None:
-            import pdfplumber
-            self._pdfplumber = pdfplumber
+            try:
+                import pdfplumber
+                self._pdfplumber = pdfplumber
+            except ImportError:
+                # pypdf is a required backend dependency; pdfplumber is optional.
+                self._pdfplumber = False
         return self._pdfplumber
+
+    @staticmethod
+    def extract_text(content: bytes) -> str:
+        """Extract all available text without requiring optional pdfplumber."""
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(content))
+        return "\n\n".join(
+            f"--- PAGE {index + 1} ---\n{page.extract_text() or ''}"
+            for index, page in enumerate(reader.pages)
+        ).strip()
     
     def _get_pymupdf(self):
         if self._pymupdf is None:
@@ -72,6 +87,31 @@ class PDFParser(DocumentParser):
     
     async def parse(self, content: bytes, filename: str = "") -> ParsedContent:
         pdfplumber = self._get_pdfplumber()
+
+        if not pdfplumber:
+            from pypdf import PdfReader
+
+            reader = PdfReader(io.BytesIO(content))
+            metadata = reader.metadata or {}
+            full_text = "\n\n".join(
+                f"--- PAGE {index + 1} ---\n{page.extract_text() or ''}"
+                for index, page in enumerate(reader.pages)
+            ).strip()
+            return ParsedContent(
+                text=full_text,
+                structure={
+                    "pages": len(reader.pages),
+                    "tables": [],
+                    "paragraphs": full_text.split("\n\n"),
+                },
+                metadata={
+                    "page_count": len(reader.pages),
+                    "title": metadata.get("/Title"),
+                    "author": metadata.get("/Author"),
+                    "creator": metadata.get("/Creator"),
+                },
+                source_type="pdf",
+            )
         
         text_parts = []
         tables = []

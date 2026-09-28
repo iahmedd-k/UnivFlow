@@ -686,6 +686,41 @@ def clear_all_timetable_classes(db: Session = Depends(get_db)):
     return {"deleted": True, "count": deleted_count}
 
 
+@router.put("/classes/{entry_id}", response_model=dict)
+def update_timetable_class(
+    entry_id: int,
+    item: TimetableClassInput = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Update a specific timetable class entry"""
+    entry = db.query(TimetableEntry).filter(TimetableEntry.id == entry_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Timetable class not found.")
+    
+    if item.end_time <= item.start_time:
+        raise HTTPException(status_code=422, detail="End time must be after start time.")
+    
+    weekday = item.weekdays[0] if item.weekdays else entry.weekday
+    if weekday < 0 or weekday > 6:
+        raise HTTPException(status_code=422, detail="Weekday must be between 0 (Monday) and 6 (Sunday).")
+
+    entry.subject = item.subject.strip()
+    entry.weekday = weekday
+    entry.start_time = item.start_time
+    entry.end_time = item.end_time
+    entry.teacher = item.teacher.strip() if item.teacher else None
+    entry.room = item.room.strip() if item.room else None
+    entry.semester_name = item.semester_name.strip() if item.semester_name else None
+    if item.semester_start:
+        entry.semester_start = datetime.combine(item.semester_start, time.min)
+    if item.semester_end:
+        entry.semester_end = datetime.combine(item.semester_end, time.max)
+
+    db.commit()
+    db.refresh(entry)
+    return _entry_dict(entry)
+
+
 @router.delete("/classes/{entry_id}", response_model=dict)
 def delete_timetable_class(entry_id: int, db: Session = Depends(get_db)):
     entry = db.query(TimetableEntry).filter(TimetableEntry.id == entry_id).first()

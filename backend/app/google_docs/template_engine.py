@@ -127,19 +127,24 @@ class GoogleDocsTemplateEngine:
         defaults = {
             "STUDENT_NAME": user_metadata.get("name", ""),
             "STUDENT_ID": user_metadata.get("student_id", ""),
+            "ROLL_NO": user_metadata.get("student_id", "") or user_metadata.get("roll_no", ""),
             "EMAIL": user_metadata.get("email", ""),
-            "UNIVERSITY_NAME": user_metadata.get("university", ""),
+            "UNIVERSITY_NAME": user_metadata.get("university", "AIR UNIVERSITY, ISLAMABAD"),
         }
         
         # Assignment metadata
         assignment_defaults = {
             "COURSE_NAME": assignment_metadata.get("course_name", ""),
             "COURSE_CODE": assignment_metadata.get("course_code", ""),
+            "SUBJECT_NAME": assignment_metadata.get("course_name", "") or assignment_metadata.get("title", ""),
             "ASSIGNMENT_TITLE": assignment_metadata.get("title", ""),
+            "ASSIGNMENT_NO": str(assignment_metadata.get("assignment_number", "") or assignment_metadata.get("title", "")),
             "INSTRUCTOR_NAME": assignment_metadata.get("instructor", ""),
+            "PROFESSOR_NAME": assignment_metadata.get("instructor", ""),
             "DUE_DATE": self._format_date(assignment_metadata.get("due_date")),
             "SEMESTER": assignment_metadata.get("semester", ""),
             "SECTION": assignment_metadata.get("section", ""),
+            "CLASS": assignment_metadata.get("section", "") or assignment_metadata.get("semester", ""),
         }
         
         # Current date
@@ -173,6 +178,10 @@ class GoogleDocsTemplateEngine:
         requests = []
         
         for placeholder, value in replacements.items():
+            # SOLUTION_CONTENT is inserted separately so that the template keeps
+            # its placeholder position and does not get a duplicate appended body.
+            if placeholder == "SOLUTION_CONTENT":
+                continue
             if not value:
                 continue
             
@@ -181,7 +190,8 @@ class GoogleDocsTemplateEngine:
                 f"{{{{{placeholder}}}}}",
                 f"{{{placeholder}}}",
                 f"[[{placeholder}]]",
-                f"{{{{ {placeholder} }}}}"  # With spaces
+                f"{{{{ {placeholder} }}}}",  # With spaces
+                placeholder, # Direct exact match for explicit template headings
             ]
             
             for pattern in patterns:

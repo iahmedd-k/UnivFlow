@@ -14,6 +14,11 @@ from app.integrations.router import router as google_integrations_router
 from app.timetable.router import router as timetable_router
 from app.portal.router import router as portal_router
 
+# New RAG router
+from app.api.rag import router as rag_router
+from app.execution.router import router as execution_router
+from app.diagram.router import router as diagram_router
+
 
 api_router = APIRouter()
 
@@ -31,3 +36,6 @@ api_router.include_router(agent_router, tags=["Agent"])
 api_router.include_router(google_integrations_router)
 api_router.include_router(timetable_router)
 api_router.include_router(portal_router)
+api_router.include_router(rag_router, tags=["RAG"])
+api_router.include_router(execution_router, tags=["Execution"])
+api_router.include_router(diagram_router, tags=["Diagram"])

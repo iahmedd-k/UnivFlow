@@ -70,10 +70,41 @@ def _get_semester_start(db: Session, override: Optional[str] = None) -> Optional
     return None
 
 
+def _categorize_email(from_str: str, subject_str: str, snippet_str: str) -> tuple[str, str]:
+    subj_lower = (subject_str or "").lower()
+    from_lower = (from_str or "").lower()
+    combined = f"{from_str} {subject_str} {snippet_str}".lower()
+
+    # 1. Google Classroom Notifications
+    if any(k in combined for k in [
+        "classroom.google.com", "notifications@google.com", "google classroom",
+        "new assignment", "new material", "new question", "due tomorrow", "due today",
+        "returned:", "graded:", "posted a new", "coursework"
+    ]):
+        return "classroom", "Google Classroom"
+
+    # 2. University Official: Subject MUST explicitly include titles like 'notification', 'notice', 'circular', 'advisory', etc.
+    is_university_source = any(k in from_lower or k in combined for k in [
+        "@au.edu.pk", "@students.au.edu.pk", "air university", "registrar",
+        "examination", "facilitation", "qec", "vice chancellor", "vc office",
+        "admissions", "fee section", "directorate", "academic"
+    ])
+    has_notification_title = any(k in subj_lower for k in [
+        "notification", "notice", "circular", "advisory", "official announcement", "announcement", "office order", "memo"
+    ])
+
+    if is_university_source and has_notification_title:
+        return "university", "University Notification"
+
+    # 3. Other / General / Social (All other university correspondence and external emails go to 'other')
+    return "other", "General / Other"
+
+
 @router.get("/emails", response_model=list[dict])
 def get_recent_emails(
-    limit: int = Query(8, ge=1, le=25),
+    limit: int = Query(20, ge=1, le=50),
     since: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     credentials = _services(db)
@@ -85,7 +116,9 @@ def get_recent_emails(
         # Gmail after query format: YYYY/MM/DD
         q_filter = f"after:{since_dt.strftime('%Y/%m/%d')}"
 
-    list_params = {"userId": "me", "maxResults": limit, "labelIds": ["INBOX"]}
+    # Fetch slightly more to satisfy category filter limits
+    fetch_max = min(50, limit * 2) if category and category != "all" else limit
+    list_params = {"userId": "me", "maxResults": fetch_max, "labelIds": ["INBOX"]}
     if q_filter:
         list_params["q"] = q_filter
 
@@ -98,15 +131,29 @@ def get_recent_emails(
             )
         )
         headers = {header["name"].lower(): header["value"] for header in message.get("payload", {}).get("headers", [])}
+        from_val = headers.get("from", "Unknown sender")
+        subj_val = headers.get("subject", "(no subject)")
+        snip_val = message.get("snippet", "")
+        cat_key, cat_label = _categorize_email(from_val, subj_val, snip_val)
+
+        if category and category != "all" and cat_key != category.lower():
+            continue
+
         emails.append({
             "id": message["id"],
             "thread_id": message.get("threadId"),
-            "from": headers.get("from", "Unknown sender"),
-            "subject": headers.get("subject", "(no subject)"),
+            "from": from_val,
+            "subject": subj_val,
             "date": headers.get("date"),
-            "snippet": message.get("snippet", ""),
+            "snippet": snip_val,
+            "category": cat_key,
+            "category_label": cat_label,
             "unread": "UNREAD" in message.get("labelIds", []),
         })
+
+        if len(emails) >= limit:
+            break
+
     return emails
 
 

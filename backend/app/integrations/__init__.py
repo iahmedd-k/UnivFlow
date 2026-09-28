@@ -1,1 +1,35 @@
 from app.integrations.router import router
+from app.integrations.kroki import (
+    KrokiClient,
+    kroki_client,
+    KrokiRenderRequest,
+    KrokiRenderResponse,
+    KrokiHealthResponse,
+    DiagramTypeInfo,
+    KrokiException,
+    KrokiUnavailableError,
+    DiagramRenderError,
+    DiagramTimeoutError,
+    DiagramSizeLimitError,
+    UnsupportedDiagramTypeError,
+    UnsupportedOutputFormatError,
+    KrokiAPIError,
+)
+
+__all__ = [
+    "router",
+    "KrokiClient",
+    "kroki_client",
+    "KrokiRenderRequest",
+    "KrokiRenderResponse",
+    "KrokiHealthResponse",
+    "DiagramTypeInfo",
+    "KrokiException",
+    "KrokiUnavailableError",
+    "DiagramRenderError",
+    "DiagramTimeoutError",
+    "DiagramSizeLimitError",
+    "UnsupportedDiagramTypeError",
+    "UnsupportedOutputFormatError",
+    "KrokiAPIError",
+]

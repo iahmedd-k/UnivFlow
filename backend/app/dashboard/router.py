@@ -24,6 +24,7 @@ from app.db.models import (
     AssignmentStatus,
     Setting,
 )
+from app.auth.clerk_auth import require_current_user
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
@@ -49,10 +50,25 @@ def _get_semester_start_dt(db: Session, override: Optional[str] = None) -> Optio
     return None
 
 
+def _is_on_or_after(val, since_dt: Optional[datetime]) -> bool:
+    if not since_dt or not val:
+        return True
+    try:
+        if isinstance(val, datetime):
+            target = val if val.tzinfo else val.replace(tzinfo=timezone.utc)
+            return target >= since_dt
+        if hasattr(val, 'year'): # date object
+            return val >= since_dt.date()
+        return True
+    except Exception:
+        return True
+
+
 @router.get("/overview", response_model=dict)
 def get_dashboard_overview(
     since: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_current_user),
 ):
     course_repo = CourseRepository(db)
     assignment_repo = AssignmentRepository(db)
@@ -66,36 +82,36 @@ def get_dashboard_overview(
     
     courses = course_repo.get_all()
     if since_dt:
-        courses = [c for c in courses if (c.created_at and c.created_at >= since_dt) or (c.updated_at and c.updated_at >= since_dt) or c.created_at is None]
+        courses = [c for c in courses if (c.created_at and _is_on_or_after(c.created_at, since_dt)) or (c.updated_at and _is_on_or_after(c.updated_at, since_dt)) or c.created_at is None]
     
     all_assignments = assignment_repo.get_all()
     if since_dt:
         all_assignments = [a for a in all_assignments if 
-            (a.due_at and a.due_at >= since_dt) or 
-            (a.due_date and a.due_date >= since_dt) or 
-            (a.due_at is None and (a.created_at and a.created_at >= since_dt or a.updated_at and a.updated_at >= since_dt))
+            (a.due_at and _is_on_or_after(a.due_at, since_dt)) or 
+            (a.due_date and _is_on_or_after(a.due_date, since_dt)) or 
+            (a.due_at is None and (a.created_at and _is_on_or_after(a.created_at, since_dt) or a.updated_at and _is_on_or_after(a.updated_at, since_dt)))
         ]
     
     upcoming_schedules = schedule_repo.get_upcoming(7)
     if since_dt:
-        upcoming_schedules = [s for s in upcoming_schedules if s.date and s.date >= since_dt.date()]
+        upcoming_schedules = [s for s in upcoming_schedules if s.date and _is_on_or_after(s.date, since_dt)]
     
     attendance_records = attendance_repo.get_all()
     if since_dt:
         attendance_records = [
             r for r in attendance_records
-            if (r.last_updated and r.last_updated >= since_dt)
-            or (r.created_at and r.created_at >= since_dt)
+            if (r.last_updated and _is_on_or_after(r.last_updated, since_dt))
+            or (r.created_at and _is_on_or_after(r.created_at, since_dt))
             or (r.last_updated is None and r.created_at is None)
         ]
     
     upcoming_exams = exam_repo.get_upcoming(30)
     if since_dt:
-        upcoming_exams = [e for e in upcoming_exams if e.date and e.date >= since_dt.date()]
+        upcoming_exams = [e for e in upcoming_exams if e.date and _is_on_or_after(e.date, since_dt)]
     
     upcoming_quizzes = quiz_repo.get_upcoming(30)
     if since_dt:
-        upcoming_quizzes = [q for q in upcoming_quizzes if q.date and q.date >= since_dt.date()]
+        upcoming_quizzes = [q for q in upcoming_quizzes if q.date and _is_on_or_after(q.date, since_dt)]
     
     recent_agent_runs = agent_repo.get_recent(5)
 
@@ -116,7 +132,9 @@ def get_dashboard_overview(
     active_courses = [c for c in courses if not c.course_state or c.course_state.upper() == "ACTIVE"]
     avg_attendance = sum(r.percentage for r in attendance_records) / len(attendance_records) if attendance_records else 0
 
-    academic_setting = db.query(Setting).filter(Setting.key == "portal_academic_summary").first()
+    user_id = str((user or {}).get("id") or "dev_student_user")
+    academic_key = f"portal:{user_id}:portal_academic_summary"
+    academic_setting = db.query(Setting).filter(Setting.key == academic_key).first()
     academic_summary = None
     if academic_setting and academic_setting.value:
         try:
@@ -168,14 +186,14 @@ def get_upcoming_items(
     
     schedules = schedule_repo.get_upcoming(days)
     if since_dt:
-        schedules = [s for s in schedules if s.date and s.date >= since_dt.date()]
+        schedules = [s for s in schedules if s.date and _is_on_or_after(s.date, since_dt)]
     
     all_assignments = assignment_repo.get_all()
     if since_dt:
         all_assignments = [a for a in all_assignments if 
-            (a.due_at and a.due_at >= since_dt) or 
-            (a.due_date and a.due_date >= since_dt) or 
-            (a.due_at is None and (a.created_at and a.created_at >= since_dt or a.updated_at and a.updated_at >= since_dt))
+            (a.due_at and _is_on_or_after(a.due_at, since_dt)) or 
+            (a.due_date and _is_on_or_after(a.due_date, since_dt)) or 
+            (a.due_at is None and (a.created_at and _is_on_or_after(a.created_at, since_dt) or a.updated_at and _is_on_or_after(a.updated_at, since_dt)))
         ]
     
     upcoming_assignments = [
@@ -185,11 +203,11 @@ def get_upcoming_items(
     ]
     exams = exam_repo.get_upcoming(days)
     if since_dt:
-        exams = [e for e in exams if e.date and e.date >= since_dt.date()]
+        exams = [e for e in exams if e.date and _is_on_or_after(e.date, since_dt)]
     
     quizzes = quiz_repo.get_upcoming(days)
     if since_dt:
-        quizzes = [q for q in quizzes if q.date and q.date >= since_dt.date()]
+        quizzes = [q for q in quizzes if q.date and _is_on_or_after(q.date, since_dt)]
 
     return {
         "classes": [

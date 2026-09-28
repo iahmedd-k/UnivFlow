@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_model: str = "openai/gpt-oss-120b"
     groq_chat_model: str = "openai/gpt-oss-120b"
+    gemini_api_key: str = ""
+    pollinations_api_key: str = ""
+    pollinations_base_url: str = "https://gen.pollinations.ai"
+    pollinations_image_model: str = "zimage"
+
+    # Model assignments used by the sequential CrewAI assignment workflow.
+    planner_agent_model: str = "openai/gpt-oss-120b"
+    theory_agent_model: str = "gemini-3.8-flash"
+    coder_agent_model: str = "qwen/qwen3.8-27b"
+    reporter_agent_model: str = "gemini-3.5-flash-lite"
 
     claude_enabled: bool = False
 
@@ -89,6 +99,37 @@ class Settings(BaseSettings):
 
     frontend_url: str = "http://localhost:5173"
 
+    # Piston Configuration
+    piston_base_url: str = "http://localhost:2000"
+    piston_timeout_seconds: int = 30
+
+    # Code Execution Limits
+    code_execution_timeout_seconds: int = 10
+    code_execution_max_attempts: int = 3
+    code_execution_max_output_bytes: int = 100000
+    code_execution_max_code_bytes: int = 100000
+
+    # Database Execution Configuration
+    mysql_host: str = ""
+    mysql_port: int = 3306
+    mysql_database: str = ""
+    mysql_user: str = ""
+    mysql_password: str = ""
+
+    mongodb_uri: str = ""
+    mongodb_database: str = ""
+
+    sqlite_execution_path: str = "./tmp/sqlite"
+
+    # Kroki Configuration
+    kroki_base_url: str = "https://kroki.io"
+    kroki_timeout_seconds: int = 30
+
+    # Diagram Generation Limits
+    diagram_max_source_bytes: int = 100000
+    diagram_max_attempts: int = 2
+    diagram_timeout_seconds: int = 30
+
     @property
     def google_scopes_list(self) -> List[str]:
         return self.google_scopes.split()
@@ -99,8 +140,6 @@ class Settings(BaseSettings):
 
     @property
     def supabase_db_url(self) -> str:
-        # A Supabase API key is not the Postgres password. Never synthesize a
-        # database connection string from SUPABASE_URL or SUPABASE_SECRET_KEY.
         if self.database_url and self.database_url.startswith("postgresql"):
             return self.database_url
         return ""

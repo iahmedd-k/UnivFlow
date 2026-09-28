@@ -1,317 +1,288 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useAuth } from '@clerk/nextjs';
-import { format } from 'date-fns';
-import { api } from '@/app/lib/api';
+import { useState } from 'react';
+import Icon from '@/app/dashboard/Icon';
+import { format, isValid, formatDistanceToNow } from 'date-fns';
+import TutorPanel from './TutorPanel';
+import ReviewPanel from './ReviewPanel';
+import TurnInPanel from './TurnInPanel';
+import SolutionPanel from './SolutionPanel';
 
-export default function AssignmentDetailModal({ assignment, onClose, onTurnIn, onGenerateSolution }) {
-  const { getToken } = useAuth();
-  const [templates, setTemplates] = useState([]);
-  const [templatesLoading, setTemplatesLoading] = useState(true);
-  const [selectedTemplateId, setSelectedTemplateId] = useState(null);
-  const [additionalFiles, setAdditionalFiles] = useState([]);
-  const [turningIn, setTurningIn] = useState(false);
-  const [solutionStatus, setSolutionStatus] = useState(null);
-  const [solutionPolling, setSolutionPolling] = useState(false);
-  const [activeTab, setActiveTab] = useState('details');
+const TABS = [
+  { id: 'overview', label: 'Overview & Rubric', icon: 'clipboard' },
+  { id: 'tutor', label: 'AI Tutor', icon: 'lightbulb' },
+  { id: 'solver', label: 'Solver & Report', icon: 'code' },
+  { id: 'review', label: 'Pre-Submit Review', icon: 'search' },
+  { id: 'turnin', label: 'Turn In', icon: 'upload' },
+];
 
-  useEffect(() => {
-    const loadTemplates = async () => {
-      try {
-        const token = await getToken();
-        const data = await api.getAssignmentTemplates(token);
-        setTemplates(data);
-      } catch (e) {
-        console.error('Failed to load templates:', e);
-      } finally {
-        setTemplatesLoading(false);
-      }
-    };
-    loadTemplates();
+export default function AssignmentDetailModal({ assignment, initialTab = 'overview', onClose, onTurnIn }) {
+  const [tab, setTab] = useState(TABS.some((t) => t.id === initialTab) ? initialTab : 'overview');
 
-    checkSolutionStatus();
-  }, [assignment, getToken]);
-
-  const checkSolutionStatus = async () => {
-    try {
-      const token = await getToken();
-      const status = await api.getSolutionStatus(assignment.id, token);
-      setSolutionStatus(status);
-      if (status.status === 'generating') {
-        setSolutionPolling(true);
-      }
-    } catch (e) {
-      console.error('Failed to check solution status:', e);
-    }
-  };
-
-  useEffect(() => {
-    if (!solutionPolling) return;
-    const interval = setInterval(checkSolutionStatus, 3000);
-    return () => clearInterval(interval);
-  }, [solutionPolling, assignment.id, getToken]);
-
-  const handleTurnIn = async () => {
-    setTurningIn(true);
-    try {
-      const token = await getToken();
-      await onTurnIn(assignment.id, selectedTemplateId, additionalFiles, token);
-    } finally {
-      setTurningIn(false);
-    }
-  };
-
-  const handleGenerateSolution = async () => {
-    try {
-      const token = await getToken();
-      await onGenerateSolution(assignment.id, token);
-      setSolutionPolling(true);
-      setSolutionStatus({ status: 'generating' });
-    } catch (e) {
-      alert('Failed: ' + e.message);
-    }
-  };
-
-  const dueDate = assignment.due_at ? format(new Date(assignment.due_at), 'MMMM d, yyyy \'at\' h:mm a') : 'No deadline';
-  const isOverdue = assignment.due_at && new Date(assignment.due_at) < new Date();
+  const due = assignment.due_at ? new Date(assignment.due_at) : null;
+  const hasValidDue = due && isValid(due);
+  const dueDate = hasValidDue ? format(due, "MMMM d, yyyy 'at' h:mm a") : 'No deadline';
+  const isOverdue = hasValidDue && due < new Date();
   const isSubmitted = assignment.submission_state === 'TURNED_IN' || assignment.submission_state === 'RETURNED';
+  const isQuiz = Boolean(assignment.is_quiz);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-xl max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b sticky top-0 bg-white z-10">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">{assignment.title}</h2>
-            <p className="text-sm text-gray-500">{assignment.course_name}</p>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/60 backdrop-blur-xs animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-3xl shadow-2xl max-w-5xl w-full max-h-[92vh] overflow-hidden flex flex-col border border-[#ececf2]"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={assignment.title}
+      >
+        {/* Modal Topbar */}
+        <div className="px-6 py-4.5 border-b border-[#ececf2] bg-white flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className={`w-11 h-11 shrink-0 rounded-2xl flex items-center justify-center text-xl border ${
+              isQuiz ? 'bg-amber-50 border-amber-200 text-amber-600' : 'bg-[#f4f2ff] border-[#e4dffe] text-[#6657d9]'
+            }`}>
+              <Icon name={isQuiz ? 'clipboard' : 'book'} size={20}/>
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[11px] font-semibold text-[#6657d9] bg-[#f5f3ff] px-2 py-0.5 rounded-md border border-[#ece7ff]">
+                  {assignment.course_name}
+                </span>
+                {isSubmitted ? (
+                  <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                    <Icon name="check" size={12}/> Submitted
+                  </span>
+                ) : isOverdue ? (
+                  <span className="text-[11px] font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
+                    <Icon name="alert" size={12}/> Overdue
+                  </span>
+                ) : (
+                  <span className="text-[11px] font-semibold text-amber-800 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
+                    <Icon name="clock" size={12}/> Open
+                  </span>
+                )}
+              </div>
+              <h2 className="text-base sm:text-lg font-bold text-[#1e293b] leading-tight truncate mt-1">
+                {assignment.title}
+              </h2>
+            </div>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-2">✕</button>
-        </div>
 
-        {/* Tabs */}
-        <div className="flex border-b bg-gray-50">
-          {['details', 'materials', 'solution'].map((tab) => (
+          <div className="flex items-center gap-2 shrink-0">
+            {assignment.url && (
+              <a
+                href={assignment.url}
+                target="_blank"
+                rel="noreferrer"
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#f8fafc] hover:bg-[#f1f5f9] text-[#475569] hover:text-[#1e293b] rounded-xl border border-[#e2e8f0] text-xs font-semibold transition-colors"
+                title="Open in Google Classroom"
+              >
+                <span>Classroom</span>
+                <Icon name="externalLink" size={13}/>
+              </a>
+            )}
             <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === tab
-                  ? 'border-indigo-600 text-indigo-600 bg-white'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
+              onClick={onClose}
+              className="w-8 h-8 rounded-full bg-[#f8fafc] hover:bg-[#f1f5f9] flex items-center justify-center text-[#64748b] hover:text-[#1e293b] transition-colors border border-[#e2e8f0]"
+              aria-label="Close modal"
             >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              <Icon name="close" size={15}/>
             </button>
-          ))}
+          </div>
         </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {/* Details Tab */}
-          {activeTab === 'details' && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-sm text-gray-500">Due Date</p>
-                  <p className={`font-medium ${isOverdue && !isSubmitted ? 'text-red-600' : 'text-gray-900'}`}>
-                    {dueDate}
-                    {isOverdue && !isSubmitted && <span className="ml-2 text-red-600 text-sm">(Overdue)</span>}
+        {/* Tab Navigation */}
+        <nav
+          className="flex border-b border-[#ececf2] px-4 sm:px-6 bg-[#fafafd] overflow-x-auto scrollbar-none gap-1 sm:gap-2"
+          aria-label="Assignment sections"
+        >
+          {TABS.map((t) => {
+            const isActive = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`py-3 px-3 sm:px-4 text-xs sm:text-sm font-semibold border-b-2 transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                  isActive
+                    ? 'border-[#6657d9] text-[#6657d9] bg-white rounded-t-xl'
+                    : 'border-transparent text-[#64748b] hover:text-[#1e293b] hover:bg-white/60'
+                }`}
+                aria-current={isActive ? 'page' : undefined}
+              >
+                <Icon name={t.icon} size={15}/>
+                <span>{t.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Tab Content Body */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 bg-[#fbfbfe]">
+          {tab === 'overview' && (
+            <OverviewTab
+              assignment={assignment}
+              dueDate={dueDate}
+              isOverdue={isOverdue}
+              isSubmitted={isSubmitted}
+              onSwitchTab={setTab}
+            />
+          )}
+          {tab === 'tutor' && <TutorPanel assignment={assignment} />}
+          {tab === 'solver' && <SolutionPanel assignment={assignment} />}
+          {tab === 'review' && <ReviewPanel assignment={assignment} />}
+          {tab === 'turnin' && <TurnInPanel assignment={assignment} onTurnIn={onTurnIn} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OverviewTab({ assignment, dueDate, isOverdue, isSubmitted, onSwitchTab }) {
+  const due = assignment.due_at ? new Date(assignment.due_at) : null;
+  const materials = assignment.materials || [];
+
+  return (
+    <div className="space-y-6">
+      {/* Overview Quick Stats Card */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+        <div className="bg-white p-4 rounded-2xl border border-[#ebebf0] shadow-2xs">
+          <span className="text-[11px] font-semibold text-[#858998] uppercase tracking-wider block">Course & Type</span>
+          <p className="text-sm font-bold text-[#1e293b] mt-1 truncate">{assignment.course_name}</p>
+          <span className="text-xs text-[#64748b] capitalize mt-0.5 block">
+            {assignment.work_type ? assignment.work_type.replace('_', ' ') : 'Coursework Assignment'}
+          </span>
+        </div>
+
+        <div className="bg-white p-4 rounded-2xl border border-[#ebebf0] shadow-2xs">
+          <span className="text-[11px] font-semibold text-[#858998] uppercase tracking-wider block">Due Date</span>
+          <p className="text-sm font-bold text-[#1e293b] mt-1">{dueDate}</p>
+          {due && isValid(due) && (
+            <span className={`text-xs font-semibold mt-0.5 block ${isOverdue ? 'text-rose-600' : 'text-[#6657d9]'}`}>
+              {isOverdue ? `Expired ${formatDistanceToNow(due)} ago` : `Due in ${formatDistanceToNow(due)}`}
+            </span>
+          )}
+        </div>
+
+        <div className="bg-white p-4 rounded-2xl border border-[#ebebf0] shadow-2xs">
+          <span className="text-[11px] font-semibold text-[#858998] uppercase tracking-wider block">Submission State</span>
+          <p className="text-sm font-bold text-[#1e293b] mt-1 capitalize">
+            {isSubmitted ? 'Turned In' : isOverdue ? 'Overdue' : 'Pending Submission'}
+          </p>
+          <span className="text-xs text-[#64748b] mt-0.5 block">
+            {assignment.max_points ? `${assignment.max_points} Maximum Points` : 'Graded Coursework'}
+          </span>
+        </div>
+      </div>
+
+      {/* Instructions & Prompt Box */}
+      <div className="bg-white rounded-2xl border border-[#ebebf0] shadow-2xs p-5 sm:p-6 space-y-3">
+        <div className="flex items-center justify-between border-b border-[#f1f1f4] pb-3">
+          <div className="flex items-center gap-2">
+            <Icon name="file" size={16}/>
+            <h3 className="text-xs font-bold text-[#475569] uppercase tracking-wider">Assignment Instructions & Description</h3>
+          </div>
+          {assignment.url && (
+            <a
+              href={assignment.url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs font-semibold text-[#6657d9] hover:underline flex items-center gap-1"
+            >
+              Classroom Post <Icon name="externalLink" size={13}/>
+            </a>
+          )}
+        </div>
+
+        {assignment.description ? (
+          <div className="prose prose-sm max-w-none text-[#334155] whitespace-pre-wrap text-xs sm:text-sm leading-relaxed bg-[#fafafd] p-4 sm:p-5 rounded-xl border border-[#ececf2]">
+            {assignment.description}
+          </div>
+        ) : (
+          <div className="text-center py-8 text-xs text-[#858998] bg-[#fafafd] rounded-xl border border-dashed border-[#ececf2]">
+            No text instructions provided for this coursework post.
+          </div>
+        )}
+      </div>
+
+      {/* Materials & References Section */}
+      <div className="bg-white rounded-2xl border border-[#ebebf0] shadow-2xs p-5 sm:p-6 space-y-4">
+        <div className="flex items-center justify-between border-b border-[#f1f1f4] pb-3">
+          <div className="flex items-center gap-2">
+            <Icon name="paperclip" size={16}/>
+            <h3 className="text-xs font-bold text-[#475569] uppercase tracking-wider">Course Materials & Reference Files</h3>
+          </div>
+          <span className="text-xs font-semibold text-[#6657d9] bg-[#f5f3ff] px-2.5 py-0.5 rounded-full border border-[#ece7ff]">
+            {materials.length} {materials.length === 1 ? 'Attachment' : 'Attachments'}
+          </span>
+        </div>
+
+        {materials.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {materials.map((m, idx) => (
+              <a
+                key={idx}
+                href={m.url || '#'}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-3 p-3.5 rounded-xl border border-[#ececf2] bg-[#fafafd] hover:bg-[#f5f3ff] hover:border-[#d9d2fa] transition-all group"
+              >
+                <div className="w-10 h-10 rounded-xl bg-white border border-[#ececf2] flex items-center justify-center text-xl shrink-0 group-hover:border-[#c9c2f0]">
+                  <Icon name={m.material_type === 'drive_file' ? 'file' : m.material_type === 'link' ? 'link' : 'paperclip'} size={17}/>
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-[#1e293b] truncate group-hover:text-[#6657d9] transition-colors">
+                    {m.title || 'Attachment'}
+                  </p>
+                  <p className="text-[11px] text-[#858998] capitalize mt-0.5">
+                    {m.material_type?.replace('_', ' ') || 'Reference File'} · Click to open <Icon name="externalLink" size={11}/>
                   </p>
                 </div>
-                <div>
-                  <p className="text-sm text-gray-500">Work Type</p>
-                  <p className="font-medium text-gray-900">{assignment.work_type || 'ASSIGNMENT'}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-500">Type</p>
-                  <p className="font-medium text-gray-900">{assignment.is_quiz ? 'Quiz' : 'Assignment'}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-500">Classroom State</p>
-                  <p className="font-medium text-gray-900">{assignment.state}</p>
-                </div>
-              </div>
+              </a>
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-6 text-xs text-[#858998] bg-[#fafafd] rounded-xl border border-dashed border-[#ececf2]">
+            No attachments or external links attached to this coursework post.
+          </div>
+        )}
+      </div>
 
-              {assignment.description && (
-                <div className="p-4 bg-gray-50 rounded-lg">
-                  <p className="text-sm text-gray-500 mb-2">Description</p>
-                  <div className="prose prose-sm max-w-none text-gray-700 whitespace-pre-wrap">
-                    {assignment.description}
-                  </div>
-                </div>
-              )}
-
-              {/* Turn-in Section */}
-              {!isSubmitted && (
-                <div className="border-t pt-6">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                    📤 Turn In Assignment
-                  </h3>
-
-                  {/* Template Selection */}
-                  <div className="space-y-3 mb-4">
-                    <label className="block text-sm font-medium text-gray-700">Select Template</label>
-                    {templatesLoading ? (
-                      <div className="p-4 text-center text-gray-500">Loading templates...</div>
-                    ) : templates.length === 0 ? (
-                      <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 text-sm">
-                        No templates configured. Create one in <a href="/dashboard/templates" className="underline">Templates</a> page.
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        {templates.map((t) => (
-                          <label key={t.id} className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
-                            selectedTemplateId === t.id
-                              ? 'border-indigo-500 bg-indigo-50'
-                              : 'border-gray-200 hover:border-indigo-300'
-                          }`}>
-                            <input
-                              type="radio"
-                              name="template"
-                              value={t.id}
-                              checked={selectedTemplateId === t.id}
-                              onChange={() => setSelectedTemplateId(t.id)}
-                              className="text-indigo-600"
-                            />
-                            <div className="flex-1">
-                              <p className="font-medium text-gray-900">{t.name}</p>
-                              <p className="text-sm text-gray-500">{t.description || 'No description'}</p>
-                              {t.is_default && <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded">Default</span>}
-                            </div>
-                          </label>
-                        ))}
-                        <label className="flex items-center gap-3 p-3 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-indigo-400">
-                          <input type="radio" name="template" value="" checked={!selectedTemplateId} onChange={() => setSelectedTemplateId(null)} className="text-indigo-600" />
-                          <span className="text-gray-600">Create blank document (no template)</span>
-                        </label>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Additional Files */}
-                  <div className="space-y-3 mb-4">
-                    <label className="block text-sm font-medium text-gray-700">Additional Files (optional)</label>
-                    <input
-                      type="file"
-                      multiple
-                      accept=".pdf,.doc,.docx,.txt,.py,.js,.ts,.jsx,.tsx,.zip"
-                      onChange={(e) => setAdditionalFiles(Array.from(e.target.files).map(f => f.name))}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg text-sm"
-                    />
-                    {additionalFiles.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {additionalFiles.map((name, i) => (
-                          <span key={i} className="px-2 py-1 bg-gray-100 text-gray-700 text-sm rounded flex items-center gap-1">
-                            {name}
-                            <button onClick={() => setAdditionalFiles(additionalFiles.filter((_, j) => j !== i))} className="text-gray-400 hover:text-red-500">✕</button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <button
-                    onClick={handleTurnIn}
-                    disabled={turningIn}
-                    className="w-full py-3 px-4 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {turningIn ? 'Submitting...' : 'Submit to Google Classroom'}
-                  </button>
-                </div>
-              )}
-
-              {/* Already Submitted */}
-              {isSubmitted && (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                  <div className="flex items-center gap-2 text-green-800">
-                    <span>✅</span>
-                    <span className="font-medium">Submitted to Google Classroom</span>
-                  </div>
-                  <p className="text-sm text-green-700 mt-1">Submission state: {assignment.submission_state}</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Materials Tab */}
-          {activeTab === 'materials' && (
-            <div className="space-y-4">
-              {assignment.materials && assignment.materials.length > 0 ? (
-                assignment.materials.map((m, i) => (
-                  <div key={i} className="p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                    <div className="flex items-start gap-3">
-                      <div className="p-2 bg-gray-100 rounded-lg">
-                        {m.material_type === 'drive_file' ? '📄' : m.material_type === 'link' ? '🔗' : '📎'}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-gray-900 truncate">{m.title || 'Untitled'}</p>
-                        <p className="text-sm text-gray-500 capitalize">{m.material_type?.replace('_', ' ')}</p>
-                        {m.url && (
-                          <a href={m.url} target="_blank" rel="noopener noreferrer" className="text-sm text-indigo-600 hover:underline mt-1 inline-block">
-                            Open in Google Classroom →
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="text-center py-12 text-gray-500">
-                  No materials attached to this assignment.
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Solution Tab */}
-          {activeTab === 'solution' && (
-            <div className="space-y-4">
-              {!solutionStatus || solutionStatus.status === 'not_started' ? (
-                <div className="text-center py-12">
-                  <div className="text-6xl mb-4">🤖</div>
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">AI Solution Generator</h3>
-                  <p className="text-gray-500 mb-6">Generate a complete AI-powered solution for this assignment using Groq.</p>
-                  <button
-                    onClick={handleGenerateSolution}
-                    disabled={solutionPolling}
-                    className="px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-medium rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50"
-                  >
-                    {solutionPolling ? 'Generating...' : 'Generate AI Solution'}
-                  </button>
-                </div>
-              ) : solutionStatus.status === 'generating' ? (
-                <div className="text-center py-12">
-                  <div className="inline-block animate-spin text-4xl mb-4">⏳</div>
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">Generating Solution...</h3>
-                  <p className="text-gray-500">This may take 30-60 seconds. Polling for completion...</p>
-                  <div className="w-64 mx-0 mt-4 h-2 bg-gray-200 rounded-full overflow-hidden">
-                    <div className="h-full bg-gradient-to-r from-purple-600 to-pink-600 animate-pulse" style={{ width: '100%' }} />
-                  </div>
-                </div>
-              ) : solutionStatus.status === 'completed' ? (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold text-gray-900">AI Solution</h3>
-                    <span className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded-full">Validated</span>
-                  </div>
-                  <div className="prose prose-sm max-w-none bg-gray-50 p-6 rounded-lg">
-                    {solutionStatus.validated_content || solutionStatus.draft_content}
-                  </div>
-                  <div className="flex gap-2">
-                    <button className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">Copy</button>
-                    <button className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">Regenerate</button>
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                  <h3 className="font-medium text-red-800 mb-2">Generation Failed</h3>
-                  <p className="text-sm text-red-700">{solutionStatus.validation_errors || 'Unknown error'}</p>
-                  <button onClick={handleGenerateSolution} className="mt-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700">Retry</button>
-                </div>
-              )}
-            </div>
-          )}
+      {/* Quick Navigation Action Hub */}
+      <div className="bg-gradient-to-r from-[#f7f5ff] to-[#eef2ff] p-5 rounded-2xl border border-[#e4dffe] flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div>
+          <h4 className="text-xs font-bold uppercase tracking-wider text-[#5142c1]">Next Steps with Uniflow</h4>
+          <p className="text-xs text-[#6b678c] mt-0.5">
+            Use AI assistance, sandbox code verification, and direct Classroom turn-in.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          <button
+            type="button"
+            onClick={() => onSwitchTab('tutor')}
+            className="px-3.5 py-2 bg-white hover:bg-gray-50 text-[#5142c1] font-bold text-xs rounded-xl border border-[#d6d0fb] shadow-2xs transition-all flex items-center gap-1.5"
+          >
+            <Icon name="lightbulb" size={15}/>
+            <span>Ask AI Tutor</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onSwitchTab('solver')}
+            className="px-3.5 py-2 bg-[#6657d9] hover:bg-[#5748c9] text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center gap-1.5"
+          >
+            <Icon name="code" size={15}/>
+            <span>Run AI Solver</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onSwitchTab('turnin')}
+            className="px-3.5 py-2 bg-[#1e293b] hover:bg-[#0f172a] text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center gap-1.5"
+          >
+            <Icon name="upload" size={15}/>
+            <span>Turn In</span>
+          </button>
         </div>
       </div>
     </div>

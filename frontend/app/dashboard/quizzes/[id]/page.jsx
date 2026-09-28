@@ -6,6 +6,7 @@ import { useAuth } from '@clerk/nextjs';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import { api } from '@/app/lib/api';
+import Icon from '@/app/dashboard/Icon';
 
 export default function QuizDetailPage() {
   const params = useParams();
@@ -45,7 +46,7 @@ export default function QuizDetailPage() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="flex items-center gap-4">
-          <Link href="/dashboard/quizzes" className="text-gray-400 hover:text-gray-600">←</Link>
+          <Link href="/dashboard/quizzes" className="text-gray-400 hover:text-gray-600" aria-label="Back to quizzes"><Icon name="arrowLeft" size={16}/></Link>
           <div>
             <h1 className="text-2xl font-bold text-gray-900">{quiz.title}</h1>
             <p className="text-gray-500 mt-1">Quiz Details</p>
