@@ -71,7 +71,7 @@ export default function SolutionPanel({ assignment }) {
     };
   }, [solution?.status, refresh]);
 
-  const startSolver = async () => {
+  const startSolver = async (provider = 'claude_browser') => {
     if (starting || solution?.status === 'generating') return;
     setStarting(true);
     setError('');
@@ -81,10 +81,14 @@ export default function SolutionPanel({ assignment }) {
       const token = getToken ? await getToken() : null;
       await api.generateAssignmentSolution(
         assignment.id,
-        { create_google_doc: true },
+        { provider, create_google_doc: true },
         token
       );
-      setNotice('The autonomous solver has started! Breaking down rubric requirements…');
+      if (provider === 'claude_browser') {
+        setNotice('Connecting to Chrome! Claude will review the attached assignment PDF and generate your solution…');
+      } else {
+        setNotice('The autonomous multi-agent solver has started! Breaking down rubric requirements…');
+      }
     } catch (e) {
       setError(e.message || 'Could not start the assignment solver.');
       try {
@@ -92,6 +96,16 @@ export default function SolutionPanel({ assignment }) {
       } catch (_) {}
     } finally {
       setStarting(false);
+    }
+  };
+
+  const openClaudeWindow = async () => {
+    try {
+      const token = getToken ? await getToken() : null;
+      const res = await api.openClaudeBrowser(token);
+      setNotice(res.message || 'Chrome window opened for Claude.');
+    } catch (e) {
+      setError(e.message || 'Could not open Chrome window.');
     }
   };
 
@@ -171,7 +185,7 @@ export default function SolutionPanel({ assignment }) {
       {/* Alert Notices */}
       {error && (
         <div
-          className="product-alert"
+          className="flex items-center justify-between gap-3 rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose"
           role="alert"
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
         >
@@ -190,7 +204,7 @@ export default function SolutionPanel({ assignment }) {
       )}
       {notice && (
         <div
-          className="product-alert ok"
+          className="flex items-center justify-between gap-3 rounded-lg border border-brand-border bg-brand-bg px-4 py-3 text-sm text-brand-hover"
           role="status"
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
         >
@@ -210,7 +224,7 @@ export default function SolutionPanel({ assignment }) {
 
       {/* Hero Solver Station Card */}
       <section
-        className="surface-card"
+        className="rounded-xl border border-violet/20 bg-gradient-to-br from-white to-violet-light/40 p-5 shadow-sm sm:p-7"
         style={{
           padding: '24px 28px',
           background: 'linear-gradient(135deg, #ffffff 0%, #f9f8ff 100%)',
@@ -269,27 +283,27 @@ export default function SolutionPanel({ assignment }) {
 
           <div>
             {loading ? (
-              <span className="product-pill">Checking Status…</span>
+              <span className="inline-flex items-center rounded-full border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-muted">Checking status…</span>
             ) : state === 'generating' ? (
               <span
-                className="product-pill warning"
+                className="inline-flex items-center gap-2 rounded-full border border-amber-border bg-amber-bg px-3 py-1.5 text-xs font-semibold text-amber"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
               >
-                <span className="loading-dot" style={{ width: 8, height: 8 }} />
+                <span className="size-2 animate-spin rounded-full border-2 border-amber-border border-t-amber" />
                 <span>Generating Solution…</span>
               </span>
             ) : state === 'completed' ? (
               <span
-                className="product-pill success"
+                className="inline-flex items-center gap-2 rounded-full border border-brand-border bg-brand-bg px-3 py-1.5 text-xs font-semibold text-brand-hover"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
               >
                 <Icon name="checkCircle" size={14} />
                 <span>Ready for Student Review</span>
               </span>
             ) : state === 'failed' ? (
-              <span className="product-pill error">Execution Failed</span>
+              <span className="inline-flex items-center rounded-full border border-rose-border bg-rose-bg px-3 py-1.5 text-xs font-semibold text-rose">Execution failed</span>
             ) : (
-              <span className="product-pill">Ready to Start</span>
+              <span className="inline-flex items-center rounded-full border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-muted">Ready to start</span>
             )}
           </div>
         </div>
@@ -444,23 +458,60 @@ export default function SolutionPanel({ assignment }) {
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={startSolver}
-              disabled={starting}
-              className="product-action"
-              style={{ cursor: 'pointer', padding: '10px 20px', fontSize: 13 }}
-            >
-              <span>
-                {starting ? (
-                  'Starting Agent Pipeline…'
-                ) : (
-                  <>
-                    <Icon name="sparkles" size={15} /> Run Autonomous Solver
-                  </>
-                )}
-              </span>
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() => startSolver('claude_browser')}
+                disabled={starting}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50"
+                style={{
+                  cursor: 'pointer',
+                  padding: '10px 18px',
+                  fontSize: 13,
+                  background: 'linear-gradient(135deg, #d97706, #b45309)',
+                  borderColor: '#92400e',
+                  boxShadow: '0 2px 8px rgba(180, 83, 9, 0.25)',
+                }}
+              >
+                <span>
+                  {starting ? (
+                    'Connecting to Claude…'
+                  ) : (
+                    <>
+                      <Icon name="sparkles" size={15} /> Solve with Claude (Browser · Free)
+                    </>
+                  )}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => startSolver('crewai')}
+                disabled={starting}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ cursor: 'pointer', padding: '10px 18px', fontSize: 13 }}
+              >
+                <span>
+                  {starting ? (
+                    'Starting Pipeline…'
+                  ) : (
+                    <>
+                      <Icon name="code" size={15} /> Multi-Agent (Groq/Gemini)
+                    </>
+                  )}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={openClaudeWindow}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-violet/30 bg-white px-4 text-sm font-semibold text-violet transition hover:bg-violet-light"
+                style={{ cursor: 'pointer', padding: '10px 14px', fontSize: 12, color: '#6657d9' }}
+                title="Launch or bring Claude Chrome automation window to front"
+              >
+                <Icon name="external-link" size={14} /> Open Claude Window
+              </button>
+            </div>
           </div>
         )}
 
@@ -552,7 +603,7 @@ export default function SolutionPanel({ assignment }) {
               type="button"
               onClick={startSolver}
               disabled={starting}
-              className="product-action"
+              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50"
               style={{ cursor: 'pointer' }}
             >
               <span>
@@ -568,7 +619,7 @@ export default function SolutionPanel({ assignment }) {
         <>
           {/* Deliverables Action Toolbar */}
           <section
-            className="product-card"
+            className="min-w-0 overflow-hidden rounded-xl border border-line bg-white shadow-sm"
             style={{
               padding: '16px 20px',
               display: 'flex',
@@ -579,7 +630,7 @@ export default function SolutionPanel({ assignment }) {
             }}
           >
             <div>
-              <span className="eyebrow">FINAL REPORT & DELIVERABLES</span>
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted">Final report & deliverables</span>
               <h3 style={{ margin: '2px 0 0', fontSize: 14, fontWeight: 600, color: '#2c2f3b' }}>
                 Generated Reports & Code Bundles
               </h3>
@@ -591,7 +642,7 @@ export default function SolutionPanel({ assignment }) {
                   href={solution.google_doc_url}
                   target="_blank"
                   rel="noreferrer"
-                  className="product-action"
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark"
                   style={{ textDecoration: 'none' }}
                 >
                   <span>
@@ -604,7 +655,7 @@ export default function SolutionPanel({ assignment }) {
                   type="button"
                   onClick={exportGoogleDoc}
                   disabled={exporting}
-                  className="product-action"
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50"
                   style={{ cursor: 'pointer' }}
                 >
                   <span>
@@ -623,7 +674,7 @@ export default function SolutionPanel({ assignment }) {
                 <button
                   type="button"
                   onClick={() => downloadAllFilesBundle(files)}
-                  className="product-action secondary"
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper"
                   style={{ cursor: 'pointer' }}
                   title="Download all generated code files directly"
                 >
@@ -636,7 +687,7 @@ export default function SolutionPanel({ assignment }) {
               <a
                 href={`/api/backend/classroom/assignments/${assignment.id}/solution/report`}
                 download={`assignment-${assignment.id}-report.html`}
-                className="product-action secondary"
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper"
                 style={{ textDecoration: 'none' }}
               >
                 <span><Icon name="download" size={14} /> Download HTML Report</span>
@@ -645,7 +696,7 @@ export default function SolutionPanel({ assignment }) {
               <a
                 href={`/api/backend/classroom/assignments/${assignment.id}/solution/report/docx`}
                 download={`assignment-${assignment.id}-report.docx`}
-                className="product-action secondary"
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper"
                 style={{ textDecoration: 'none' }}
               >
                 <span>
@@ -655,21 +706,39 @@ export default function SolutionPanel({ assignment }) {
 
               <button
                 type="button"
-                onClick={startSolver}
+                onClick={() => startSolver('claude_browser')}
                 disabled={starting}
-                className="product-action secondary"
-                style={{ cursor: 'pointer' }}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-amber px-4 text-sm font-semibold text-white transition hover:brightness-95 disabled:opacity-50"
+                style={{
+                  cursor: 'pointer',
+                  background: 'linear-gradient(135deg, #d97706, #b45309)',
+                  borderColor: '#92400e',
+                }}
+                title="Re-run assignment using Claude in your logged-in Chrome browser"
               >
                 <span>
-                  <Icon name="refresh" size={13} /> Regenerate
+                  <Icon name="sparkles" size={13} /> Re-Solve with Claude
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => startSolver('crewai')}
+                disabled={starting}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper disabled:opacity-50"
+                style={{ cursor: 'pointer' }}
+                title="Regenerate using CrewAI (Groq & Gemini)"
+              >
+                <span>
+                  <Icon name="refresh" size={13} /> Multi-Agent API
                 </span>
               </button>
             </div>
           </section>
 
-          <section className="product-card" style={{ padding: '18px 20px' }}>
+          <section className="min-w-0 rounded-xl border border-line bg-white p-5 shadow-sm">
             <div style={{ marginBottom: 12 }}>
-              <span className="eyebrow">OPTIONAL VISUALS</span>
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted">Optional visuals</span>
               <h3 style={{ margin: '2px 0 4px', fontSize: 14, color: '#2c2f3b' }}>Generate an illustration</h3>
               <p style={{ margin: 0, color: '#737888', fontSize: 11, lineHeight: 1.5 }}>
                 Pollinations generation is optional and requires a backend API key plus available provider credits. Images appear here and in the downloadable HTML/Word reports.
@@ -684,7 +753,7 @@ export default function SolutionPanel({ assignment }) {
                 placeholder="Describe an educational illustration…"
                 style={{ flex: '1 1 360px', minWidth: 220, border: '1px solid #d8dbe4', borderRadius: 8, padding: '9px 11px', fontSize: 12 }}
               />
-              <button type="button" className="product-action" disabled={generatingImage || !imagePrompt.trim()} onClick={generateImage}>
+              <button type="button" className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50" disabled={generatingImage || !imagePrompt.trim()} onClick={generateImage}>
                 <Icon name="sparkles" size={14} /> {generatingImage ? 'Generating…' : 'Generate image'}
               </button>
             </div>
@@ -702,8 +771,8 @@ export default function SolutionPanel({ assignment }) {
 
           {/* Modality A: 🎓 Dedicated Academic Essay / Theory Research Paper Viewer */}
           {files.length === 0 && (
-            <section className="product-card" style={{ overflow: 'hidden' }}>
-              <header className="product-card-head" style={{ background: '#fafafd' }}>
+            <section className="min-w-0 overflow-hidden rounded-xl border border-line bg-white shadow-sm">
+              <header className="flex items-center justify-between gap-4 border-b border-line bg-paper px-5 py-4">
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <div
                     style={{
@@ -719,20 +788,20 @@ export default function SolutionPanel({ assignment }) {
                     <Icon name="fileText" size={17} />
                   </div>
                   <div>
-                    <p className="eyebrow">ACADEMIC RESEARCH & ESSAY REPORT</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted">Academic research & essay report</p>
                     <h2 style={{ margin: 0, fontSize: 14, color: '#1e293b' }}>
                       Executive Summary, Theoretical Analysis & Discussion
                     </h2>
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span className="product-pill success">
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-brand-border bg-brand-bg px-3 py-1.5 text-xs font-semibold text-brand-hover">
                     📖 {solution.validated_content ? solution.validated_content.split(/\s+/).length : 0} Words
                   </span>
                   <button
                     type="button"
                     onClick={() => copyCode(solution.validated_content || solution.draft_content || '', 999)}
-                    className="product-action secondary"
+                    className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper"
                     style={{ minHeight: 28, padding: '0 10px', fontSize: 11, cursor: 'pointer' }}
                   >
                     {copiedIndex === 999 ? (
@@ -767,12 +836,12 @@ export default function SolutionPanel({ assignment }) {
 
           {/* Modality B: 📂 Dedicated Deliverable Code Files Card (For Programming Labs) */}
           {files.length > 0 && (
-            <section className="product-card" style={{ overflow: 'hidden' }}>
-              <header className="product-card-head" style={{ background: '#fafafd' }}>
+            <section className="min-w-0 overflow-hidden rounded-xl border border-line bg-white shadow-sm">
+              <header className="flex items-center justify-between gap-4 border-b border-line bg-paper px-5 py-4">
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Icon name="code" size={17} />
                   <div>
-                    <p className="eyebrow">INDIVIDUAL CODE FILES</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted">Individual code files</p>
                     <h2 style={{ margin: 0, fontSize: 13 }}>
                       Standalone Source Files ({files.length})
                     </h2>
@@ -781,7 +850,7 @@ export default function SolutionPanel({ assignment }) {
                 <button
                   type="button"
                   onClick={() => downloadAllFilesBundle(files)}
-                  className="product-action secondary"
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper"
                   style={{ minHeight: 26, padding: '0 10px', fontSize: 11, cursor: 'pointer' }}
                 >
                   <Icon name="download" size={12} /> Download All
@@ -998,18 +1067,18 @@ export default function SolutionPanel({ assignment }) {
 
           {/* 📑 Structured Report Section: Task Statement ➔ Code ➔ Screenshot (Only for Code Labs) */}
           {files.length > 0 && (
-            <section className="product-card" style={{ overflow: 'hidden' }}>
-              <header className="product-card-head" style={{ background: '#fafafd' }}>
+            <section className="min-w-0 overflow-hidden rounded-xl border border-line bg-white shadow-sm">
+              <header className="flex items-center justify-between gap-4 border-b border-line bg-paper px-5 py-4">
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Icon name="fileText" size={17} />
                   <div>
-                    <p className="eyebrow">FINAL REPORT STRUCTURE</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted">Final report structure</p>
                     <h2 style={{ margin: 0, fontSize: 13 }}>
                       Task Statement, Implementation Code & Execution Evidence
                     </h2>
                   </div>
                 </div>
-                <span className="product-pill success">Labeled & Formatted for Google Docs</span>
+                <span className="inline-flex items-center rounded-full border border-brand-border bg-brand-bg px-3 py-1.5 text-xs font-semibold text-brand-hover">Labeled & formatted for Google Docs</span>
               </header>
 
             <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -1222,7 +1291,7 @@ export default function SolutionPanel({ assignment }) {
 
           {/* ⚡ Auto-Trigger & Review Workflow Explainer */}
           <section
-            className="product-card"
+            className="min-w-0 rounded-xl border border-line bg-white p-5 shadow-sm"
             style={{
               padding: '16px 20px',
               background: '#f8f7fe',
@@ -1261,7 +1330,7 @@ export default function SolutionPanel({ assignment }) {
             </div>
           </section>
 
-          <div className="product-note">
+          <div className="rounded-lg border border-amber-border bg-amber-bg p-4 text-sm leading-6 text-amber">
             <strong>Academic Integrity Reminder:</strong> Review all generated code files and terminal
             run outputs before turning in your work. Verify that all requirements set by the instructor
             are addressed.

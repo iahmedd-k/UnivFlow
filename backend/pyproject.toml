@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "studypilot"
+name = "uniflow-backend"
 version = "1.0.0"
-description = "StudyPilot - Personal Agentic Academic Assistant"
+description = "Uniflow academic support platform API"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -53,6 +53,7 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
+norecursedirs = ["tmp", ".pytest_cache", "claude_browser_profile", "materials"]
 
 [tool.setuptools.packages.find]
 where = ["."]

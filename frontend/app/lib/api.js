@@ -111,12 +111,29 @@ export const api = {
     return fetchFromApi('/auth/status', token);
   },
 
-  getGoogleAuthUrl: async (token = null) => {
-    return fetchFromApi('/auth/google', token);
+  getGoogleAuthUrl: async (token = null, redirectTo = null) => {
+    const query = redirectTo ? `?redirect_to=${encodeURIComponent(redirectTo)}` : '';
+    return fetchFromApi(`/auth/google${query}`, token);
   },
 
   disconnectGoogle: async (token = null) => {
     return fetchFromApi('/auth/google/disconnect', token, { method: 'POST' });
+  },
+
+  // Notification Email Preferences
+  getNotificationEmail: async (token = null) => {
+    return fetchFromApi('/auth/notification-email', token);
+  },
+
+  setNotificationEmail: async (email, token = null) => {
+    return fetchFromApi('/auth/notification-email', token, {
+      method: 'PUT',
+      body: JSON.stringify({ email }),
+    });
+  },
+
+  deleteNotificationEmail: async (token = null) => {
+    return fetchFromApi('/auth/notification-email', token, { method: 'DELETE' });
   },
 
   // Dashboard
@@ -263,10 +280,24 @@ export const api = {
   },
 
   // Student Turn-in
-  turnInAssignment: async (assignmentId, data, token = null) => fetchFromApi(`/classroom/assignments/${assignmentId}/turn-in`, token, {
-    method: 'POST',
-    body: JSON.stringify(data),
-  }),
+  turnInAssignment: async (assignmentId, data, token = null) => {
+    let body;
+    if (typeof FormData !== 'undefined' && data instanceof FormData) {
+      body = data;
+    } else if (Array.isArray(data?.files)) {
+      body = new FormData();
+      if (data.template_id != null) body.append('template_id', String(data.template_id));
+      data.files.forEach((file) => body.append('files', file, file.name));
+    } else {
+      body = JSON.stringify(data);
+    }
+    return fetchFromApi(`/classroom/assignments/${assignmentId}/turn-in`, token, {
+      method: 'POST',
+      body,
+    });
+  },
+
+  unsubmitAssignment: async (assignmentId, token = null) => fetchFromApi(`/classroom/assignments/${assignmentId}/unsubmit`, token, { method: 'POST' }),
 
   // AI Tutor & Review Panels
   getAssignmentBreakdown: async (assignmentId, token = null) => fetchFromApi(`/assignments/${assignmentId}/breakdown`, token),
@@ -305,6 +336,12 @@ export const api = {
 
   getSolutionStatus: async (assignmentId, token = null, options = {}) => fetchFromApi(`/classroom/assignments/${assignmentId}/solution/status`, token, options),
 
+  openClaudeBrowser: async (token = null) => fetchFromApi('/classroom/claude-browser/open', token, {
+    method: 'POST',
+  }),
+
+  getClaudeBrowserStatus: async (token = null) => fetchFromApi('/classroom/claude-browser/status', token),
+
   // Notifications & sync activity
   getNotifications: async (status = null, limit = 50, token = null) => {
     const params = new URLSearchParams({ limit: String(limit) });
@@ -314,6 +351,16 @@ export const api = {
   getNotificationStats: async (token = null) => fetchFromApi('/notifications/stats/summary', token),
   sendNotification: async (id, token = null) => fetchFromApi(`/notifications/send/${id}`, token, { method: 'POST' }),
   sendPendingNotifications: async (limit = 50, token = null) => fetchFromApi(`/notifications/send-pending?limit=${limit}`, token, { method: 'POST' }),
+  getMyNotificationEmail: async (token = null) => fetchFromApi('/notifications/my-email', token),
+  createNotificationForMe: async (data, token = null) => fetchFromApi('/notifications/create-for-me', token, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+  checkAlerts: async (token = null) => fetchFromApi('/notifications/check-alerts', token, { method: 'POST' }),
+  previewAlerts: async (targetDate = null, token = null) => {
+    const params = targetDate ? `?target_date=${encodeURIComponent(targetDate)}` : '';
+    return fetchFromApi(`/notifications/preview-alerts${params}`, token);
+  },
   getAgentRuns: async (limit = 20, token = null) => fetchFromApi(`/agent/runs?limit=${limit}`, token),
   getAgentRunStats: async (token = null) => fetchFromApi('/agent/stats/summary', token),
   getAgentRunEvents: async (runId, token = null) => fetchFromApi(`/agent/runs/${runId}/events`, token),

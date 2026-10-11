@@ -13,13 +13,28 @@ AGENT_ORDER = ("planner", "theory_research", "coder_diagram", "reporter_fixer")
 
 
 def _agent_llm(role: str) -> LLM:
-    model = get_agent_models()[role]
-    provider_model = f"{model.provider}/{model.model}"
-    api_key = settings.groq_api_key if model.provider == "groq" else settings.gemini_api_key
+    models = get_agent_models()
+    model = models[role]
+    provider = model.provider
+    model_name = model.model
+    api_key = settings.groq_api_key if provider == "groq" else settings.gemini_api_key
+
+    # Resilience: if one provider key is missing, fall back to the available provider
     if not api_key:
-        key_name = "GROQ_API_KEY" if model.provider == "groq" else "GEMINI_API_KEY"
-        raise ValueError(f"{key_name} is required to create the {role} agent.")
-    token_limit = {"max_tokens": 8192} if model.provider == "groq" else {"max_output_tokens": 8192}
+        if provider == "groq" and settings.gemini_api_key:
+            provider = "gemini"
+            model_name = "gemini-2.0-flash"
+            api_key = settings.gemini_api_key
+        elif provider == "gemini" and settings.groq_api_key:
+            provider = "groq"
+            model_name = "llama-3.3-70b-versatile"
+            api_key = settings.groq_api_key
+        else:
+            key_name = "GROQ_API_KEY or GEMINI_API_KEY"
+            raise ValueError(f"{key_name} is required to create the {role} agent.")
+
+    provider_model = f"{provider}/{model_name}"
+    token_limit = {"max_tokens": 8192} if provider == "groq" else {"max_output_tokens": 8192}
     return LLM(model=provider_model, api_key=api_key, **token_limit)
 
 
@@ -86,24 +101,44 @@ def build_assignment_crew(on_task_complete: Callable[[str, Any], None] | None = 
     )
     coding_task = Task(
         description=(
-            "Follow the Planner's plan. Produce only the technical artifacts required by the assignment. "
-            "Return complete runnable code when requirements allow, Mermaid source in a mermaid fence, "
-            "and useful comments/examples as appropriate. Do not invent APIs or execution output. State "
-            "whether artifacts were actually executed only when an execution tool was called. If code or "
-            "diagrams are not required, return exactly: N/A — not required for this task.\n\n"
+            "Follow the Planner's plan. Produce only the technical artifacts required by the assignment.\n"
+            "For each required task or exercise, structure the output strictly as:\n"
+            "1. Heading: `## Task <N>: <Task Title / Objective>`\n"
+            "2. `### 1. Problem Statement / Question`: Clear statement of the problem, architectural objectives, and input/output requirements.\n"
+            "3. `### 2. Source Code Implementation` (or `### 2. Architecture & Visual Diagram Specification` for diagram tasks):\n"
+            "   - FOR PROGRAMMING/SQL: Complete, standalone, runnable code in a language block (e.g. ```cpp, ```python, ```sql).\n"
+            "   - FOR ARCHITECTURE / SYSTEM DESIGN / DIAGRAMS: Use valid Draw.io XML (```xml <mxfile>...</mxfile> ```) OR valid Mermaid (```mermaid ... ```).\n"
+            "   CRITICAL DIAGRAM QUALITY RULES:\n"
+            "   * NEVER generate a single empty or plain giant rectangle. Break monolithic architectures into internal subsystem cards inside a container.\n"
+            "   * Modern compact card geometry: width=\"220\" height=\"90\" with rounded corners (rounded=1;arcSize=10;).\n"
+            "   * Rich HTML formatting for cards: value=\"&lt;b&gt;Card Name&lt;/b&gt;&lt;hr style='margin:4px 0; border:0; border-top:1px solid ...'/&gt;&bull; Responsibility 1&lt;br/&gt;&bull; Responsibility 2\"\n"
+            "   * Diverse semantic color palettes:\n"
+            "     - Request / Queue / API Layer: Amber (fillColor=#FEF3C7;strokeColor=#D97706;fontColor=#92400E;)\n"
+            "     - Controller / Strategy / Logic: Indigo (fillColor=#EEF2FF;strokeColor=#4F46E5;fontColor=#1E1B4B;)\n"
+            "     - Hardware / Worker / Execution: Emerald (fillColor=#ECFDF5;strokeColor=#059669;fontColor=#064E3B;)\n"
+            "     - Containers / Subsystem Boundaries: Slate (fillColor=#F8FAFC;strokeColor=#CBD5E1;fontColor=#475569;dashed=1;)\n"
+            "   * Orthogonal rounded connectors: edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#4F46E5;strokeWidth=2;endArrow=classic;endFill=1;\n"
+            "4. `### 3. Expected Output / Component Breakdown & Verification`: Structured markdown tables detailing component roles, cohesion/coupling ratings, or terminal test verification outputs.\n"
+            "   CRITICAL CODE & RUNNER RULES:\n"
+            "   * All programming and assembly code MUST be fully standalone and runnable with main test execution drivers and print routines (standard print / INT 21h syscalls) displaying sample inputs and verified results to stdout.\n"
+            "   * In terminal outputs and execution evidence, capture ONLY the terminal execution window (command + stdout). Never repeat the task source code in the terminal capture.\n"
+            "   * If the output is long, it must be captured in full without truncation (splitting into multi-part images Part 1 and Part 2 if needed).\n"
+            "Do not invent APIs or execution output. State whether artifacts were actually executed only when an execution tool was called.\n"
+            "If code or diagrams are not required, return exactly: N/A — not required for this task.\n\n"
             "ASSIGNMENT AND SUPPLIED MATERIALS:\n{assignment}\n{context}"
         ),
-        expected_output="Labeled Markdown technical artifacts, or the exact N/A line when not required.",
+        expected_output="Structured Markdown technical artifacts following the 3-part task structure with publication-grade code and Draw.io XML / Mermaid blocks, or the exact N/A line when not required.",
         agent=coder, context=[planning_task, research_task], callback=completed("coder_diagram"),
     )
     reporting_task = Task(
         description=(
-            "Review the Planner output and both specialist outputs against every required part. Mark "
-            "sections N/A only when the plan confirms they are not required; state any missing required "
-            "material clearly. Correct "
-            "clear errors, preserve code and diagrams intact, and prepare the final requested deliverable. "
-            "Do not fabricate execution output, references, or document links. If required information is "
-            "missing, state exactly what is missing. Return clean Markdown with a short quality status.\n\n"
+            "Review the Planner output and both specialist outputs against every required part. "
+            "Ensure the final deliverable is structured with professional academic quality:\n"
+            "- For coding/lab tasks: Each task MUST contain the Question/Problem Statement first, the Source Code second, and the Expected Output & Verification third.\n"
+            "- For theoretical tasks: Exhaustive structured sections with Executive Summary, Theoretical Analysis, and APA citations.\n"
+            "Mark sections N/A only when the plan confirms they are not required; state any missing required material clearly. "
+            "Correct clear errors, preserve code and diagrams intact, and prepare the final requested deliverable. "
+            "Do not fabricate execution output, references, or document links. Return clean Markdown with a short quality status.\n\n"
             "ORIGINAL ASSIGNMENT:\n{assignment}\n\nSUPPLIED CONTEXT:\n{context}"
         ),
         expected_output="The complete reviewed deliverable in clean Markdown, followed by a brief quality status.",

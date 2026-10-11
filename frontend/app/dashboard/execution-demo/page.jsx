@@ -173,9 +173,9 @@ export default function ExecutionDemo() {
   const [showCode, setShowCode] = useState(true);
   const [compact, setCompact] = useState(false);
 
-  const handleLanguageChange = (lang: string) => {
+  const handleLanguageChange = (lang) => {
     setSelectedLanguage(lang);
-    setCode(SAMPLE_CODE[lang as keyof typeof SAMPLE_CODE] || '');
+    setCode(SAMPLE_CODE[lang] || '');
     setResult(null);
     setError('');
   };
@@ -198,7 +198,7 @@ export default function ExecutionDemo() {
         max_attempts: 1,
       }, token);
       setResult(response);
-    } catch (err: any) {
+    } catch (err) {
       setError(err.message || 'Execution failed');
     } finally {
       setLoading(false);

@@ -22,9 +22,23 @@ from app.db.models import (
     Exam,
     Quiz,
     AssignmentStatus,
+    AssignmentSolution,
+    Submission,
     Setting,
+    TimetableEntry,
 )
 from app.auth.clerk_auth import require_current_user
+from app.core.redis import (
+    attendance_summary_cache_key,
+    get_attendance_cache_generation,
+    get_json as redis_get_json,
+    set_json as redis_set_json,
+)
+from app.services.alert_service import (
+    normalize_subject_name,
+    calculate_attendance_recovery,
+    calculate_safe_bunks,
+)
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
@@ -142,6 +156,47 @@ def get_dashboard_overview(
         except Exception:
             pass
 
+    # AI Agent Solver & 4-Agent Crew Activity
+    course_map = {c.id: c.name for c in courses}
+    all_solutions = db.query(AssignmentSolution).all()
+    solution_by_assign = {s.assignment_id: s for s in all_solutions}
+
+    active_crew_runs = []
+    ready_for_review_solutions = []
+
+    for a in all_assignments:
+        sol = solution_by_assign.get(a.id)
+        if a.status == AssignmentStatus.GENERATING or (sol and not sol.validated_content and sol.ai_provider and not sol.validation_errors):
+            progress_key = f"assignment_crew_progress_{a.id}"
+            progress_row = db.query(Setting).filter(Setting.key == progress_key).first()
+            crew_progress = None
+            if progress_row and progress_row.value:
+                try:
+                    crew_progress = json.loads(progress_row.value)
+                except Exception:
+                    crew_progress = None
+            active_crew_runs.append({
+                "assignment_id": a.id,
+                "title": a.title,
+                "course_name": course_map.get(a.course_id, "Coursework"),
+                "due_at": a.due_at,
+                "status": "generating",
+                "crew_progress": crew_progress,
+                "generated_at": sol.generated_at if sol else None,
+            })
+        elif a.status == AssignmentStatus.READY_FOR_REVIEW or (sol and sol.validated_content):
+            sub = db.query(Submission).filter(Submission.assignment_id == a.id).first()
+            ready_for_review_solutions.append({
+                "assignment_id": a.id,
+                "title": a.title,
+                "course_name": course_map.get(a.course_id, "Coursework"),
+                "due_at": a.due_at,
+                "status": "ready_for_review",
+                "validated_at": sol.validated_at if sol else None,
+                "google_doc_id": sub.google_doc_id if sub else None,
+                "google_doc_url": f"https://docs.google.com/document/d/{sub.google_doc_id}/edit" if sub and sub.google_doc_id else None,
+            })
+
     return {
         "courses_count": len(active_courses),
         "assignments": {
@@ -155,6 +210,12 @@ def get_dashboard_overview(
         "upcoming_quizzes": len(upcoming_quizzes),
         "average_attendance": round(avg_attendance, 2),
         "academic_summary": academic_summary,
+        "ai_agent_hub": {
+            "active_crew_runs": active_crew_runs,
+            "ready_for_review": ready_for_review_solutions[:5],
+            "total_solved": len(ready_for_review_solutions),
+            "active_count": len(active_crew_runs),
+        },
         "recent_agent_runs": [
             {
                 "id": r.id,
@@ -175,7 +236,8 @@ def get_dashboard_overview(
 def get_upcoming_items(
     days: int = 7,
     since: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_current_user),
 ):
     schedule_repo = ClassScheduleRepository(db)
     assignment_repo = AssignmentRepository(db)
@@ -257,51 +319,112 @@ def get_upcoming_items(
 
 @router.get("/attendance-summary", response_model=dict)
 def get_attendance_summary(
-    since: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_current_user),
 ):
+    cache_enabled = db.get_bind().dialect.name != "sqlite"
+    user_id = str((user or {}).get("id") or "dev_student_user")
+    cache_generation = get_attendance_cache_generation() if cache_enabled else None
+    cache_key = (
+        attendance_summary_cache_key(user_id, cache_generation)
+        if cache_generation is not None
+        else None
+    )
+    if cache_key:
+        cached = redis_get_json(cache_key)
+        if cached is not None:
+            return cached
+
     attendance_repo = AttendanceRecordRepository(db)
     course_repo = CourseRepository(db)
 
-    since_dt = _get_semester_start_dt(db, since)
-    
+    # This endpoint serves the portal's current cumulative snapshot. Filtering
+    # it by record sync timestamps would incorrectly drop courses registered earlier.
     records = attendance_repo.get_all()
-    if since_dt:
-        records = [
-            r for r in records
-            if (r.last_updated and r.last_updated >= since_dt)
-            or (r.created_at and r.created_at >= since_dt)
-            or (r.last_updated is None and r.created_at is None)
-        ]
-    
     courses = course_repo.get_all()
-    if since_dt:
-        courses = [c for c in courses if (c.created_at and c.created_at >= since_dt) or (c.updated_at and c.updated_at >= since_dt) or c.created_at is None]
+    course_by_id = {course.id: course for course in courses}
+    weekly_classes = {}
+    for entry in db.query(TimetableEntry).all():
+        subject_key = normalize_subject_name(entry.subject)
+        if subject_key:
+            weekly_classes.setdefault(subject_key, set()).add(
+                (entry.weekday, entry.start_time, entry.end_time)
+            )
 
     summary = []
+    total_attended = 0
+    total_held = 0
     for record in records:
-        course = next((c for c in courses if c.id == record.course_id), None)
+        course = course_by_id.get(record.course_id)
+        c_name = course.name if course else record.subject
+        held = record.total
+        attended = record.attended
+        is_legacy_portal_placeholder = (
+            str(record.external_id or "").startswith("portal-attendance:")
+            and held == 100
+        )
+        has_valid_counts = (
+            not is_legacy_portal_placeholder
+            and held is not None
+            and held > 0
+            and attended is not None
+            and 0 <= attended <= held
+        )
+        if not has_valid_counts:
+            held = None
+            attended = None
+
+        pct = (
+            round(attended * 100 / held, 2)
+            if has_valid_counts
+            else float(record.percentage) if record.percentage is not None else None
+        )
+        subject_key = normalize_subject_name(record.subject or c_name or "")
+        scheduled_classes = weekly_classes.get(subject_key, set())
+        absent = held - attended if has_valid_counts else None
+
+        if has_valid_counts:
+            total_attended += attended
+            total_held += held
+
+        recovery_needed = calculate_attendance_recovery(attended, held) if (has_valid_counts and pct is not None and pct < 75.0) else 0
+        safe_bunks = calculate_safe_bunks(attended, held) if (has_valid_counts and pct is not None and pct >= 75.0) else 0
+
         summary.append({
             "course_id": record.course_id,
-            "course_name": course.name if course else "Unknown",
+            "course_name": c_name,
             "subject": record.subject,
-            "attended": record.attended,
-            "total": record.total,
-            "percentage": record.percentage,
+            "attended": attended,
+            "total": held,
+            "held": held,
+            "absent": absent,
+            "percentage": pct,
+            "recovery_needed": recovery_needed,
+            "safe_bunks": safe_bunks,
+            "registration_date": None,
+            "classes_per_week": len(scheduled_classes),
+            "weekly_schedule_available": bool(scheduled_classes),
+            "planned_since_registration": None,
         })
 
-    overall = sum(r.percentage for r in records) / len(records) if records else 0
+    overall = round(total_attended * 100 / total_held, 2) if total_held else None
 
-    return {
-        "overall_attendance": round(overall, 2),
+    result = {
+        "overall_attendance": overall,
+        "counted_attended": total_attended,
+        "counted_held": total_held,
         "per_course": summary,
     }
+    if cache_key:
+        redis_set_json(cache_key, result, ttl_seconds=20)
+    return result
 
 
 @router.get("/assignments-by-status", response_model=dict)
 def get_assignments_by_status(
     since: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_current_user),
 ):
     assignment_repo = AssignmentRepository(db)
     all_assignments = assignment_repo.get_all()

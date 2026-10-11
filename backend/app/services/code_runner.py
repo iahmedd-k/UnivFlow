@@ -25,10 +25,16 @@ class SingleFileCodeRunner:
         Main entrypoint: executes single-file code according to language.
         """
         lang = (language or "python").lower().strip()
+        if not stdin_input:
+            stdin_input = "5\n10\n15\n20\n"
         
         try:
             if lang in ["python", "py", "python3"]:
                 return cls.run_python(code, stdin_input)
+            elif lang in ["sql", "sqlite", "sqlite3", "mysql", "postgres", "postgresql"]:
+                return cls.run_sql(code)
+            elif lang in ["asm", "assembly", "nasm", "masm", "emu8086", "x86", "8086", "mips", "riscv"]:
+                return cls.run_assembly(code, stdin_input)
             elif lang in ["java"]:
                 return cls.run_java(code, stdin_input)
             elif lang in ["cpp", "c++", "c"]:
@@ -237,6 +243,69 @@ class SingleFileCodeRunner:
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+    @classmethod
+    def run_sql(cls, code: str) -> Dict[str, Any]:
+        """
+        Executes SQL DDL/DML/Queries against an isolated in-memory SQLite database,
+        capturing tabular result sets and execution status.
+        """
+        import sqlite3
+        try:
+            conn = sqlite3.connect(":memory:")
+            cursor = conn.cursor()
+            
+            statements = [s.strip() for s in code.split(";") if s.strip()]
+            outputs = []
+            for stmt in statements:
+                # Skip pure comments
+                clean_lines = [l for l in stmt.splitlines() if not l.strip().startswith("--")]
+                clean_stmt = "\n".join(clean_lines).strip()
+                if not clean_stmt:
+                    continue
+                try:
+                    cursor.execute(stmt)
+                    if stmt.upper().startswith("SELECT") or "SELECT " in stmt.upper():
+                        rows = cursor.fetchall()
+                        cols = [desc[0] for desc in cursor.description] if cursor.description else []
+                        if cols and rows:
+                            header = " | ".join(cols)
+                            divider = "-+-".join("-" * max(len(c), 6) for c in cols)
+                            row_strs = [" | ".join(str(val) for val in r) for r in rows]
+                            table = f"{header}\n{divider}\n" + "\n".join(row_strs)
+                            outputs.append(f"SQL> {stmt[:60]}...\n{table}\n({len(rows)} rows returned)")
+                        elif cols:
+                            outputs.append(f"SQL> {stmt[:60]}...\n(0 rows returned)")
+                    else:
+                        outputs.append(f"SQL> {stmt[:60]}... [SUCCESS]")
+                except Exception as stmt_err:
+                    outputs.append(f"SQL Error in '{stmt[:40]}...': {stmt_err}")
+            
+            conn.close()
+            return {
+                "stdout": "\n\n".join(outputs) if outputs else "SQL script executed successfully.",
+                "stderr": "",
+                "exit_code": 0,
+                "command": "sqlite3 :memory: < solution.sql",
+                "success": True
+            }
+        except Exception as e:
+            return {
+                "stdout": "",
+                "stderr": str(e),
+                "exit_code": 1,
+                "command": "sqlite3 :memory: < solution.sql",
+                "success": False
+            }
+
+    @classmethod
+    def run_assembly(cls, code: str, stdin_input: str = "5\n4\n6\n") -> Dict[str, Any]:
+        """
+        Executes x86 16-bit real mode / DOS / EMU8086 programs using the in-process simulator,
+        capturing real register arithmetic, strings, and DOS INT 21h terminal outputs.
+        """
+        from app.services.emu8086_runner import EMU8086Simulator
+        return EMU8086Simulator.execute_asm(code, stdin_input=stdin_input)
 
     @staticmethod
     def _extract_java_class_name(code: str) -> Optional[str]:

@@ -3,27 +3,6 @@
 import { useState, useMemo } from 'react';
 import Icon from '@/app/dashboard/Icon';
 
-export interface DiagramResult {
-  success: boolean;
-  diagram_id: string;
-  diagram_type: string;
-  diagram_kind: string;
-  source: string;
-  output_format: string;
-  content_base64: string;
-  content_type: string;
-  error_type: string | null;
-  error_message: string | null;
-  execution_time: number;
-  attempt: number;
-}
-
-interface DiagramViewerProps {
-  result: DiagramResult | null;
-  showSource?: boolean;
-  compact?: boolean;
-}
-
 const STATUS_CONFIG = {
   success: { label: '✓ Rendered', color: '#10b981', bg: '#ecfdf5', border: '#10b98133', icon: 'checkCircle' },
   error: { label: '✗ Error', color: '#ef4444', bg: '#fef2f2', border: '#ef444433', icon: 'alertCircle' },
@@ -32,9 +11,9 @@ const STATUS_CONFIG = {
   unsupported_type: { label: '⚠ Unsupported', color: '#6b7280', bg: '#f9fafb', border: '#9ca3af33', icon: 'alertTriangle' },
   render_error: { label: '⚠ Render Error', color: '#ef4444', bg: '#fef2f2', border: '#ef444433', icon: 'alertCircle' },
   backend_unavailable: { label: '⚠ Backend Unavailable', color: '#ef4444', bg: '#fef2f2', border: '#ef444433', icon: 'serverOff' },
-} as const;
+};
 
-const TYPE_COLORS: Record<string, string> = {
+const TYPE_COLORS = {
   mermaid: '#6657d9',
   plantuml: '#e67e22',
   graphviz: '#27ae60',
@@ -49,7 +28,7 @@ const TYPE_COLORS: Record<string, string> = {
   wireviz: '#f39c12',
 };
 
-const KIND_ICONS: Record<string, string> = {
+const KIND_ICONS = {
   flowchart: 'gitBranch',
   sequence: 'arrowRightLeft',
   class: 'code',
@@ -72,12 +51,12 @@ const KIND_ICONS: Record<string, string> = {
   packet: 'package',
 };
 
-function formatTime(ms: number): string {
+function formatTime(ms) {
   if (ms < 1000) return `${ms.toFixed(0)}ms`;
   return `${(ms / 1000).toFixed(2)}s`;
 }
 
-function StatusBadge({ status }: { status: keyof typeof STATUS_CONFIG }) {
+function StatusBadge({ status }) {
   const config = STATUS_CONFIG[status] || STATUS_CONFIG.error;
   return (
     <span
@@ -94,21 +73,16 @@ function StatusBadge({ status }: { status: keyof typeof STATUS_CONFIG }) {
         fontWeight: 600,
       }}
     >
-      <Icon name={config.icon as any} size={12} />
+      <Icon name={config.icon} size={12} />
       {config.label}
     </span>
   );
 }
 
-function InfoRow({ label, value, icon, monospace = false }: {
-  label: string;
-  value: string;
-  icon?: string;
-  monospace?: boolean;
-}) {
+function InfoRow({ label, value, icon, monospace = false }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
-      {icon && <Icon name={icon as any} size={14} style={{ color: '#64748b', flexShrink: 0 }} />}
+      {icon && <Icon name={icon} size={14} style={{ color: '#64748b', flexShrink: 0 }} />}
       <span style={{ fontSize: 11, color: '#64748b', fontWeight: 500, minWidth: 100 }}>{label}</span>
       <span style={{ fontSize: 11, color: '#1e293b', fontFamily: monospace ? 'ui-monospace, monospace' : 'inherit', wordBreak: 'break-all' }}>
         {value}
@@ -117,7 +91,7 @@ function InfoRow({ label, value, icon, monospace = false }: {
   );
 }
 
-function SourceCode({ source, language }: { source: string; language: string }) {
+function SourceCode({ source, language }) {
   return (
     <div style={{ borderRadius: 8, border: '1px solid #e2e8f0', overflow: 'hidden', background: '#0f172a' }}>
       <div style={{ padding: '8px 12px', background: '#1e293b', borderBottom: '1px solid #334155', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -132,7 +106,7 @@ function SourceCode({ source, language }: { source: string; language: string }) 
   );
 }
 
-export default function DiagramViewer({ result, showSource = true, compact = false }: DiagramViewerProps) {
+export default function DiagramViewer({ result, showSource = true, compact = false }) {
   if (!result) {
     return (
       <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
@@ -142,17 +116,17 @@ export default function DiagramViewer({ result, showSource = true, compact = fal
     );
   }
 
-  const statusKey = result.success ? 'success' : (result.status || 'error') as keyof typeof STATUS_CONFIG;
+  const statusKey = result.success ? 'success' : (result.status || 'error');
   const typeColor = TYPE_COLORS[result.diagram_type] || '#6657d9';
   const kindIcon = KIND_ICONS[result.diagram_kind] || 'image';
 
-  const metadata = useMemo(() => [
+  const metadata = [
     { label: 'Type', value: result.diagram_type, icon: 'layers' },
     { label: 'Kind', value: result.diagram_kind, icon: kindIcon },
-    { label: 'Format', value: result.output_format.toUpperCase(), icon: 'file' },
-    { label: 'Render Time', value: formatTime(result.execution_time * 1000), icon: 'clock' },
-    { label: 'Attempt', value: String(result.attempt), icon: 'gitBranch' },
-  ].filter(m => m.value), [result]);
+    { label: 'Format', value: (result.output_format || '').toUpperCase(), icon: 'file' },
+    { label: 'Render Time', value: formatTime((result.execution_time || 0) * 1000), icon: 'clock' },
+    { label: 'Attempt', value: String(result.attempt || 1), icon: 'gitBranch' },
+  ].filter(m => m.value);
 
   if (compact) {
     return (
@@ -160,7 +134,7 @@ export default function DiagramViewer({ result, showSource = true, compact = fal
         <div style={{ padding: '12px 16px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ width: 28, height: 28, borderRadius: 8, background: `${typeColor}15`, color: typeColor, display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 700 }}>
-              <Icon name={kindIcon as any} size={14} />
+              <Icon name={kindIcon} size={14} />
             </span>
             <div>
               <strong style={{ display: 'block', fontSize: 12, color: '#1e293b' }}>{result.diagram_kind}</strong>
@@ -202,7 +176,7 @@ export default function DiagramViewer({ result, showSource = true, compact = fal
       <div style={{ padding: '16px 20px', background: '#fafafa', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ width: 40, height: 40, borderRadius: 10, background: `${typeColor}15`, color: typeColor, display: 'grid', placeItems: 'center' }}>
-            <Icon name={kindIcon as any} size={20} />
+            <Icon name={kindIcon} size={20} />
           </div>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>

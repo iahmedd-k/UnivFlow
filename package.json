@@ -18,7 +18,7 @@
     "lint": "npm run lint:frontend",
     "lint:frontend": "cd frontend && npm run lint",
     "test": "npm run test:backend",
-    "test:backend": "cd backend && pytest",
+    "test:backend": "cd backend && python -m pytest",
     "db:migrate": "cd backend && alembic upgrade head",
     "db:seed": "cd backend && python scripts/seed.py"
   },

@@ -28,7 +28,7 @@ export default function AssignmentDetailModal({ assignment, initialTab = 'overvi
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/60 backdrop-blur-xs animate-fade-in"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3 backdrop-blur-xs sm:p-5"
       onClick={onClose}
     >
       <div
@@ -48,19 +48,19 @@ export default function AssignmentDetailModal({ assignment, initialTab = 'overvi
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[11px] font-semibold text-[#6657d9] bg-[#f5f3ff] px-2 py-0.5 rounded-md border border-[#ece7ff]">
+                <span className="text-xs font-semibold text-[#6657d9] bg-[#f5f3ff] px-2 py-0.5 rounded-md border border-[#ece7ff]">
                   {assignment.course_name}
                 </span>
                 {isSubmitted ? (
-                  <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                  <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
                     <Icon name="check" size={12}/> Submitted
                   </span>
                 ) : isOverdue ? (
-                  <span className="text-[11px] font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
+                  <span className="text-xs font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
                     <Icon name="alert" size={12}/> Overdue
                   </span>
                 ) : (
-                  <span className="text-[11px] font-semibold text-amber-800 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
+                  <span className="text-xs font-semibold text-amber-800 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
                     <Icon name="clock" size={12}/> Open
                   </span>
                 )}
@@ -149,7 +149,7 @@ function OverviewTab({ assignment, dueDate, isOverdue, isSubmitted, onSwitchTab 
       {/* Overview Quick Stats Card */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
         <div className="bg-white p-4 rounded-2xl border border-[#ebebf0] shadow-2xs">
-          <span className="text-[11px] font-semibold text-[#858998] uppercase tracking-wider block">Course & Type</span>
+          <span className="text-xs font-semibold text-[#858998] uppercase tracking-wider block">Course & Type</span>
           <p className="text-sm font-bold text-[#1e293b] mt-1 truncate">{assignment.course_name}</p>
           <span className="text-xs text-[#64748b] capitalize mt-0.5 block">
             {assignment.work_type ? assignment.work_type.replace('_', ' ') : 'Coursework Assignment'}
@@ -157,7 +157,7 @@ function OverviewTab({ assignment, dueDate, isOverdue, isSubmitted, onSwitchTab 
         </div>
 
         <div className="bg-white p-4 rounded-2xl border border-[#ebebf0] shadow-2xs">
-          <span className="text-[11px] font-semibold text-[#858998] uppercase tracking-wider block">Due Date</span>
+          <span className="text-xs font-semibold text-[#858998] uppercase tracking-wider block">Due Date</span>
           <p className="text-sm font-bold text-[#1e293b] mt-1">{dueDate}</p>
           {due && isValid(due) && (
             <span className={`text-xs font-semibold mt-0.5 block ${isOverdue ? 'text-rose-600' : 'text-[#6657d9]'}`}>
@@ -167,7 +167,7 @@ function OverviewTab({ assignment, dueDate, isOverdue, isSubmitted, onSwitchTab 
         </div>
 
         <div className="bg-white p-4 rounded-2xl border border-[#ebebf0] shadow-2xs">
-          <span className="text-[11px] font-semibold text-[#858998] uppercase tracking-wider block">Submission State</span>
+          <span className="text-xs font-semibold text-[#858998] uppercase tracking-wider block">Submission State</span>
           <p className="text-sm font-bold text-[#1e293b] mt-1 capitalize">
             {isSubmitted ? 'Turned In' : isOverdue ? 'Overdue' : 'Pending Submission'}
           </p>
@@ -197,7 +197,7 @@ function OverviewTab({ assignment, dueDate, isOverdue, isSubmitted, onSwitchTab 
         </div>
 
         {assignment.description ? (
-          <div className="prose prose-sm max-w-none text-[#334155] whitespace-pre-wrap text-xs sm:text-sm leading-relaxed bg-[#fafafd] p-4 sm:p-5 rounded-xl border border-[#ececf2]">
+          <div className="whitespace-pre-wrap break-words rounded-xl border border-line bg-paper p-4 text-sm leading-6 text-slate-700 sm:p-5">
             {assignment.description}
           </div>
         ) : (
@@ -236,7 +236,7 @@ function OverviewTab({ assignment, dueDate, isOverdue, isSubmitted, onSwitchTab 
                   <p className="text-xs font-bold text-[#1e293b] truncate group-hover:text-[#6657d9] transition-colors">
                     {m.title || 'Attachment'}
                   </p>
-                  <p className="text-[11px] text-[#858998] capitalize mt-0.5">
+                  <p className="text-xs text-[#858998] capitalize mt-0.5">
                     {m.material_type?.replace('_', ' ') || 'Reference File'} · Click to open <Icon name="externalLink" size={11}/>
                   </p>
                 </div>

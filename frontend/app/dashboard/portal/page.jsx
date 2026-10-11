@@ -40,20 +40,39 @@ export default function PortalPage() {
   }, [getToken]);
 
   useEffect(() => {
-    loadSettings()
-      .catch((err) => setError(err.message || 'Could not load portal settings.'))
-      .finally(() => setLoading(false));
-  }, [loadSettings]);
+    let cancelled = false;
+    const loadInitialSettings = async () => {
+      try {
+        const token = await getToken();
+        const result = await api.getPortalSettings(token);
+        if (!cancelled) {
+          setSettings(result);
+          setPortalUrl(result?.url || AIR_UNIVERSITY_PORTAL);
+          setSignInOpen(Boolean(result?.browser_open && result?.session_status !== 'ACTIVE'));
+        }
+      } catch (err) {
+        if (!cancelled) setError(err.message || 'Could not load portal settings.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    loadInitialSettings();
+    return () => {
+      cancelled = true;
+    };
+  }, [getToken]);
 
   useEffect(() => {
     if (!jobId) return undefined;
     let cancelled = false;
     let timer;
+    let consecutiveErrors = 0;
     const poll = async () => {
       try {
         const token = await getToken();
         const result = await api.getPortalSyncStatus(jobId, token);
         if (cancelled) return;
+        consecutiveErrors = 0;
         setSyncState(result);
         if (['success', 'partial', 'error', 'reconnect_required', 'session_expired', 'already_running'].includes(result.status)) {
           setJobId('');
@@ -66,12 +85,21 @@ export default function PortalPage() {
             setNotice(result.message || 'A portal sync is already running.');
           } else {
             setError(result.error || result.detail || 'Portal sync could not complete.');
+            if (['reconnect_required', 'session_expired'].includes(result.status)) {
+              autoSyncStarted.current = false;
+              await loadSettings();
+            }
           }
           return;
         }
         timer = setTimeout(poll, 1200);
       } catch (err) {
         if (!cancelled) {
+          consecutiveErrors += 1;
+          if (consecutiveErrors < 4) {
+            timer = setTimeout(poll, 1500);
+            return;
+          }
           setError(err.message || 'Could not check sync progress.');
           setBusy(false);
           setJobId('');
@@ -125,18 +153,32 @@ export default function PortalPage() {
     if (!signInOpen || connected || jobId || autoSyncStarted.current) return undefined;
     let cancelled = false;
     let timer;
+    let consecutiveAuthenticatedChecks = 0;
     const check = async () => {
       try {
         const token = await getToken();
         const result = await api.getPortalConnectionStatus(token);
         if (cancelled) return;
-        if (result.status === 'authenticated' && !autoSyncStarted.current) {
-          autoSyncStarted.current = true;
-          setNotice('Sign-in detected. Finding your attendance, timetable, and results pages…');
-          await startSync();
-          return;
+        if (result.status === 'authenticated') {
+          if (result.job_id) {
+            autoSyncStarted.current = true;
+            setJobId(result.job_id);
+            setNotice('Sign-in verified! Automatically syncing your university portal records…');
+            setSignInOpen(false);
+            return;
+          }
+          consecutiveAuthenticatedChecks += 1;
+          if (consecutiveAuthenticatedChecks >= 1) {
+            autoSyncStarted.current = true;
+            setNotice('Sign-in confirmed. Automatically starting your portal sync…');
+            await startSync();
+            return;
+          }
+        } else {
+          consecutiveAuthenticatedChecks = 0;
         }
       } catch (err) {
+        consecutiveAuthenticatedChecks = 0;
         // Keep checking through temporary gateway/network issues, but don't hide
         // authorization or server errors behind an endless "waiting" state.
         if ([401, 403].includes(err?.status) || (err?.status >= 500 && ![502, 503, 504].includes(err.status))) {
@@ -161,6 +203,8 @@ export default function PortalPage() {
     try {
       const token = await getToken();
       await api.closePortalBrowser(token);
+      setSignInOpen(false);
+      autoSyncStarted.current = false;
       await loadSettings();
     } catch (err) {
       setError(err.message || 'Could not close the sign-in window.');
@@ -204,16 +248,29 @@ export default function PortalPage() {
             <div className="mt-6 space-y-3">
               <label htmlFor="portal-url" className="block text-sm font-medium text-slate-800">University portal address</label>
               <input id="portal-url" type="url" value={portalUrl} onChange={(event) => setPortalUrl(event.target.value)} className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100" placeholder="https://portals.au.edu.pk/students/" />
-              <button type="button" disabled={busy || !portalUrl} onClick={connect} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-700 px-4 py-3 text-sm font-semibold text-white transition hover:bg-indigo-800 disabled:cursor-not-allowed disabled:opacity-55 sm:w-auto">
-                {busy && !isSyncing ? 'Opening secure sign-in…' : reconnect ? 'Reconnect university account' : settings?.browser_open ? 'Return to sign-in window' : 'Connect university account'}
-              </button>
+              <div className="flex flex-wrap gap-2.5">
+                <button type="button" disabled={busy || !portalUrl} onClick={connect} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-700 px-4 py-3 text-sm font-semibold text-white transition hover:bg-indigo-800 disabled:cursor-not-allowed disabled:opacity-55 sm:w-auto">
+                  {busy && !isSyncing ? 'Opening secure sign-in…' : reconnect ? 'Reconnect university account' : settings?.browser_open ? 'Return to sign-in window' : 'Connect university account'}
+                </button>
+                <a
+                  href={portalUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 sm:w-auto text-decoration-none"
+                >
+                  Open in this browser tab <Icon name="externalLink" size={14} />
+                </a>
+              </div>
+              <p className="text-xs text-slate-500">
+                Tip: Run <code className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-800 font-mono">launch_chrome_unified.bat</code> to run Uniflow, Claude, and your university portal in one single Chrome window with your existing Google sign-in.
+              </p>
             </div>
           )}
 
           {(settings?.browser_open || signInOpen) && !connected && (
             <div className="mt-6 rounded-xl border border-indigo-100 bg-indigo-50/70 p-4">
               <p className="text-sm font-semibold text-indigo-950">1. Sign in to your university account</p>
-              <p className="mt-1 text-sm leading-5 text-indigo-900">Complete Google sign-in and any university security check in the browser window. Keep this page open; Uniflow will detect sign-in and start syncing automatically.</p>
+              <p className="mt-1 text-sm leading-5 text-indigo-900">Complete Google sign-in and any university security check in the browser window. Keep this page open; Uniflow will wait for sign-in to settle, then start syncing automatically.</p>
               <button type="button" disabled={busy} onClick={startSync} className="mt-4 inline-flex items-center justify-center rounded-lg border border-indigo-200 bg-white px-4 py-2.5 text-sm font-semibold text-indigo-800 hover:bg-indigo-50 disabled:opacity-50">
                 {isSyncing ? 'Finding your academic pages…' : 'Start sync now'}
               </button>

@@ -18,13 +18,30 @@ class AgentModel:
     model: str
 
 
+def normalize_model_name(provider: Provider, raw_model: str) -> str:
+    cleaned = (raw_model or "").strip()
+    if provider == "gemini":
+        if cleaned.startswith("gemini/"):
+            cleaned = cleaned[7:]
+        if cleaned in ("gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-flash", "gemini-pro", ""):
+            return "gemini-2.0-flash"
+        return cleaned
+    elif provider == "groq":
+        if cleaned.startswith("groq/"):
+            cleaned = cleaned[5:]
+        if cleaned in ("openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", ""):
+            return "llama-3.3-70b-versatile"
+        return cleaned
+    return cleaned
+
+
 def get_agent_models() -> dict[str, AgentModel]:
     """Return the configured model for each independently addressable role."""
     return {
-        "planner": AgentModel("planner", "groq", settings.planner_agent_model),
-        "theory_research": AgentModel("theory_research", "gemini", settings.theory_agent_model),
-        "coder_diagram": AgentModel("coder_diagram", "groq", settings.coder_agent_model),
-        "reporter_fixer": AgentModel("reporter_fixer", "gemini", settings.reporter_agent_model),
+        "planner": AgentModel("planner", "groq", normalize_model_name("groq", settings.planner_agent_model)),
+        "theory_research": AgentModel("theory_research", "gemini", normalize_model_name("gemini", settings.theory_agent_model)),
+        "coder_diagram": AgentModel("coder_diagram", "groq", normalize_model_name("groq", settings.coder_agent_model)),
+        "reporter_fixer": AgentModel("reporter_fixer", "gemini", normalize_model_name("gemini", settings.reporter_agent_model)),
     }
 
 

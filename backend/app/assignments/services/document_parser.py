@@ -64,14 +64,32 @@ class PDFParser(DocumentParser):
 
     @staticmethod
     def extract_text(content: bytes) -> str:
-        """Extract all available text without requiring optional pdfplumber."""
+        """Extract all available text with automatic OCR fallback for scanned assignment sheets."""
         from pypdf import PdfReader
+        import io
 
         reader = PdfReader(io.BytesIO(content))
-        return "\n\n".join(
-            f"--- PAGE {index + 1} ---\n{page.extract_text() or ''}"
-            for index, page in enumerate(reader.pages)
-        ).strip()
+        extracted_pages = []
+        for index, page in enumerate(reader.pages):
+            text = (page.extract_text() or "").strip()
+            # If text is empty or minimal, attempt OCR on page images
+            if len(text) < 30 and hasattr(page, "images"):
+                try:
+                    import pytesseract
+                    from PIL import Image
+                    ocr_chunks = []
+                    for img_file in page.images:
+                        img = Image.open(io.BytesIO(img_file.data))
+                        ocr_txt = pytesseract.image_to_string(img).strip()
+                        if ocr_txt:
+                            ocr_chunks.append(ocr_txt)
+                    if ocr_chunks:
+                        text = (text + "\n" + "\n".join(ocr_chunks)).strip()
+                except Exception:
+                    pass
+            extracted_pages.append(f"--- PAGE {index + 1} ---\n{text}")
+
+        return "\n\n".join(extracted_pages).strip()
     
     def _get_pymupdf(self):
         if self._pymupdf is None:

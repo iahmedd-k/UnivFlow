@@ -15,6 +15,7 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
   const [selectedTemplateId, setSelectedTemplateId] = useState(null);
   const [files, setFiles] = useState([]);
   const [submitting, setSubmitting] = useState(false);
+  const [unsubmitting, setUnsubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
   const [submitted, setSubmitted] = useState(
@@ -62,13 +63,29 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
     setNotice(null);
     try {
       const token = getToken ? await getToken() : null;
-      await onTurnIn(assignment.id, selectedTemplateId, files.map((f) => f.name), token);
+      await onTurnIn(assignment.id, selectedTemplateId, files.map((f) => f.fileObj), token);
       setSubmitted(true);
       setNotice('Assignment turned in successfully to Google Classroom!');
     } catch (e) {
       setError(e.message || 'Turn-in failed. Please try again.');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleUnsubmit = async () => {
+    setUnsubmitting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const token = getToken ? await getToken() : null;
+      await api.unsubmitAssignment(assignment.id, token);
+      setSubmitted(false);
+      setNotice('Assignment unsubmitted on Google Classroom. You can now add or edit your deliverable files and turn in again.');
+    } catch (e) {
+      setError(e.message || 'Could not unsubmit assignment on Google Classroom.');
+    } finally {
+      setUnsubmitting(false);
     }
   };
 
@@ -95,224 +112,81 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
     }
   };
 
+  const cardClass = 'min-w-0 rounded-xl border border-line bg-white p-5 shadow-sm';
+  const fieldClass = 'w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm text-ink outline-none focus:border-violet focus:ring-2 focus:ring-violet/20';
+  const secondaryButtonClass = 'inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50';
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1.1fr) minmax(0, 1fr)', gap: 16 }}>
-      {/* Left Column: Direct Deliverable Submission Studio */}
-      <section className="product-card" style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-2">
+      <section className={`${cardClass} flex flex-col gap-5`}>
         <div>
-          <span className="eyebrow">FINAL SUBMISSION</span>
-          <h3 style={{ margin: '3px 0 6px', fontSize: 15, fontWeight: 700, color: '#252837' }}>
-            Submit to Google Classroom
-          </h3>
-          <p style={{ fontSize: 11, color: '#858998', lineHeight: 1.5, margin: 0 }}>
-            Attach your completed coursework files and select a cover page template if required by your university.
-          </p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Final submission</p>
+          <h3 className="mt-1 text-base font-semibold text-ink">Submit to Google Classroom</h3>
+          <p className="mt-2 text-sm leading-6 text-muted">Attach your completed coursework files and select a cover page template if required by your university.</p>
         </div>
 
-        {/* Deliverables List */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#858998' }}>
-            <span style={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              Attached Deliverables
-            </span>
-            <span>{files.length} {files.length === 1 ? 'file' : 'files'}</span>
-          </div>
-
-          {files.length === 0 ? (
-            <div className="product-empty" style={{ padding: '24px 14px' }}>
-              <strong>No files attached yet</strong>
-              <span>Attach your code, report, or document deliverables below.</span>
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 180, overflowY: 'auto' }}>
-              {files.map((f, i) => (
-                <div
-                  key={i}
-                  style={{
-                    padding: '8px 12px',
-                    background: '#fafafd',
-                    border: '1px solid #ececf2',
-                    borderRadius: 7,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: 8,
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                    <Icon name="file" size={14}/>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: '#2c2f3b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {f.name}
-                    </span>
-                    <span style={{ fontSize: 10, color: '#858998' }}>({f.size})</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => removeFile(i)}
-                    style={{ background: 'none', border: 'none', color: '#858998', cursor: 'pointer', fontSize: 12, padding: 2 }}
-                    aria-label={`Remove ${f.name}`}
-                  >
-                    <Icon name="close" size={13}/>
-                  </button>
-                </div>
-              ))}
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold text-ink">Attached deliverables</span><span className="text-sm text-muted">{files.length} {files.length === 1 ? 'file' : 'files'}</span></div>
+          {files.length === 0 ? <div className="rounded-lg border border-dashed border-line bg-paper px-4 py-8 text-center"><strong className="block text-sm font-semibold">No files attached yet</strong><span className="mt-1 block text-sm text-muted">Attach your code, report, or document deliverables below.</span></div> : (
+            <div className="flex max-h-48 flex-col gap-2 overflow-y-auto">
+              {files.map((f, i) => <div key={i} className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-line bg-paper px-3 py-2">
+                <div className="flex min-w-0 items-center gap-2"><Icon name="file" size={16}/><span className="truncate text-sm font-medium text-ink">{f.name}</span><span className="shrink-0 text-xs text-muted">({f.size})</span></div>
+                <button type="button" onClick={() => removeFile(i)} className="grid size-8 shrink-0 place-items-center rounded-md text-muted hover:bg-rose-bg hover:text-rose" aria-label={`Remove ${f.name}`}><Icon name="close" size={14}/></button>
+              </div>)}
             </div>
           )}
         </div>
 
-        {/* File Picker Trigger */}
-        <label className="product-action secondary" style={{ textAlign: 'center', cursor: 'pointer', display: 'block' }}>
+        <label className={`${secondaryButtonClass} cursor-pointer`}>
           <span>+ Add deliverable files</span>
-          <input type="file" multiple onChange={handleFileChange} style={{ display: 'none' }} />
+          <input className="sr-only" type="file" multiple onChange={handleFileChange} />
         </label>
 
-        {/* Cover Page Selector */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-          <label style={{ fontSize: 11, fontWeight: 600, color: '#696d7d', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            Cover Page Template
-          </label>
-          <select
-            value={selectedTemplateId || ''}
-            onChange={(e) => setSelectedTemplateId(e.target.value ? Number(e.target.value) : null)}
-            style={{
-              height: 38,
-              padding: '0 10px',
-              border: '1px solid #e4e4eb',
-              borderRadius: 8,
-              background: '#fff',
-              fontSize: 12,
-              color: '#2c2f3b',
-              outline: 'none',
-              cursor: 'pointer',
-            }}
-          >
+        <label className="flex flex-col gap-2 text-sm font-medium text-ink">
+          Cover page template
+          <select className={fieldClass} value={selectedTemplateId || ''} onChange={(e) => setSelectedTemplateId(e.target.value ? Number(e.target.value) : null)}>
             <option value="">No cover template (Submit raw files)</option>
-            {templates.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name} {t.is_default ? '(Default)' : ''}
-              </option>
-            ))}
+            {templates.map((t) => <option key={t.id} value={t.id}>{t.name} {t.is_default ? '(Default)' : ''}</option>)}
           </select>
-        </div>
+        </label>
 
-        {error && <div className="product-alert">{error}</div>}
-        {notice && <div className="product-alert ok">{notice}</div>}
+        {error && <div className="rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose" role="alert">{error}</div>}
+        {notice && <div className="rounded-lg border border-brand-border bg-brand-bg px-4 py-3 text-sm text-brand-hover" role="status">{notice}</div>}
 
-        <button
-          type="button"
-          onClick={handleSubmit}
-          disabled={submitting || (files.length === 0 && !submitted)}
-          className="primary-action"
-          style={{ width: '100%', minHeight: 40, fontSize: 12, cursor: 'pointer' }}
-        >
-          {submitting ? (
-            <span>Submitting to Google Classroom…</span>
-          ) : submitted ? (
-            <span><Icon name="checkCircle" size={14}/> Turned In to Classroom</span>
-          ) : (
-            <span><Icon name="upload" size={14}/> Turn In to Google Classroom</span>
-          )}
+        <button type="button" onClick={handleSubmit} disabled={submitting || unsubmitting || files.length === 0} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50">
+          {submitting ? 'Submitting to Google Classroom…' : submitted && files.length > 0 ? <><Icon name="upload" size={16}/> Re-submit updated files to Classroom</> : submitted ? <><Icon name="checkCircle" size={16}/> Turned in to Classroom</> : <><Icon name="upload" size={16}/> Turn in to Google Classroom</>}
         </button>
 
-        {assignment.url && (
-          <a
-            href={assignment.url}
-            target="_blank"
-            rel="noreferrer"
-            style={{ textAlign: 'center', fontSize: 11, color: '#6657d9', textDecoration: 'underline', marginTop: -4 }}
-          >
-            Open assignment in Google Classroom <Icon name="externalLink" size={13}/>
-          </a>
-        )}
+        {submitted && <button type="button" onClick={handleUnsubmit} disabled={unsubmitting || submitting} className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg border border-rose-border bg-rose-bg px-4 text-sm font-semibold text-rose transition hover:bg-rose-bg/70 disabled:cursor-not-allowed disabled:opacity-50">
+          <Icon name="refresh" size={16} className={unsubmitting ? 'animate-spin' : ''}/><span>{unsubmitting ? 'Unsubmitting on Classroom…' : 'Unsubmit / reclaim on Google Classroom'}</span>
+        </button>}
+        {assignment.url && <a href={assignment.url} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-1.5 text-sm font-semibold text-violet hover:text-violet-dark hover:underline">Open assignment in Google Classroom <Icon name="externalLink" size={14}/></a>}
       </section>
 
-      {/* Right Column: Scheduled Auto-Submit Automation */}
-      <section className="product-card" style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <section className={`${cardClass} flex flex-col gap-5`}>
         <div>
-          <span className="eyebrow">AUTOMATION</span>
-          <h3 style={{ margin: '3px 0 6px', fontSize: 15, fontWeight: 700, color: '#252837' }}>
-            Scheduled Auto Turn-In
-          </h3>
-          <p style={{ fontSize: 11, color: '#858998', lineHeight: 1.5, margin: 0 }}>
-            Attach your work now and schedule Uniflow to turn in automatically before the deadline so you never miss a submission window.
-          </p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Automation</p>
+          <h3 className="mt-1 text-base font-semibold text-ink">Scheduled auto turn-in</h3>
+          <p className="mt-2 text-sm leading-6 text-muted">Attach your work now and schedule Uniflow to turn in automatically before the deadline so you never miss a submission window.</p>
         </div>
 
-        {/* Enable Automation Toggle */}
-        <label
-          style={{
-            padding: '12px 14px',
-            background: '#fafafd',
-            border: '1px solid #ececf2',
-            borderRadius: 8,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            cursor: 'pointer',
-          }}
-        >
-          <div>
-            <strong style={{ display: 'block', fontSize: 12, color: '#2c2f3b' }}>
-              Enable Automatic Submission
-            </strong>
-            <small style={{ fontSize: 10, color: '#858998' }}>
-              Submits attached files automatically prior to due date
-            </small>
-          </div>
-          <input
-            type="checkbox"
-            checked={scheduleEnabled}
-            onChange={(e) => setScheduleEnabled(e.target.checked)}
-            style={{ width: 18, height: 18, accentColor: '#6657d9', cursor: 'pointer' }}
-          />
+        <label className="flex cursor-pointer items-center justify-between gap-4 rounded-lg border border-line bg-paper p-4">
+          <span><strong className="block text-sm font-semibold text-ink">Enable automatic submission</strong><small className="mt-1 block text-sm text-muted">Submits attached files automatically prior to due date</small></span>
+          <input type="checkbox" checked={scheduleEnabled} onChange={(e) => setScheduleEnabled(e.target.checked)} className="size-5 shrink-0 accent-violet" />
         </label>
 
-        {/* Offset Input */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-          <label style={{ fontSize: 11, fontWeight: 600, color: '#696d7d' }}>
-            Minutes Before Deadline
-          </label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <input
-              type="number"
-              min={5}
-              max={1440}
-              value={scheduleMinutesBefore}
-              onChange={(e) => setScheduleMinutesBefore(parseInt(e.target.value, 10) || 60)}
-              disabled={!scheduleEnabled}
-              style={{
-                width: 100,
-                height: 38,
-                padding: '0 10px',
-                border: '1px solid #e4e4eb',
-                borderRadius: 8,
-                fontSize: 12,
-                color: '#2c2f3b',
-                background: '#fff',
-                outline: 'none',
-              }}
-            />
-            <span style={{ fontSize: 11, color: '#858998' }}>
-              mins prior ({Math.round((scheduleMinutesBefore / 60) * 10) / 10} hours)
-            </span>
-          </div>
-        </div>
+        <label className="flex flex-col gap-2 text-sm font-medium text-ink">
+          Minutes before deadline
+          <span className="flex flex-wrap items-center gap-3">
+            <input type="number" min={5} max={1440} value={scheduleMinutesBefore} onChange={(e) => setScheduleMinutesBefore(parseInt(e.target.value, 10) || 60)} disabled={!scheduleEnabled} className={`${fieldClass} w-28 disabled:cursor-not-allowed disabled:bg-paper disabled:text-muted`} />
+            <span className="text-sm font-normal text-muted">mins prior ({Math.round((scheduleMinutesBefore / 60) * 10) / 10} hours)</span>
+          </span>
+        </label>
 
-        <button
-          type="button"
-          onClick={saveSchedule}
-          disabled={files.length === 0 || savingSchedule}
-          className="product-action secondary"
-          style={{ width: '100%', minHeight: 38, fontSize: 11, cursor: 'pointer' }}
-        >
-          {savingSchedule ? 'Saving schedule…' : <><Icon name="save" size={14}/> Save Schedule Settings</>}
+        <button type="button" onClick={saveSchedule} disabled={files.length === 0 || savingSchedule} className={secondaryButtonClass}>
+          {savingSchedule ? 'Saving schedule…' : <><Icon name="save" size={16}/> Save schedule settings</>}
         </button>
-
-        {files.length === 0 && (
-          <p className="product-note" style={{ margin: 0 }}>
-            Attach at least one deliverable file on the left before activating auto turn-in.
-          </p>
-        )}
+        {files.length === 0 && <p className="rounded-lg bg-amber-bg p-3 text-sm leading-5 text-amber">Attach at least one deliverable file on the left before activating auto turn-in.</p>}
       </section>
     </div>
   );

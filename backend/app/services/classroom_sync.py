@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.repositories import CourseRepository, AssignmentRepository, ClassScheduleRepository, AnnouncementRepository
 from app.db.models import Course, Assignment, ClassSchedule, GoogleCredential, SubmissionState, Setting
+from app.core.config import settings
 from app.core.logging import logger
 
 
@@ -29,9 +30,9 @@ class ClassroomSyncService:
             creds = Credentials(
                 token=cred_row.access_token,
                 refresh_token=cred_row.refresh_token,
-                token_uri=cred_row.token_uri,
-                client_id=cred_row.client_id,
-                client_secret=cred_row.client_secret,
+                token_uri=cred_row.token_uri or "https://oauth2.googleapis.com/token",
+                client_id=cred_row.client_id or settings.google_client_id,
+                client_secret=cred_row.client_secret or settings.google_client_secret,
                 scopes=json.loads(cred_row.scopes) if cred_row.scopes else [],
             )
 
@@ -51,8 +52,21 @@ class ClassroomSyncService:
             logger.error(f"Failed to initialize Classroom service: {e}")
             return False
 
-    def _get_configured_since_date(self) -> Optional[datetime]:
-        """Get semester start date from database settings if configured"""
+    def _save_semester_start_date(self, dt: datetime):
+        """Persist auto-detected semester start date in settings"""
+        try:
+            setting = self.db.query(Setting).filter(Setting.key == "semester_start_date").first()
+            if not setting:
+                setting = Setting(key="semester_start_date", value=dt.isoformat(), description="Current semester start boundary")
+                self.db.add(setting)
+            else:
+                setting.value = dt.isoformat()
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+
+    def _get_configured_since_date(self) -> datetime:
+        """Get semester start date from database settings or automatically derive from portal calendar."""
         setting = self.db.query(Setting).filter(Setting.key == "semester_start_date").first()
         if setting and setting.value:
             try:
@@ -67,7 +81,29 @@ class ClassroomSyncService:
                 return dt
             except Exception as e:
                 logger.warning(f"Could not parse stored semester_start_date: {e}")
-        return None
+
+        # Fallback 1: Derive from portal class schedules
+        try:
+            from app.db.models import ClassSchedule
+            min_date = self.db.query(func.min(ClassSchedule.date)).scalar()
+            if min_date:
+                if min_date.tzinfo is None:
+                    min_date = min_date.replace(tzinfo=timezone.utc)
+                derived = min_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                self._save_semester_start_date(derived)
+                return derived
+        except Exception:
+            pass
+
+        # Fallback 2: Default to standard university semester cycle (Fall: Sep 1, Spring: Feb 1)
+        now = datetime.now(timezone.utc)
+        year = now.year
+        if now.month >= 8:
+            derived = datetime(year, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
+        else:
+            derived = datetime(year, 2, 1, 0, 0, 0, tzinfo=timezone.utc)
+        self._save_semester_start_date(derived)
+        return derived
 
     def sync_all(self, since_date: Optional[datetime] = None) -> Dict[str, Any]:
         """Sync all Classroom data from the given since_date / semester start onwards"""
@@ -280,13 +316,10 @@ class ClassroomSyncService:
                 ).execute()
 
                 for work in response.get("courseWork", []):
-                    # Check date filter
+                    # Strict semester date filter
                     if since_date:
-                        # Extract timestamps
                         creation_str = work.get("creationTime")
-                        update_str = work.get("updateTime")
                         created_dt = datetime.fromisoformat(creation_str.replace("Z", "+00:00")) if creation_str else None
-                        updated_dt = datetime.fromisoformat(update_str.replace("Z", "+00:00")) if update_str else None
 
                         # Parse due date
                         due_at = None
@@ -299,12 +332,12 @@ class ClassroomSyncService:
                                 tzinfo=timezone.utc
                             )
 
-                        # If the assignment is past due before the semester start, and created before semester start, skip it
-                        is_current_or_future_due = due_at and due_at >= since_date
-                        is_created_recently = created_dt and created_dt >= since_date
-                        is_updated_recently = updated_dt and updated_dt >= since_date
+                        # Rule 1: If due date is before semester start, it belongs to an old semester. Skip!
+                        if due_at and due_at < since_date:
+                            continue
 
-                        if not (is_current_or_future_due or is_created_recently or is_updated_recently):
+                        # Rule 2: If no due date, only accept if created during the current semester.
+                        if not due_at and not (created_dt and created_dt >= since_date):
                             continue
 
                     self._sync_assignment(course.id, work)

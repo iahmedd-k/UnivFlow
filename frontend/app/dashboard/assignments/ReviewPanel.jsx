@@ -6,9 +6,9 @@ import { useAuth } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 
 const STATUS_STYLE = {
-  met: { label: 'Met', icon: 'check', pillClass: 'product-pill success' },
-  partial: { label: 'Partial', icon: 'alert', pillClass: 'product-pill warning' },
-  missing: { label: 'Missing', icon: 'close', pillClass: 'product-pill error' },
+  met: { label: 'Met', icon: 'check', className: 'border-brand-border bg-brand-bg text-brand-hover' },
+  partial: { label: 'Partial', icon: 'alert', className: 'border-amber-border bg-amber-bg text-amber' },
+  missing: { label: 'Missing', icon: 'close', className: 'border-rose-border bg-rose-bg text-rose' },
 };
 
 export default function ReviewPanel({ assignment }) {
@@ -40,223 +40,85 @@ export default function ReviewPanel({ assignment }) {
     }
   };
 
+  const cardClass = 'min-w-0 rounded-xl border border-line bg-white p-5 shadow-sm';
+  const inputClass = 'w-full rounded-lg border border-line bg-paper px-3 py-2.5 text-sm leading-6 text-ink outline-none focus:border-violet focus:ring-2 focus:ring-violet/20';
+  const headingClass = 'text-base font-semibold text-ink';
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1fr) minmax(0, 1.2fr)', gap: 16 }}>
-      {/* Left Column: Draft Input & Attachment Studio */}
-      <section className="product-card" style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+      <section className={`${cardClass} flex flex-col gap-5`}>
         <div>
-          <span className="eyebrow">PRE-SUBMISSION AUDIT</span>
-          <h3 style={{ margin: '3px 0 6px', fontSize: 15, fontWeight: 700, color: '#252837' }}>
-            Check Draft Against Rubric
-          </h3>
-          <p style={{ fontSize: 11, color: '#858998', lineHeight: 1.5, margin: 0 }}>
-            Paste your solution or attach your draft file. Uniflow checks requirements, logic completeness, and citations without modifying your submission.
-          </p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Pre-submission audit</p>
+          <h3 className={`${headingClass} mt-1`}>Check draft against rubric</h3>
+          <p className="mt-2 text-sm leading-6 text-muted">Paste your solution or attach your draft file. Uniflow checks requirements, logic completeness, and citations without modifying your submission.</p>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#858998' }}>
-            <span style={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Draft Text / Source</span>
-            <span>{text.length} characters</span>
-          </div>
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="Paste your draft report, code, or essay here…"
-            rows={10}
-            style={{
-              width: '100%',
-              padding: '12px 14px',
-              borderRadius: 8,
-              border: '1px solid #e4e4eb',
-              background: '#fafafd',
-              color: '#2c2f3b',
-              fontSize: 12,
-              fontFamily: 'ui-monospace, monospace',
-              lineHeight: 1.5,
-              outline: 'none',
-              resize: 'vertical',
-            }}
-          />
-        </div>
+        <label className="flex flex-col gap-2">
+          <span className="flex items-center justify-between gap-3 text-sm font-medium text-ink"><span>Draft text / source</span><span className="text-xs text-muted">{text.length} characters</span></span>
+          <textarea className={`${inputClass} min-h-60 resize-y font-mono`} value={text} onChange={(e) => setText(e.target.value)} placeholder="Paste your draft report, code, or essay here…" rows={10} />
+        </label>
 
-        {/* File Attachment Strip */}
-        <div style={{ padding: '10px 14px', background: '#f8f8fb', border: '1px solid #ebebf0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-          <label style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 600, color: '#5b4cc6' }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="paperclip" size={14}/>{file ? 'Change file' : 'Attach draft file'}</span>
-            <input
-              type="file"
-              onChange={handleFile}
-              accept=".pdf,.doc,.docx,.txt,.py,.js,.ts,.jsx,.tsx"
-              style={{ display: 'none' }}
-            />
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line bg-paper px-4 py-3">
+          <label className="inline-flex cursor-pointer items-center gap-2 text-sm font-semibold text-violet hover:text-violet-dark">
+            <Icon name="paperclip" size={16}/>{file ? 'Change file' : 'Attach draft file'}
+            <input type="file" className="sr-only" onChange={handleFile} accept=".pdf,.doc,.docx,.txt,.py,.js,.ts,.jsx,.tsx" />
           </label>
-          {file && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, maxWidth: 180 }}>
-              <span style={{ fontSize: 11, color: '#2c2f3b', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {file.name}
-              </span>
-              <button
-                type="button"
-                onClick={() => setFile(null)}
-                style={{ background: 'none', border: 'none', color: '#b34d4d', cursor: 'pointer', fontWeight: 'bold', fontSize: 11 }}
-              >
-                <Icon name="close" size={13}/>
-              </button>
-            </div>
-          )}
+          {file && <div className="flex min-w-0 items-center gap-2"><span className="max-w-48 truncate text-sm text-ink">{file.name}</span><button type="button" onClick={() => setFile(null)} className="grid size-8 place-items-center rounded-md text-rose hover:bg-rose-bg" aria-label="Remove attached draft"><Icon name="close" size={14}/></button></div>}
         </div>
 
-        {error && (
-          <div className="product-alert" role="alert">
-            {error}
-          </div>
-        )}
-
-        <button
-          type="button"
-          onClick={runReview}
-          disabled={running || (!text.trim() && !file)}
-          className="primary-action"
-          style={{ width: '100%', minHeight: 38, fontSize: 12, cursor: 'pointer' }}
-        >
-          {running ? (
-            <span>Auditing Draft against Rubric…</span>
-          ) : (
-            <span><Icon name="search" size={14}/> Run Pre-Submission Review</span>
-          )}
+        {error && <div className="rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose" role="alert">{error}</div>}
+        <button type="button" onClick={runReview} disabled={running || (!text.trim() && !file)} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50">
+          {running ? 'Auditing draft against rubric…' : <><Icon name="search" size={16}/> Run pre-submission review</>}
         </button>
       </section>
 
-      {/* Right Column: Scorecard & Verification Results */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        {!result && !running && (
-          <div className="product-card" style={{ padding: '36px 24px', textAlign: 'center', margin: 'auto 0' }}>
-            <span style={{ width: 40, height: 40, borderRadius: 10, background: '#f0edff', color: '#6657d9', display: 'grid', placeItems: 'center', fontSize: 18, margin: '0 auto 10px' }}>
-              <Icon name="barChart" size={19}/>
-            </span>
-            <strong style={{ fontSize: 13, color: '#2c2f3b', display: 'block' }}>
-              Rubric Scorecard will appear here
-            </strong>
-            <p style={{ fontSize: 11, color: '#858998', margin: '4px auto 0', maxWidth: 320, lineHeight: 1.5 }}>
-              Paste your writing or code to evaluate requirement coverage, rubric alignment, and academic citations.
-            </p>
-          </div>
-        )}
+      <div className="flex min-w-0 flex-col gap-4">
+        {!result && !running && <div className={`${cardClass} flex min-h-64 flex-col items-center justify-center text-center`}>
+          <span className="mb-3 grid size-11 place-items-center rounded-xl bg-violet-light text-violet"><Icon name="barChart" size={20}/></span>
+          <strong className="text-base font-semibold text-ink">Rubric scorecard will appear here</strong>
+          <p className="mt-2 max-w-sm text-sm leading-6 text-muted">Paste your writing or code to evaluate requirement coverage, rubric alignment, and academic citations.</p>
+        </div>}
 
-        {running && (
-          <div className="product-card" style={{ padding: '40px 24px', textAlign: 'center' }}>
-            <span className="loading-dot" style={{ display: 'inline-block', marginBottom: 8 }} />
-            <strong style={{ fontSize: 13, color: '#2c2f3b', display: 'block' }}>Evaluating your draft…</strong>
-            <p style={{ fontSize: 11, color: '#858998', margin: '4px 0 0' }}>Checking criteria fulfillment and citation validity.</p>
-          </div>
-        )}
+        {running && <div className={`${cardClass} flex min-h-64 flex-col items-center justify-center text-center`} role="status">
+          <span className="mb-3 size-7 animate-spin rounded-full border-2 border-violet-light border-t-violet" />
+          <strong className="text-base font-semibold text-ink">Evaluating your draft…</strong>
+          <p className="mt-1 text-sm text-muted">Checking criteria fulfillment and citation validity.</p>
+        </div>}
 
-        {result && (
-          <>
-            {/* Executive Summary Card */}
-            <section className="product-card" style={{ padding: '16px 18px', background: '#f8f7ff', border: '1px solid #ded8fa' }}>
-              <header style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                <Icon name="clipboardCheck" size={14}/>
-                <span style={{ fontSize: 11, fontWeight: 700, color: '#5b4cc6', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Auditor Verdict
-                </span>
-              </header>
-              <p style={{ fontSize: 12, color: '#2c2f3b', lineHeight: 1.6, margin: 0, fontWeight: 500 }}>
-                {result.summary}
-              </p>
-            </section>
+        {result && <>
+          <section className="rounded-xl border border-violet/20 bg-violet-light/60 p-5">
+            <header className="mb-2 flex items-center gap-2 text-sm font-semibold text-violet-dark"><Icon name="clipboardCheck" size={16}/> Auditor verdict</header>
+            <p className="text-sm leading-6 text-ink">{result.summary}</p>
+          </section>
 
-            {/* Requirement Checklist */}
-            <section className="product-card" style={{ overflow: 'hidden' }}>
-              <header className="product-card-head" style={{ background: '#fafafd' }}>
-                <h3 style={{ margin: 0, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#696d7d' }}>
-                  Requirement Coverage
-                </h3>
-              </header>
-              <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {(result.requirement_coverage || []).map((r, idx) => {
-                  const s = STATUS_STYLE[r.status] || STATUS_STYLE.partial;
-                  return (
-                    <div
-                      key={idx}
-                      style={{
-                        padding: '10px 12px',
-                        background: '#fafafd',
-                        border: '1px solid #f0f0f4',
-                        borderRadius: 7,
-                        display: 'flex',
-                        alignItems: 'flex-start',
-                        gap: 10,
-                      }}
-                    >
-                      <span className={s.pillClass} style={{ flexShrink: 0, marginTop: 1 }}>
-                        <><Icon name={s.icon} size={12}/>{s.label}</>
-                      </span>
-                      <div>
-                        <strong style={{ display: 'block', fontSize: 12, color: '#2c2f3b' }}>
-                          {r.requirement}
-                        </strong>
-                        <p style={{ margin: '2px 0 0', fontSize: 11, color: '#858998' }}>
-                          {r.reason}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
+          <section className="min-w-0 overflow-hidden rounded-xl border border-line bg-white shadow-sm">
+            <header className="border-b border-line bg-paper px-5 py-4"><h3 className="text-sm font-semibold uppercase tracking-wide text-muted">Requirement coverage</h3></header>
+            <div className="flex flex-col gap-3 p-4">
+              {(result.requirement_coverage || []).map((r, idx) => {
+                const s = STATUS_STYLE[r.status] || STATUS_STYLE.partial;
+                return <div key={idx} className="flex items-start gap-3 rounded-lg border border-line bg-paper/70 p-3">
+                  <span className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-semibold ${s.className}`}><Icon name={s.icon} size={13}/>{s.label}</span>
+                  <div className="min-w-0"><strong className="text-sm font-semibold text-ink">{r.requirement}</strong><p className="mt-1 text-sm leading-5 text-muted">{r.reason}</p></div>
+                </div>;
+              })}
+            </div>
+          </section>
 
-            {/* Issues to Fix */}
-            {result.issues?.length > 0 && (
-              <section className="product-card" style={{ padding: '16px 18px' }}>
-                <h3 style={{ margin: '0 0 10px', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#b15252' }}>
-                  <Icon name="alert" size={15}/> Recommendations to Revise
-                </h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {result.issues.map((issue, idx) => (
-                    <div
-                      key={idx}
-                      style={{
-                        padding: '10px 12px',
-                        background: '#fff8f8',
-                        border: '1px solid #f1dede',
-                        borderRadius: 7,
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
-                        <strong style={{ fontSize: 11, color: '#b15252' }}>{issue.type}</strong>
-                        {issue.location && (
-                          <span style={{ fontSize: 10, color: '#858998', fontFamily: 'monospace' }}>{issue.location}</span>
-                        )}
-                      </div>
-                      <p style={{ margin: 0, fontSize: 11, color: '#555866' }}>{issue.description}</p>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
+          {result.issues?.length > 0 && <section className="rounded-xl border border-rose-border bg-white p-5">
+            <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-rose"><Icon name="alert" size={16}/> Recommendations to revise</h3>
+            <div className="flex flex-col gap-2">{result.issues.map((issue, idx) => <div key={idx} className="rounded-lg border border-rose-border/70 bg-rose-bg/50 p-3">
+              <div className="mb-1 flex flex-wrap items-center justify-between gap-2"><strong className="text-sm font-semibold text-rose">{issue.type}</strong>{issue.location && <span className="font-mono text-xs text-muted">{issue.location}</span>}</div>
+              <p className="text-sm leading-5 text-ink">{issue.description}</p>
+            </div>)}</div>
+          </section>}
 
-            {/* Citation Flags */}
-            {result.citation_check?.length > 0 && (
-              <section className="product-card" style={{ padding: '16px 18px' }}>
-                <h3 style={{ margin: '0 0 10px', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#696d7d' }}>
-                  Citation & Attribution
-                </h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {result.citation_check.map((c, idx) => (
-                    <div key={idx} style={{ padding: '10px 12px', background: '#fafafd', border: '1px solid #ececf2', borderRadius: 7 }}>
-                      <p style={{ margin: '0 0 3px', fontStyle: 'italic', fontSize: 11, color: '#334155' }}>
-                        &ldquo;{c.excerpt}&rdquo;
-                      </p>
-                      <span style={{ fontSize: 10, color: '#858998' }}>{c.concern}</span>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-          </>
-        )}
+          {result.citation_check?.length > 0 && <section className={`${cardClass} flex flex-col gap-3`}>
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted">Citation & attribution</h3>
+            {result.citation_check.map((c, idx) => <div key={idx} className="rounded-lg border border-line bg-paper p-3">
+              <p className="text-sm italic leading-6 text-ink">&ldquo;{c.excerpt}&rdquo;</p><span className="mt-1 block text-xs text-muted">{c.concern}</span>
+            </div>)}
+          </section>}
+        </>}
       </div>
     </div>
   );

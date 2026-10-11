@@ -78,228 +78,54 @@ export default function TutorPanel({ assignment }) {
   ];
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1fr) minmax(0, 2fr)', gap: 16 }}>
-      {/* Left Column: Requirements & Concepts */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <section className="product-card" style={{ padding: '18px 20px' }}>
-          <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #f2f2f5', paddingBottom: 10, marginBottom: 12 }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: '#858998', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-              Requirements Breakdown
-            </span>
-            {breakdown?.requirements?.length > 0 && (
-              <span className="product-pill">{breakdown.requirements.length} tasks</span>
-            )}
+    <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+      <div className="flex min-w-0 flex-col gap-4">
+        <section className="min-w-0 overflow-hidden rounded-xl border border-line bg-white shadow-sm">
+          <header className="flex items-center justify-between gap-3 border-b border-line px-5 py-4">
+            <span className="text-sm font-semibold text-ink">Requirements breakdown</span>
+            {breakdown?.requirements?.length > 0 && <span className="rounded-full bg-violet-light px-3 py-1 text-xs font-semibold text-violet-dark">{breakdown.requirements.length} tasks</span>}
           </header>
-
-          {loadingBreakdown ? (
-            <div style={{ padding: '16px 0', textAlign: 'center', color: '#858998', fontSize: 11 }}>
-              <span className="loading-dot" style={{ display: 'inline-block', marginBottom: 6 }} />
-              <p style={{ margin: 0 }}>Analyzing rubric criteria…</p>
+          {loadingBreakdown ? <div className="p-8 text-center text-sm text-muted" role="status"><span className="mx-auto mb-3 block size-6 animate-spin rounded-full border-2 border-violet-light border-t-violet" />Analyzing rubric criteria…</div> : breakdown?.requirements?.length ? (
+            <div className="flex max-h-[440px] flex-col gap-2 overflow-y-auto p-4">
+              {breakdown.requirements.map((req, idx) => <button key={req.id || idx} type="button" onClick={() => send(`Can you walk me through requirement #${idx + 1}: "${req.description}"?`)} className="rounded-lg border border-line bg-white p-3 text-left transition hover:border-violet/40 hover:bg-violet-light/30">
+                <span className="mb-2 flex items-center justify-between gap-3"><span className="rounded bg-violet-light px-2 py-1 text-xs font-semibold text-violet-dark">Task {idx + 1}</span>{req.priority && <span className={`text-xs font-semibold uppercase ${req.priority.toLowerCase() === 'high' ? 'text-rose' : 'text-muted'}`}>{req.priority}</span>}</span>
+                <span className="block text-sm leading-5 text-ink">{req.description}</span>
+                <span className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-violet">Ask tutor <Icon name="arrowUpRight" size={14}/></span>
+              </button>)}
             </div>
-          ) : breakdown?.requirements?.length ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 380, overflowY: 'auto' }}>
-              {breakdown.requirements.map((req, idx) => (
-                <button
-                  key={req.id || idx}
-                  type="button"
-                  onClick={() => send(`Can you walk me through requirement #${idx + 1}: "${req.description}"?`)}
-                  style={{
-                    padding: '10px 12px',
-                    borderRadius: 8,
-                    border: '1px solid #ececf2',
-                    background: '#fafafd',
-                    textAlign: 'left',
-                    cursor: 'pointer',
-                    transition: 'all 0.15s ease',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: '#5b4cc6', background: '#eeeafe', padding: '1px 6px', borderRadius: 4 }}>
-                      Task {idx + 1}
-                    </span>
-                    {req.priority && (
-                      <span style={{ fontSize: 9, fontWeight: 600, color: req.priority.toLowerCase() === 'high' ? '#b34d4d' : '#858998', textTransform: 'uppercase' }}>
-                        {req.priority}
-                      </span>
-                    )}
-                  </div>
-                  <p style={{ fontSize: 11, fontWeight: 500, color: '#2c2f3b', margin: 0, lineHeight: 1.4 }}>
-                    {req.description}
-                  </p>
-                  <span style={{ display: 'inline-block', fontSize: 10, fontWeight: 600, color: '#6657d9', marginTop: 4 }}>
-                    Ask tutor <Icon name="arrowUpRight" size={13}/>
-                  </span>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="product-empty" style={{ padding: '20px 10px' }}>
-              <strong>No structured task list</strong>
-              <span>Ask the tutor directly for help breaking down the assignment.</span>
-            </div>
-          )}
+          ) : <div className="p-8 text-center"><strong className="block text-sm font-semibold text-ink">No structured task list</strong><span className="mt-1 block text-sm text-muted">Ask the tutor directly for help breaking down the assignment.</span></div>}
         </section>
-
-        {/* Academic Socratic Note */}
-        <div className="product-note">
-          <strong>Socratic Tutoring:</strong> The AI tutor guides your understanding and points out edge cases. It explains concepts using non-assignment examples without authoring deliverables for you.
-        </div>
+        <aside className="rounded-xl border border-violet/20 bg-violet-light/60 p-4 text-sm leading-6 text-violet-dark"><strong>Socratic tutoring:</strong> The AI tutor guides your understanding and points out edge cases. It explains concepts using non-assignment examples without authoring deliverables for you.</aside>
       </div>
 
-      {/* Right Column: AI Chat Stream Studio */}
-      <section className="product-card" style={{ display: 'flex', flexDirection: 'column', height: 560, overflow: 'hidden' }}>
-        {/* Chat Studio Topbar */}
-        <header style={{ padding: '14px 18px', background: '#fafafd', borderBottom: '1px solid #f0f0f3', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ width: 28, height: 28, borderRadius: 8, background: '#eeeafe', color: '#5b4cc6', display: 'grid', placeItems: 'center', fontSize: 14 }}>
-              <Icon name="lightbulb" size={17}/>
-            </span>
-            <div>
-              <strong style={{ fontSize: 12, color: '#2c2f3b', display: 'block' }}>Course Academic Tutor</strong>
-              <small style={{ fontSize: 10, color: '#47a887', display: 'flex', alignItems: 'center', gap: 4 }}>
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#47a887' }} />
-                Ready to answer questions
-              </small>
-            </div>
-          </div>
-          {messages.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setMessages([])}
-              style={{ background: 'none', border: 'none', color: '#858998', fontSize: 11, cursor: 'pointer' }}
-            >
-              Clear chat
-            </button>
-          )}
+      <section className="flex min-h-[520px] min-w-0 flex-col overflow-hidden rounded-xl border border-line bg-white shadow-sm">
+        <header className="flex items-center justify-between gap-3 border-b border-line bg-paper px-5 py-4">
+          <div className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-lg bg-violet-light text-violet"><Icon name="lightbulb" size={18}/></span><span><strong className="block text-sm font-semibold text-ink">Course academic tutor</strong><small className="mt-0.5 inline-flex items-center gap-1.5 text-xs text-brand-hover"><span className="size-1.5 rounded-full bg-brand"/>Ready to answer questions</small></span></div>
+          {messages.length > 0 && <button type="button" onClick={() => setMessages([])} className="text-sm font-medium text-muted hover:text-ink">Clear chat</button>}
         </header>
 
-        {/* Chat History Messages */}
-        <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {messages.length === 0 && (
-            <div style={{ margin: 'auto', maxWidth: 440, textAlign: 'center', padding: '20px 0' }}>
-              <span style={{ width: 42, height: 42, borderRadius: 12, background: '#f0edff', color: '#6657d9', display: 'grid', placeItems: 'center', fontSize: 20, margin: '0 auto 12px' }}>
-                <Icon name="lightbulb" size={16}/>
-              </span>
-              <strong style={{ fontSize: 14, color: '#2c2f3b', display: 'block' }}>
-                How can the tutor help you today?
-              </strong>
-              <p style={{ fontSize: 11, color: '#858998', margin: '6px 0 16px', lineHeight: 1.6 }}>
-                Ask about concepts, request help planning your approach, or paste your draft logic for Socratic feedback.
-              </p>
+        <div ref={scrollRef} className="flex min-h-[360px] flex-1 flex-col gap-4 overflow-y-auto p-5">
+          {messages.length === 0 && <div className="m-auto w-full max-w-lg py-5 text-center">
+            <span className="mx-auto mb-3 grid size-11 place-items-center rounded-xl bg-violet-light text-violet"><Icon name="lightbulb" size={20}/></span>
+            <strong className="text-base font-semibold text-ink">How can the tutor help you today?</strong>
+            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">Ask about concepts, request help planning your approach, or paste your draft logic for Socratic feedback.</p>
+            <div className="mt-5 flex flex-col gap-2 text-left">{suggestedPrompts.map((p, idx) => <button key={idx} type="button" onClick={() => send(p)} className="flex items-start gap-2 rounded-lg border border-line bg-white p-3 text-sm leading-5 text-ink transition hover:border-violet/40 hover:bg-violet-light/30"><Icon name="message" size={16} className="mt-0.5 shrink-0 text-violet"/>{p}</button>)}</div>
+          </div>}
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, textAlign: 'left' }}>
-                {suggestedPrompts.map((p, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => send(p)}
-                    style={{
-                      padding: '8px 12px',
-                      borderRadius: 8,
-                      border: '1px solid #ececf2',
-                      background: '#ffffff',
-                      color: '#454856',
-                      fontSize: 11,
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                      transition: 'all 0.15s ease',
-                    }}
-                  >
-                    <><Icon name="message" size={13}/> {p}</>
-                  </button>
-                ))}
-              </div>
+          {messages.map((m, idx) => <div key={idx} className={`flex gap-2 ${m.role === 'student' ? 'justify-end' : 'justify-start'}`}>
+            {m.role !== 'student' && <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-violet-light text-xs font-bold text-violet">AI</span>}
+            <div className={`max-w-[88%] rounded-xl px-4 py-3 text-sm leading-6 ${m.role === 'student' ? 'bg-violet text-white' : 'border border-line bg-paper text-ink'}`}>
+              {m.role === 'student' ? <p className="whitespace-pre-wrap">{m.text}</p> : <MarkdownRenderer content={m.text}/>}
             </div>
-          )}
+          </div>)}
 
-          {messages.map((m, idx) => (
-            <div
-              key={idx}
-              style={{
-                display: 'flex',
-                justifyContent: m.role === 'student' ? 'flex-end' : 'flex-start',
-                gap: 8,
-              }}
-            >
-              {m.role !== 'student' && (
-                <span style={{ width: 24, height: 24, borderRadius: 6, background: '#eeeafe', color: '#5b4cc6', display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
-                  AI
-                </span>
-              )}
-              <div
-                style={{
-                  maxWidth: '82%',
-                  padding: '10px 14px',
-                  borderRadius: 10,
-                  fontSize: 12,
-                  lineHeight: 1.6,
-                  whiteSpace: 'pre-wrap',
-                  background: m.role === 'student' ? '#6657d9' : '#f4f3f9',
-                  color: m.role === 'student' ? '#ffffff' : '#2c2f3b',
-                  border: m.role === 'student' ? 'none' : '1px solid #e7e6ee',
-                }}
-              >
-                {m.role === 'student' ? (
-                  <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{m.text}</p>
-                ) : (
-                  <MarkdownRenderer content={m.text} />
-                )}
-              </div>
-            </div>
-          ))}
-
-          {sending && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ width: 24, height: 24, borderRadius: 6, background: '#eeeafe', color: '#5b4cc6', display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 700 }}>
-                AI
-              </span>
-              <div style={{ padding: '8px 14px', background: '#f4f3f9', border: '1px solid #e7e6ee', borderRadius: 10, fontSize: 11, color: '#858998', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <span className="loading-dot" style={{ width: 6, height: 6 }} />
-                <span>Tutor is formulating an explanation…</span>
-              </div>
-            </div>
-          )}
+          {sending && <div className="flex items-center gap-2" role="status"><span className="grid size-8 place-items-center rounded-lg bg-violet-light text-xs font-bold text-violet">AI</span><span className="inline-flex items-center gap-2 rounded-xl border border-line bg-paper px-4 py-3 text-sm text-muted"><span className="size-4 animate-spin rounded-full border-2 border-violet-light border-t-violet"/>Tutor is formulating an explanation…</span></div>}
+          {error && <div className="rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose" role="alert">{error}</div>}
         </div>
 
-        {/* Input Bar */}
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            send();
-          }}
-          style={{
-            padding: '12px 16px',
-            borderTop: '1px solid #f0f0f3',
-            background: '#fafafd',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-          }}
-        >
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about a requirement or concept… (Press Enter to send)"
-            style={{
-              flex: 1,
-              height: 38,
-              padding: '0 14px',
-              border: '1px solid #e4e4eb',
-              borderRadius: 8,
-              fontSize: 12,
-              color: '#2c2f3b',
-              outline: 'none',
-              background: '#ffffff',
-            }}
-          />
-          <button
-            type="submit"
-            disabled={sending || !input.trim()}
-            className="product-action"
-            style={{ minHeight: 38, padding: '0 16px', fontSize: 11, cursor: 'pointer' }}
-          >
-            <span>Ask Tutor <Icon name="send" size={13}/></span>
-          </button>
+        <form onSubmit={(e) => { e.preventDefault(); send(); }} className="flex gap-2 border-t border-line bg-white p-4">
+          <input className="min-w-0 flex-1 rounded-lg border border-line px-3 py-2.5 text-sm text-ink outline-none placeholder:text-muted focus:border-violet focus:ring-2 focus:ring-violet/20" value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask about a requirement or concept…" />
+          <button type="submit" disabled={sending || !input.trim()} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50">Ask tutor <Icon name="send" size={15}/></button>
         </form>
       </section>
     </div>

@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body, Request
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timezone
@@ -25,6 +25,14 @@ from app.auth.clerk_auth import get_current_user_optional
 import time
 import threading
 
+
+def _assignment_generated_images(db: Session, assignment_id: int) -> list[dict]:
+    """Return generated images for an assignment.
+    Currently no persistent storage for generated images exists; returns empty list.
+    """
+    return []
+
+
 router = APIRouter(prefix="/classroom", tags=["Classroom"])
 
 # Per-user concurrency sync locks and student roster cache
@@ -40,7 +48,7 @@ def _get_user_lock(user_id: str) -> threading.Lock:
         return _classroom_sync_locks[user_id]
 
 
-def _get_semester_start_dt(db: Session, override: Optional[str] = None, user_id: str = "default") -> Optional[datetime]:
+def _get_semester_start_dt(db: Session, override: Optional[str] = None, user_id: str = "default") -> datetime:
     val = override
     if not val:
         # Check user specific first, then global fallback
@@ -62,7 +70,8 @@ def _get_semester_start_dt(db: Session, override: Optional[str] = None, user_id:
             return dt
         except Exception:
             pass
-    return None
+    # Guaranteed fallback to current semester start (September 1, 2026)
+    return datetime(2026, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 
 @router.get("/settings", response_model=dict)
@@ -78,7 +87,7 @@ def get_classroom_settings(
     if not setting:
         setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
     return {
-        "semester_start_date": setting.value.strip().replace('"', '') if setting and setting.value else None
+        "semester_start_date": setting.value.strip().replace('"', '') if setting and setting.value else "2026-09-01T00:00:00+00:00"
     }
 
 
@@ -116,7 +125,15 @@ def get_classroom_announcements(
     since: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    query = db.query(Announcement).filter(Announcement.source.like("Google Classroom%"))
+    # Only return announcements from active current-semester courses
+    query = (
+        db.query(Announcement)
+        .join(Course, Announcement.course_id == Course.id)
+        .filter(
+            Announcement.source.like("Google Classroom%"),
+            Course.course_state.in_(["ACTIVE", "active", ""]) | Course.course_state.is_(None)
+        )
+    )
     if course_id is not None:
         query = query.filter(Announcement.course_id == course_id)
     if search:
@@ -125,7 +142,7 @@ def get_classroom_announcements(
 
     since_dt = _get_semester_start_dt(db, since)
     if since_dt:
-        query = query.filter((Announcement.published_at >= since_dt) | (Announcement.published_at.is_(None)))
+        query = query.filter(Announcement.published_at >= since_dt)
 
     posts = query.order_by(Announcement.published_at.desc().nullslast()).all()
     course_ids = {post.course_id for post in posts if post.course_id is not None}
@@ -552,12 +569,28 @@ def create_starter_assignment_template(db: Session = Depends(get_db)):
     if not docs_service:
         raise HTTPException(status_code=503, detail="Connect Google Drive before creating a report template.")
     content = (
-        "UNIVERSITY ASSIGNMENT REPORT\n\n"
-        "Student: {{STUDENT_NAME}}\nStudent email: {{EMAIL}}\nStudent ID / roll number: {{ROLL_NO}}\n"
-        "Program / section: {{CLASS}}\nUniversity: {{UNIVERSITY_NAME}}\n\n"
-        "Course: {{SUBJECT_NAME}}\nCourse code: {{COURSE_CODE}}\nAssignment: {{ASSIGNMENT_TITLE}}\n"
-        "Instructor: {{INSTRUCTOR_NAME}}\nSubmission date: {{SUBMISSION_DATE}}\n\n"
-        "REPORT / SOLUTION\n{{SOLUTION_CONTENT}}"
+        "AIR UNIVERSITY, ISLAMABAD\n"
+        "FACULTY OF COMPUTING & ARTIFICIAL INTELLIGENCE\n"
+        "================================================================================\n"
+        "ACADEMIC LAB REPORT / ASSIGNMENT SUBMISSION\n"
+        "================================================================================\n\n"
+        "COURSE:            {{SUBJECT_NAME}}\n"
+        "COURSE CODE:       {{COURSE_CODE}}\n"
+        "ASSIGNMENT / LAB:  {{ASSIGNMENT_TITLE}}\n"
+        "INSTRUCTOR:        {{INSTRUCTOR_NAME}}\n"
+        "SUBMISSION DATE:   {{SUBMISSION_DATE}}\n"
+        "DUE DATE:          {{DUE_DATE}}\n\n"
+        "--------------------------------------------------------------------------------\n"
+        "STUDENT INFORMATION\n"
+        "--------------------------------------------------------------------------------\n"
+        "STUDENT NAME:      {{STUDENT_NAME}}\n"
+        "ROLL NUMBER / ID:  {{ROLL_NO}}\n"
+        "PROGRAM / SECTION: {{CLASS}}\n"
+        "STUDENT EMAIL:     {{EMAIL}}\n"
+        "INSTITUTION:       {{UNIVERSITY_NAME}}\n"
+        "================================================================================\n\n"
+        "LAB WORK & SOLUTION\n\n"
+        "{{SOLUTION_CONTENT}}\n"
     )
     doc = docs_service.create_document("Uniflow Academic Report Template", content)
     if not doc or not doc.get("documentId"):
@@ -678,19 +711,45 @@ def list_drive_docs_for_templates(
 class TurnInPayload(BaseModel):
     template_id: Optional[int] = None
     drive_file_ids: Optional[List[str]] = None
+    file_names: Optional[List[str]] = Field(None, alias="fileNames")
+
+    class Config:
+        populate_by_name = True
 
 
 @router.post("/assignments/{assignment_id}/turn-in", response_model=dict)
-def turn_in_assignment(
+async def turn_in_assignment(
     assignment_id: int,
-    payload: Optional[TurnInPayload] = Body(None),
+    request: Request,
     template_id: Optional[int] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Student turn-in: copy template (or create blank doc), attach files, submit to Classroom"""
     from app.db.models import Assignment, Submission, SubmissionState
     from googleapiclient.errors import HttpError
-    
+
+    uploaded_files = []
+    payload = None
+    if "multipart/form-data" in request.headers.get("content-type", ""):
+        form = await request.form()
+        raw_template_id = form.get("template_id") or form.get("templateId")
+        if raw_template_id:
+            try:
+                template_id = int(raw_template_id)
+            except (TypeError, ValueError) as error:
+                raise HTTPException(status_code=422, detail="Invalid template_id") from error
+        uploaded_files = form.getlist("files")
+        if any(not hasattr(file, "read") or not getattr(file, "filename", None) for file in uploaded_files):
+            raise HTTPException(status_code=422, detail="Each requested file must include a filename and file content")
+    else:
+        body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+        payload = TurnInPayload.model_validate(body) if body else None
+        if payload and payload.file_names and not payload.drive_file_ids:
+            raise HTTPException(
+                status_code=422,
+                detail="File names are not uploadable files. Upload the files or provide Google Drive file IDs.",
+            )
+
     service = get_classroom_service(db)
     if not service:
         raise HTTPException(status_code=503, detail="Google Classroom not configured")
@@ -709,7 +768,11 @@ def turn_in_assignment(
     
     # Determine template from either JSON body or query parameter
     chosen_template_id = (payload.template_id if payload and payload.template_id is not None else None) or template_id
-    drive_file_ids = (payload.drive_file_ids if payload and payload.drive_file_ids else [])
+    drive_file_ids = list(payload.drive_file_ids or []) if payload else []
+
+    # Upload requested files to the connected user's Drive before attaching them.
+    # A failed upload aborts the request; filenames alone must never be reported as submitted.
+    drive_file_ids.extend(await _upload_submission_files(docs_service, uploaded_files))
 
     if chosen_template_id:
         repo = AssignmentTemplateRepository(db)
@@ -775,21 +838,32 @@ def turn_in_assignment(
             except HttpError:
                 pass
     
-    # Submit to Classroom
+    # Attach the created cover document and all requested files to the student's
+    # actual Classroom submission, then turn it in only after attachment succeeds.
+    submission_id = _attach_submission_files(
+        service.service,
+        course.external_id,
+        assignment.external_id,
+        [student_doc_id, *drive_file_ids],
+    )
     try:
-        submission = service.service.courses().courseWork().studentSubmissions().modifyAttachments(
+        service.service.courses().courseWork().studentSubmissions().turnIn(
             courseId=course.external_id,
             courseWorkId=assignment.external_id,
-            userId="me",
-            body={
-                "addAttachments": [
-                    {"driveFile": {"id": student_doc_id}}
-                ] + ([{"driveFile": {"id": fid}} for fid in drive_file_ids] if drive_file_ids else [])
-            }
+            id=submission_id,
         ).execute()
-    except HttpError as e:
-        logger.error(f"Failed to submit to Classroom: {e}")
-        raise HTTPException(status_code=502, detail="Failed to submit to Google Classroom")
+    except Exception as error:
+        err_str = str(error)
+        logger.error(f"Failed to turn in Classroom submission {submission_id}: {error}")
+        if "already been submitted" in err_str.lower() or "FAILED_PRECONDITION" in err_str:
+            raise HTTPException(
+                status_code=409,
+                detail="This assignment has already been turned in on Google Classroom. Please unsubmit it first if you wish to turn in a revised version.",
+            ) from error
+        raise HTTPException(
+            status_code=502,
+            detail=f"Files were attached, but Google Classroom could not turn in the submission: {err_str}",
+        ) from error
     
     # Update local submission record
     existing = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
@@ -799,7 +873,7 @@ def turn_in_assignment(
     
     existing.google_doc_id = student_doc_id
     existing.google_drive_file_id = student_doc_id
-    existing.classroom_attachment_id = submission.get("id")
+    existing.classroom_attachment_id = submission_id
     existing.submitted_at = datetime.now(timezone.utc)
     existing.submission_state = SubmissionState.TURNED_IN
     existing.approved_by_user = True
@@ -812,9 +886,116 @@ def turn_in_assignment(
         "success": True,
         "submission_id": existing.id,
         "google_doc_id": student_doc_id,
-        "classroom_submission_id": submission.get("id"),
+        "classroom_submission_id": submission_id,
         "message": "Assignment turned in successfully"
     }
+
+
+@router.post("/assignments/{assignment_id}/unsubmit", response_model=dict)
+def unsubmit_assignment(assignment_id: int, db: Session = Depends(get_db)):
+    """Unsubmit an assignment on Google Classroom to allow modifications and revisions."""
+    from app.db.models import Assignment, Submission, SubmissionState, Course
+
+    service = get_classroom_service(db)
+    if not service:
+        raise HTTPException(status_code=503, detail="Google Classroom not configured")
+
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    course = db.query(Course).filter(Course.id == assignment.course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    try:
+        res = service.service.courses().courseWork().studentSubmissions().list(
+            courseId=course.external_id,
+            courseWorkId=assignment.external_id,
+            userId="me"
+        ).execute()
+        submissions = res.get("studentSubmissions", [])
+        if not submissions:
+            raise HTTPException(status_code=404, detail="No submission found on Google Classroom")
+
+        submission_id = submissions[0]["id"]
+        service.service.courses().courseWork().studentSubmissions().reclaim(
+            courseId=course.external_id,
+            courseWorkId=assignment.external_id,
+            id=submission_id
+        ).execute()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to unsubmit assignment {assignment_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"Could not unsubmit on Classroom: {str(e)}")
+
+    assignment.submission_state = SubmissionState.CREATED
+    sub = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
+    if sub:
+        sub.submission_state = SubmissionState.CREATED
+    db.commit()
+
+    return {
+        "success": True,
+        "assignment_id": assignment_id,
+        "message": "Assignment successfully unsubmitted on Google Classroom. You can now edit and re-turn in."
+    }
+
+
+async def _upload_submission_files(docs_service, uploaded_files) -> List[str]:
+    """Upload every requested file and return its Drive ID, failing closed on any error."""
+    drive_file_ids = []
+    for uploaded_file in uploaded_files:
+        try:
+            content = await uploaded_file.read()
+            uploaded = docs_service.upload_file(
+                name=uploaded_file.filename,
+                content=content,
+                mime_type=uploaded_file.content_type or "application/octet-stream",
+            )
+        except Exception as error:
+            logger.error(f"Failed to upload requested file {uploaded_file.filename}: {error}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to upload {uploaded_file.filename} to Google Drive",
+            ) from error
+        if not uploaded or not uploaded.get("id"):
+            raise HTTPException(
+                status_code=502,
+                detail=f"Google Drive did not return a file ID for {uploaded_file.filename}",
+            )
+        drive_file_ids.append(uploaded["id"])
+    return drive_file_ids
+
+
+def _attach_submission_files(classroom_service, course_id: str, coursework_id: str, file_ids: List[str]) -> str:
+    """Attach Drive file IDs to the signed-in student's Classroom submission."""
+    submissions_api = classroom_service.courses().courseWork().studentSubmissions()
+    try:
+        result = submissions_api.list(
+            courseId=course_id,
+            courseWorkId=coursework_id,
+            userId="me",
+            pageSize=100,
+        ).execute()
+        student_submissions = result.get("studentSubmissions", [])
+        if not student_submissions or not student_submissions[0].get("id"):
+            raise HTTPException(status_code=409, detail="No Google Classroom submission is available for this assignment")
+
+        submission_id = student_submissions[0]["id"]
+        submissions_api.modifyAttachments(
+            courseId=course_id,
+            courseWorkId=coursework_id,
+            id=submission_id,
+            body={"addAttachments": [{"driveFile": {"id": file_id}} for file_id in file_ids]},
+        ).execute()
+        return submission_id
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.error(f"Failed to attach Drive files to Google Classroom: {error}")
+        raise HTTPException(status_code=502, detail="Failed to attach files to Google Classroom") from error
 
 
 # ===== AI Solution Generation & Agentic Flow =====
@@ -868,17 +1049,34 @@ def generate_assignment_solution(
 
     def run_generation():
         from app.db.database import SessionLocal
-        from app.services.ai_solution import generate_agentic_solution
         sync_db = SessionLocal()
         try:
-            result = generate_agentic_solution(
-                db=sync_db,
-                assignment_id=assignment_id,
-                provider=provider,
-                model=model,
-                create_google_doc=create_google_doc
-            )
-            logger.info(f"Multi-Agent solution generated for assignment {assignment_id}: status={result.get('status')}")
+            if provider == "claude_browser":
+                from app.services.claude_browser_solver import solve_assignment_via_claude_browser
+                result = solve_assignment_via_claude_browser(
+                    db=sync_db,
+                    assignment_id=assignment_id
+                )
+                logger.info(f"Claude Browser solution generated for assignment {assignment_id}: status={result.get('status')}")
+                if result.get("status") in ("needs_login", "error"):
+                    from app.db.models import Assignment, AssignmentSolution, AssignmentStatus
+                    sol = sync_db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+                    asg = sync_db.query(Assignment).filter(Assignment.id == assignment_id).first()
+                    if sol:
+                        sol.validation_errors = result.get("error")
+                    if asg:
+                        asg.status = AssignmentStatus.FAILED
+                    sync_db.commit()
+            else:
+                from app.services.ai_solution import generate_agentic_solution
+                result = generate_agentic_solution(
+                    db=sync_db,
+                    assignment_id=assignment_id,
+                    provider=provider,
+                    model=model,
+                    create_google_doc=create_google_doc
+                )
+                logger.info(f"Multi-Agent solution generated for assignment {assignment_id}: status={result.get('status')}")
         except Exception as e:
             logger.error(f"Multi-Agent solution generation failed for assignment {assignment_id}: {e}")
             try:
@@ -903,7 +1101,26 @@ def generate_assignment_solution(
     return {
         "status": "started",
         "assignment_id": assignment_id,
-        "message": "Multi-agent assignment workflow started."
+        "provider": provider,
+        "message": f"Autonomous assignment solver workflow started ({provider})."
+    }
+
+
+@router.post("/claude-browser/open", response_model=dict)
+def open_claude_browser():
+    """Launch or focus the Chrome window with the Claude automation profile and remote debugging enabled."""
+    from app.services.claude_browser_solver import open_claude_browser_window
+    return open_claude_browser_window()
+
+
+@router.get("/claude-browser/status", response_model=dict)
+def get_claude_browser_status():
+    """Check if Chrome is running with remote debugging enabled on port 9222 or 21735."""
+    from app.services.claude_browser_solver import get_active_cdp_port
+    port = get_active_cdp_port()
+    return {
+        "is_open": port is not None,
+        "port": port
     }
 
 
@@ -984,9 +1201,10 @@ def get_solution_status(assignment_id: int, db: Session = Depends(get_db)):
     except (TypeError, json.JSONDecodeError):
         crew_progress = None
 
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
     is_completed = bool(solution.validated_content)
-    is_generating = bool(solution.draft_content or solution.ai_provider) and not is_completed and not solution.validation_errors
     is_failed = bool(solution.validation_errors) and not is_completed
+    is_generating = bool(assignment and assignment.status == AssignmentStatus.GENERATING) and not is_completed and not is_failed
 
     return {
         "status": "completed" if is_completed else "failed" if is_failed else "generating" if is_generating else "not_started",

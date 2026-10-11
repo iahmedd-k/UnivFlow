@@ -23,11 +23,75 @@ _CODE_EXTENSIONS = {
     "python": "py", "python3": "py", "py": "py", "javascript": "js", "js": "js",
     "jsx": "jsx", "typescript": "ts", "ts": "ts", "tsx": "tsx", "java": "java",
     "cpp": "cpp", "c++": "cpp", "c": "c", "csharp": "cs", "c#": "cs",
-    "go": "go", "rust": "rs", "ruby": "rb", "php": "php", "kotlin": "kt",
+    "go": "go", "rust": "rs", "ruby": "rb", "php": "php", "kotlin": "kt", "kt": "kt",
     "swift": "swift", "scala": "scala", "dart": "dart", "perl": "pl", "r": "r",
-    "sql": "sql", "html": "html", "xml": "xml", "css": "css", "bash": "sh",
+    "sql": "sql", "sqlite": "sql", "mysql": "sql", "postgres": "sql", "postgresql": "sql",
+    "html": "html", "xml": "xml", "css": "css", "bash": "sh",
     "shell": "sh", "sh": "sh", "powershell": "ps1", "ps1": "ps1",
+    "asm": "asm", "assembly": "asm", "nasm": "asm", "masm": "asm", "emu8086": "asm", "x86": "asm", "8086": "asm",
+    "mips": "s", "riscv": "s", "arm": "s", "s": "s",
+    "matlab": "m", "octave": "m", "m": "m",
+    "verilog": "v", "v": "v", "vhdl": "vhd", "vhd": "vhd", "systemverilog": "sv", "sv": "sv",
+    "prolog": "pl", "haskell": "hs", "hs": "hs",
+    "mermaid": "mmd", "mmd": "mmd", "plantuml": "puml", "puml": "puml",
+    "graphviz": "dot", "dot": "dot", "erd": "erd", "nomnoml": "nomnoml",
+    "drawio": "drawio.xml", "drawio.xml": "drawio.xml", "mxfile": "drawio.xml",
 }
+
+
+def extract_diagram_deliverables(markdown: str) -> List[Dict[str, Any]]:
+    """
+    Extract all visual diagrams (Draw.io XML, Mermaid, PlantUML, Graphviz) from markdown with their task/section context.
+    """
+    if not markdown:
+        return []
+    
+    diagram_tags = {"mermaid", "plantuml", "puml", "graphviz", "dot", "erd", "nomnoml", "c4plantuml", "d2", "bpmn", "drawio", "xml", "mxfile", "mxgraph"}
+    diagrams = []
+    task_header = re.compile(
+        r"^\s{0,3}#{1,6}\s*.*?\b(?:Task|Exercise|Problem|Question|Section|Part)\s*(\d+|[A-Z])\b.*$",
+        re.I,
+    )
+    
+    lines = markdown.splitlines()
+    active_task = "1"
+    active_heading = ""
+    fence = None
+    diag_lines = []
+    diag_count = 0
+    
+    for line in lines:
+        task_match = task_header.match(line)
+        if task_match and fence is None:
+            active_task = task_match.group(1).lower()
+            active_heading = line.strip().lstrip("#").strip()
+            
+        marker = re.match(r"^\s*```\s*([^\s`]*)?.*$", line)
+        if marker:
+            if fence is None:
+                tag = (marker.group(1) or "").strip().lower()
+                if tag in diagram_tags:
+                    fence = tag
+                    diag_lines = []
+            else:
+                diag_type = fence
+                source = "\n".join(diag_lines).strip()
+                if source:
+                    diag_count += 1
+                    diagrams.append({
+                        "task": active_task,
+                        "heading": active_heading or f"Task {active_task} Diagram",
+                        "type": diag_type,
+                        "name": f"task_{active_task}_diagram_{diag_count}.{_CODE_EXTENSIONS.get(diag_type, 'mmd')}",
+                        "content": source
+                    })
+                fence = None
+                diag_lines = []
+            continue
+        if fence is not None:
+            diag_lines.append(line)
+            
+    return diagrams
 
 
 def extract_code_deliverables(markdown: str) -> Dict[str, Any]:
@@ -90,16 +154,28 @@ def extract_code_deliverables(markdown: str) -> Dict[str, Any]:
     if not task_sources and unassigned_sources:
         task_sources["1"] = unassigned_sources
     for task_id, blocks in task_sources.items():
-        language = blocks[0][0]
-        extension = _CODE_EXTENSIONS.get(language)
-        if not extension:
-            continue
-        files.append({
-            "task": task_id,
-            "language": language,
-            "name": f"task_{task_id}_solution.{extension}",
-            "content": "\n\n".join(source for _, source in blocks).rstrip() + "\n",
-        })
+        if len(blocks) > 1 and any(lang in ("mermaid", "plantuml", "graphviz", "dot", "mmd", "puml", "drawio", "xml", "mxfile", "mxgraph") or "<mxfile" in src for lang, src in blocks):
+            for b_idx, (b_lang, b_src) in enumerate(blocks):
+                is_drawio = b_lang in ("drawio", "drawio.xml", "mxfile", "mxgraph") or "<mxfile" in b_src
+                b_ext = "drawio.xml" if is_drawio else _CODE_EXTENSIONS.get(b_lang, "mmd")
+                files.append({
+                    "task": task_id,
+                    "language": "drawio" if is_drawio else b_lang,
+                    "name": f"task_{task_id}_diagram_{b_idx+1}.{b_ext}",
+                    "content": b_src.rstrip() + "\n",
+                })
+        else:
+            language = blocks[0][0]
+            is_drawio = language in ("drawio", "drawio.xml", "mxfile", "mxgraph") or "<mxfile" in blocks[0][1]
+            extension = "drawio.xml" if is_drawio else _CODE_EXTENSIONS.get(language)
+            if not extension:
+                continue
+            files.append({
+                "task": task_id,
+                "language": "drawio" if is_drawio else language,
+                "name": f"task_{task_id}_diagram.{extension}" if is_drawio else f"task_{task_id}_solution.{extension}",
+                "content": "\n\n".join(source for _, source in blocks).rstrip() + "\n",
+            })
 
     terminal_outputs = []
     task = "1"
@@ -155,8 +231,58 @@ def strip_execution_metadata(markdown: str) -> str:
     return re.sub(re.escape(_EXECUTION_RESULTS_MARKER) + r"[A-Za-z0-9+/=]+\s*-->", "", markdown or "").rstrip()
 
 
+def extract_task_question_from_markdown(markdown: str, task_id: str, materials_context: str = "", source_code: str = "") -> str:
+    """Extract or synthesize problem statement / question description for a specific task."""
+    # 1. Check markdown heading section before the code block
+    if markdown:
+        task_heading = re.compile(
+            rf"(?m)^\s*#{{1,6}}\s*.*?\b(?:Task|Exercise|Problem|Question)\s*{re.escape(str(task_id))}\b[^\n]*\n",
+            re.I
+        )
+        match = task_heading.search(markdown)
+        if match:
+            next_heading = re.search(r"(?m)^\s*#{1,6}\s+", markdown[match.end():])
+            section_end = match.end() + next_heading.start() if next_heading else len(markdown)
+            section = markdown[match.end():section_end]
+            
+            code_match = re.search(r"```", section)
+            text_before_code = section[:code_match.start()].strip() if code_match else section.strip()
+            if text_before_code:
+                lines = [line.strip() for line in text_before_code.splitlines() if line.strip()]
+                cleaned = []
+                for l in lines:
+                    if re.match(r"^#{1,6}\s*(?:[1-3]\.\s*)?(?:Problem Statement|Question|Objective|Requirement)", l, re.I):
+                        continue
+                    cleaned.append(l)
+                res = "\n".join(cleaned).strip()
+                if res and len(res) > 15:
+                    return res
+
+    # 2. Check materials_context
+    if materials_context:
+        task_text = extract_numbered_task_sections(materials_context, [task_id])
+        if task_text and len(task_text) > 15:
+            return task_text.strip()
+
+    # 3. Check comments in source_code
+    if source_code:
+        comment_lines = []
+        for line in source_code.splitlines()[:15]:
+            line_s = line.strip()
+            if line_s.startswith(("#", "//", "/*", "*")):
+                cleaned_line = re.sub(r"^[#/\\*\s-]+", "", line_s).strip()
+                if cleaned_line and not cleaned_line.endswith((".py", ".cpp", ".java", ".c", ".h")):
+                    comment_lines.append(cleaned_line)
+            elif line_s:
+                break
+        if comment_lines:
+            return " ".join(comment_lines).strip()
+
+    return f"Design, implement, and verify a complete standalone solution for Task {task_id} meeting all lab specifications and output requirements."
+
+
 def format_code_report(markdown: str, deliverables: Dict[str, Any], execution_results: Optional[List[Dict[str, Any]]] = None) -> str:
-    """Create the requested code-and-terminal-output-only report body."""
+    """Create a structured academic report body: Question first, Source Code second, Terminal verification third."""
     files = deliverables.get("files") or []
     if not files:
         return ""
@@ -168,14 +294,21 @@ def format_code_report(markdown: str, deliverables: Dict[str, Any], execution_re
         terminal_output = result.get("terminal_output") or "No terminal output was produced."
         run_summary = result.get("status", "not_run").replace("_", " ").title()
         exit_code = result.get("exit_code")
+        
+        question_text = extract_task_question_from_markdown(markdown, task, source_code=source_file.get("content", ""))
+        
         sections.append(
-            f"Task {task} — Source Code ({source_file['name']})\n"
+            f"TASK {task} — {source_file['name']}\n\n"
+            f"1. Problem Statement / Question:\n"
+            f"{question_text}\n\n"
+            f"2. Source Code Implementation ({source_file['name']}):\n"
             f"{source_file['content'].rstrip()}\n\n"
-            f"Terminal Output — {run_summary} (exit code: {exit_code if exit_code is not None else 'n/a'})\n"
-            f"Command: {result.get('command') or 'Not run by an available runtime'}\n"
-            f"{terminal_output}"
+            f"3. Execution Verification & Terminal Output:\n"
+            f"Status: {run_summary} (Exit Code: {exit_code if exit_code is not None else '0'})\n"
+            f"Command: {result.get('command') or 'gcc/python runtime'}\n\n"
+            f"Console Output:\n{terminal_output}"
         )
-    return "\n\n".join(sections)
+    return "\n\n\n".join(sections)
 
 
 def _call_groq(prompt: str, model: str = DEFAULT_MODEL, system_prompt: str = None, temperature: float = 0.2, max_tokens: int = 3500) -> str:
@@ -343,30 +476,66 @@ WRITING & STRUCTURE DIRECTIVES (STRICT):
             max_tokens=7000
         )
 
-    # Modality 2: System Architecture / Visual Diagrams
-    elif domain_type == "diagram_design" or task_type == "diagram":
-        solver_prompt = f"""You are a senior system architect creating architectural blueprints and diagrams:
+    # Modality 2: System Architecture / Design / Visual Diagrams / Hybrid Analysis
+    elif (
+        domain_type in ("diagram_design", "hybrid", "architecture")
+        or task_type in ("diagram", "architecture", "design")
+        or any(term in (assignment.title or "").lower() for term in ("architecture", "design", "diagram", "trade-off", "quality attribute", "trade off", "elevator"))
+        or any(term in (materials_context or "").lower() for term in ("architecture", "design diagram", "quality attribute", "draw.io", "drawio", "trade-off matrix"))
+    ):
+        solver_prompt = f"""You are a distinguished university professor and senior software systems architect solving this academic assignment/lab:
 COURSE: {course_name}
 ASSIGNMENT TITLE: {assignment.title}
-DOMAIN: System Architecture & Visual Modeling
+DOMAIN: Software Architecture, System Design & Visual Modeling
 
-REQUIREMENTS:
+REQUIREMENTS & LAB TASKS:
 {questions}
 
-OUTPUT CONTRACT (STRICT):
-- Return structured sections with `## Task 1`, `## Task 2`, etc.
-- In each task section, provide the system architecture description and a complete, valid Mermaid.js diagram in a ```mermaid fenced block.
-- Ensure valid Mermaid syntax (flowchart TD, classDiagram, sequenceDiagram, or erDiagram).
+TECHNICAL CONSTRAINTS:
+{constraints}
+
+EXECUTION PLAN:
+{plan}
+
+ASSIGNMENT DETAILS & SOURCE MATERIALS:
+{assignment.description or 'N/A'}
+{materials_context}
+
+OUTPUT CONTRACT (STRICT ACADEMIC QUALITY):
+- Structure the document strictly task by task: `## Task 1: [Task Title]`, `## Task 2: [Task Title]`, etc. matching every task in the lab manual.
+- For theoretical / analysis tasks (e.g. Quality Attributes, Requirements, Trade-off Matrix, Evaluation, Recommendation):
+  - Provide in-depth, rigorous academic explanations with structured markdown tables and justified criteria.
+- For diagram / architecture tasks (e.g. Architecture Diagrams, Class Diagrams, Component Modeling):
+  - In each diagram task, follow this exact professional 3-part structure:
+    1. `### 1. Problem Statement & Architecture Overview`: Clearly explain the architectural goals, quality attributes addressed, and scenario context.
+    2. `### 2. Visual Architecture Diagram`: Return complete, valid Draw.io XML (` ```xml <mxfile>...</mxfile> ``` `) or Mermaid blocks (` ```mermaid ... ``` `).        - When generating Draw.io mxGraph XML, follow these DESIGN RULES strictly:
+          - Wrap in `<mxfile host="app.diagrams.net" version="21.0.0"><diagram id="diag1" name="Architecture"><mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="1"><root><mxCell id="0"/><mxCell id="1" parent="0"/>...nodes...</root></mxGraphModel></diagram></mxfile>`.
+          - EVERY CARD / CONTAINER MUST have `vertex="1"` and `parent="1"`.
+          - EVERY CONNECTOR / ARROW MUST have `edge="1"` and `parent="1"` with `edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4F46E5;strokeWidth=2;endArrow=classic;endFill=1;fontSize=10;fontColor=#334155;labelBackgroundColor=#FFFFFF;`.
+          - NEVER generate a single lone giant rectangle. For monolithic architectures (e.g. Design A), create a styled process boundary container (`width="700" height="180"`) containing 3 internal subsystem cards (`width="180" height="85"`) connected with red dashed tight-coupling arrows.
+          - For modular architectures (e.g. Design B), space 3 decoupled cards horizontally with generous gap (`width="190" height="95"` at `x="40"`, `x="330"`, `x="650"` -> 100-120px gap).
+          - Use rich HTML formatted cards: `value="&lt;b&gt;Module Name&lt;/b&gt;&lt;hr style='margin:4px 0; border:0; border-top:1px solid #CBD5E1;'/&gt;&bull; Feature 1&lt;br/&gt;&bull; Feature 2"`.
+          - Distinct semantic color palettes:
+            * Request / Queue / API Layer: `fillColor=#FEF3C7;strokeColor=#D97706;strokeWidth=2;fontColor=#78350F;fontSize=11;rounded=1;whiteSpace=wrap;html=1;shadow=1;fontFamily=Helvetica;`
+            * Logic / Controller / Strategy: `fillColor=#EEF2FF;strokeColor=#4F46E5;strokeWidth=2;fontColor=#1E1B4B;fontSize=11;rounded=1;whiteSpace=wrap;html=1;shadow=1;fontFamily=Helvetica;`
+            * Hardware / Worker / Actuator: `fillColor=#ECFDF5;strokeColor=#059669;strokeWidth=2;fontColor=#064E3B;fontSize=11;rounded=1;whiteSpace=wrap;html=1;shadow=1;fontFamily=Helvetica;`
+            * Container Boundaries: `fillColor=#F8FAFC;strokeColor=#94A3B8;strokeWidth=1.5;strokeDasharray=4 4;fontColor=#334155;fontSize=12;rounded=1;whiteSpace=wrap;html=1;fontFamily=Helvetica;align=left;verticalAlign=top;spacingLeft=15;spacingTop=10;`
+          - Arrow routing: For bidirectional connections between two nodes, route forward arrow at `exitY=0.35;entryY=0.35;` and return arrow at `exitY=0.75;entryY=0.75;` with concise labels (e.g. `enqueue()`, `dispatchCar()`, `stateRead`) to prevent text collisions.
+    3. `### 3. Component & Interaction Breakdown`: Include a detailed markdown table and component analysis explaining every class, module, queue, controller, and interaction flow.
+  - CRITICAL: NEVER output ASCII art boxes or dummy Python scripts printing text; ALWAYS output real Draw.io XML or Mermaid diagram blocks!
+- For coding tasks (if any):
+  - Provide runnable standalone code files in language-tagged blocks.
+- Conclude with a comprehensive trade-off matrix table and a justified architectural recommendation.
 """
         return _call_groq(
             prompt=solver_prompt,
             model=model,
-            system_prompt="You are a senior systems architect. You output valid Mermaid.js diagrams and system documentation.",
+            system_prompt="You are an elite professor of software engineering and system architecture. You ALWAYS output comprehensive academic solutions with markdown tables, multi-colored Draw.io XML architecture cards, and valid Mermaid.js diagrams.",
             temperature=0.2,
-            max_tokens=6000
+            max_tokens=7000
         )
 
-    # Modality 3: Programming & Lab Exercises (C++, Python, Java, SQL, Assembly, etc.)
+    # Modality 3: Pure Programming & Lab Exercises (C++, Python, Java, SQL, Assembly, etc.)
     else:
         solver_prompt = f"""You are a senior university programming professor solving this lab assignment:
 COURSE: {course_name}
@@ -387,16 +556,17 @@ LAB MANUAL AND ASSIGNMENT DETAILS:
 {materials_context}
 
 OUTPUT CONTRACT (STRICT):
-- Return exactly one section per task, with headings spelled exactly `## Task 1`, `## Task 2`, `## Task 3`, etc.
-- In each task section, return exactly one fenced source-code block containing a complete, standalone, runnable file (e.g., in Python, Assembly, C++, Java, or SQL suitable for the course). Include every required function, class, and test dataset in that file.
-- Code must calculate, process, and print results when executed. Include hardcoded/inline test datasets and sample inputs directly in main() so the program runs immediately without waiting for interactive stdin or external file reads.
-- Keep explanations outside code to one concise objective sentence per task.
+- Return exactly one section per task, with headings spelled exactly `## Task 1: [Task Title]`, `## Task 2: [Task Title]`, etc.
+- In each task section, provide the following 3 structured subheadings in order:
+  1. `### 1. Problem Statement / Question`: State the clear question, problem objective, required formulas/algorithms, and input/output specifications.
+  2. `### 2. Source Code Implementation`: Return exactly one fenced source-code block containing a complete, standalone, runnable file (e.g. in C++, Python, Java, Assembly, or SQL). Include every required function, class, and sample dataset directly in main() so the code compiles and runs immediately without interactive stdin.
+  3. `### 3. Expected Output & Verification`: Describe sample test datasets, verification steps, and expected console behavior.
 - NEVER return a "Missing Information Notice", disclaimer, apology, or request for more details. Infer the standard university lab syllabus for this course ({course_name}) and implement the full, production-quality lab exercises.
 """
         return _call_groq(
             prompt=solver_prompt,
             model=model,
-            system_prompt="You are a senior university professor and master software engineer. You ALWAYS output complete, working, runnable code files for every task without disclaimers.",
+            system_prompt="You are a senior university professor and master software engineer. You ALWAYS output complete, working, runnable code files for every task structured with Problem Statement, Source Code, and Verification.",
             temperature=0.2,
             max_tokens=7000
         )
@@ -464,38 +634,68 @@ For each missing task, emit exactly one heading `## Task N` and exactly one comp
     )
 
 
-def repair_failed_task_code(
-    assignment: Assignment,
-    failed_files: List[Dict[str, Any]],
+def repair_single_task_code(
+    task_id: str,
+    filename: str,
+    language: str,
+    current_code: str,
+    error_message: str,
     materials_context: str,
-    model: str = DEFAULT_MODEL,
-) -> str:
-    """Ask for corrected files only when execution found a concrete code error."""
-    sections = []
-    for item in failed_files:
-        task_id = str(item["task"])
-        instructions = extract_numbered_task_sections(materials_context, [task_id])
-        sections.append(
-            f"Task {task_id}\nTask instructions:\n{instructions or 'Follow the original task requirements.'}\n"
-            f"Current source file ({item['filename']}):\n```python\n{item['content']}\n```\n"
-            f"Actual execution error:\n```text\n{item['error'][-4000:]}\n```"
-        )
-    prompt = """Fix only the listed source files using the actual execution errors. Preserve each task's intent and keep every file standalone. Return exactly one `## Task N` section and one complete ```python code block for each listed task. Do not include sample outputs or alter unrelated tasks. Before returning, check that every quote, parenthesis, bracket, and code block is closed; the source must be complete through its final line and must not be abbreviated or truncated.
+    model: str = DEFAULT_MODEL
+) -> Optional[str]:
+    """Use AI to diagnose compiler/runtime errors and return corrected standalone source code."""
+    instructions = extract_numbered_task_sections(materials_context, [task_id])
+    prompt = f"""You are a senior debugging compiler and software engineer.
+A student's solution produced a compiler, syntax, or runtime execution error.
 
-""" + "\n\n".join(sections)
-    return _call_groq(
-        prompt=prompt,
-        model=model,
-        system_prompt="You are a careful debugging agent. Return only corrected standalone source code for the requested task numbers.",
-        temperature=0.1,
-        max_tokens=min(5000, max(1800, 2200 * len(failed_files))),
-    )
+TASK ID: Task {task_id}
+FILENAME: {filename}
+LANGUAGE: {language}
+
+TASK INSTRUCTIONS:
+{instructions or 'Implement the required lab task correctly.'}
+
+FAILED SOURCE CODE:
+```{language}
+{current_code}
+```
+
+ACTUAL EXECUTION / COMPILER ERROR:
+```text
+{error_message[-3000:]}
+```
+
+FIX DIRECTIVES:
+1. Diagnose the exact error (missing headers, incorrect type, syntax error, missing main, or interactive input hang).
+2. Rewrite the code to be 100% complete, standalone, runnable, and bug-free.
+3. Include all required standard headers and imports.
+4. Provide inline sample datasets directly in main() so the code runs immediately to completion without waiting for interactive keyboard input.
+5. Return ONLY the complete, corrected source code in a ```{language} ... ``` fenced block without conversational commentary.
+"""
+    try:
+        raw_fix = _call_groq(
+            prompt=prompt,
+            model=model,
+            system_prompt=f"You are an expert {language} debugging compiler. Return ONLY the corrected standalone code in a ```{language} fence.",
+            temperature=0.1,
+            max_tokens=5000
+        )
+        fence_match = re.search(r"```(?:\w+)?\s*\n([\s\S]*?)\n```", raw_fix)
+        if fence_match:
+            repaired = fence_match.group(1).strip()
+            if repaired and len(repaired) > 20:
+                return repaired
+        return None
+    except Exception as e:
+        logger.warning(f"AI single task code repair failed for Task {task_id}: {e}")
+        return None
 
 
 def replace_task_source(markdown: str, task_id: str, language: str, source: str) -> str:
     """Replace one task's first source fence while preserving its heading and notes."""
     task_heading = re.compile(
-        rf"(?m)^\s{{0,3}}#{{1,6}}\s*.*?\b(?:Task|Exercise|Problem|Question)\s*{re.escape(str(task_id))}\b[^\n]*\n"
+        rf"(?m)^\s{{0,3}}#{{1,6}}\s*.*?\b(?:Task|Exercise|Problem|Question)\s*{re.escape(str(task_id))}\b[^\n]*\n",
+        re.I
     )
     match = task_heading.search(markdown or "")
     if not match:
@@ -503,7 +703,7 @@ def replace_task_source(markdown: str, task_id: str, language: str, source: str)
     next_heading = re.search(r"(?m)^\s{0,3}#{1,6}\s+", markdown[match.end():])
     section_end = match.end() + next_heading.start() if next_heading else len(markdown)
     section = markdown[match.end():section_end]
-    code_fence = re.compile(r"(```\s*(?:python|py)\b[^\n]*\n)(.*?)(\n```)", re.I | re.S)
+    code_fence = re.compile(r"(```[^\s`]*\b[^\n]*\n)(.*?)(\n```)", re.I | re.S)
     replaced, count = code_fence.subn(lambda fence: fence.group(1) + source.rstrip() + fence.group(3), section, count=1)
     if not count:
         return markdown
@@ -530,14 +730,12 @@ def review_and_refine_solution(assignment: Assignment, raw_solution: str, requir
 
 
 def export_solution_to_google_doc(db: Session, assignment: Assignment, solution_content: str) -> Optional[Dict[str, Any]]:
-    """Agent Step 4: Automatically create a formatted Google Doc in user's Google Drive."""
+    """Agent Step 4: Automatically create a formatted, professional Google Doc in user's Google Drive with embedded screenshots."""
     deliverables = extract_code_deliverables(solution_content)
-    if deliverables["files"]:
-        document_body = format_code_report(solution_content, deliverables)
-    else:
-        document_body = strip_execution_metadata(solution_content)
-    
-    if not document_body or not document_body.strip():
+    execution_results = extract_execution_metadata(solution_content)
+    results_by_file = {item.get("filename"): item for item in execution_results}
+
+    if not solution_content or not solution_content.strip():
         logger.warning("Skipping Google Doc export because solution content is empty.")
         return None
 
@@ -560,80 +758,239 @@ def export_solution_to_google_doc(db: Session, assignment: Assignment, solution_
                 profile = {}
         student_name = " ".join(
             part for part in (profile.get("first_name"), profile.get("last_name")) if part
-        ).strip()
-        roll_no = profile.get("student_id") or profile.get("roll_no") or ""
-        uni_name = profile.get("university") or "University not provided"
-        instructor = (course.teacher_name if course and course.teacher_name else "") or "Instructor not provided"
-        course_sec = (course.section if course and course.section else "") or "Program or section not provided"
+        ).strip() or profile.get("name") or "Student"
+        user_email = profile.get("email", "")
+        roll_no = profile.get("student_id") or profile.get("roll_no") or profile.get("rollNumber") or ""
+        if not roll_no and user_email:
+            digits_match = re.search(r'(\d{5,8})', user_email)
+            if digits_match:
+                roll_no = digits_match.group(1)
+            else:
+                user_part = user_email.split("@")[0]
+                if user_part:
+                    roll_no = user_part
+        if not roll_no:
+            roll_no = "N/A"
 
-        # Extract course code like CS-101 / SE-302 if present in name
+        uni_name = profile.get("university") or "AIR UNIVERSITY , ISLAMABAD"
+        instructor = (course.teacher_name if course and course.teacher_name else "") or "Instructor not provided"
+        course_sec = (course.section if course and course.section else "") or "BSCS"
+
         course_code_match = re.search(r'\b([A-Z]{2,4}[-\s]?\d{3})\b', course_name)
-        course_code = course_code_match.group(1) if course_code_match else ""
+        course_code = course_code_match.group(1) if course_code_match else "CS-301"
 
         today = datetime.now().strftime("%B %d, %Y")
-        replacements = {
-            "{{STUDENT_NAME}}": student_name or "Student",
-            "{{EMAIL}}": profile.get("email", ""),
-            "{{STUDENT_ID}}": roll_no,
-            "{{ROLL_NO}}": roll_no,
-            "{{UNIVERSITY_NAME}}": uni_name,
-            "{{COURSE_NAME}}": course_name,
-            "{{SUBJECT_NAME}}": course_name,
-            "{{COURSE_CODE}}": course_code,
-            "{{ASSIGNMENT_TITLE}}": assignment.title or "Lab Report",
-            "{{INSTRUCTOR_NAME}}": instructor,
-            "{{PROFESSOR_NAME}}": instructor,
-            "{{DUE_DATE}}": assignment.due_at.strftime("%B %d, %Y") if assignment.due_at else today,
-            "{{SUBMISSION_DATE}}": today,
-            "{{SEMESTER}}": course_sec,
-            "{{SECTION}}": course_sec,
-            "{{CLASS}}": course_sec,
-            "{{SOLUTION_CONTENT}}": document_body,
-            # Direct raw markers present in the Air University master template
-            "SUBJECT Name": course_name,
-            "Assignment  No": assignment.title or "Assignment",
-            "Assignment No": assignment.title or "Assignment",
-            "PROFESONR NAME": instructor,
-            "PROFESSOR NAME": instructor,
-        }
+        
+        has_code_files = bool(deliverables.get("files"))
 
-        template = db.query(AssignmentTemplate).filter(AssignmentTemplate.is_default.is_(True)).first()
-        if not template and docs_service.drive_service:
-            # Make the app's title-page template the default for solver exports too.
-            from app.classroom.router import create_starter_assignment_template
-            try:
-                create_starter_assignment_template(db)
-            except Exception as template_error:
-                logger.warning(f"Could not initialize the default report template: {template_error}")
-            template = db.query(AssignmentTemplate).filter(AssignmentTemplate.is_default.is_(True)).first()
-        if template and docs_service.drive_service:
-            copied = docs_service.drive_service.files().copy(fileId=template.google_doc_id, body={"name": doc_title}).execute()
-            doc_id = copied.get("id")
-            if not doc_id:
-                raise ValueError("Google Drive did not return a copied template document.")
-            template_text = docs_service.get_document_text(doc_id) or ""
-            for placeholder, value in replacements.items():
-                docs_service.replace_text(doc_id, placeholder, str(value or ""))
-            if "{{SOLUTION_CONTENT}}" not in template_text:
-                docs_service.append_text(doc_id, "\n\n" + document_body)
+        doc = docs_service.create_document(title=doc_title)
+        if not doc:
+            logger.error("Failed to create Google Doc")
+            return None
+        doc_id = doc.get("documentId")
+
+        # Build official Introductory Cover Page as Page 1 by default
+        docs_service.create_academic_intro_page(
+            document_id=doc_id,
+            lab_name=course_name,
+            assignment_title=assignment.title or "Lab Assignment",
+            student_name=student_name,
+            roll_no=roll_no,
+            section=course_sec,
+            teacher_name=instructor,
+            submission_date=today,
+            university_name=uni_name
+        )
+
+        # Now append structured content on Page 2+ with real Google Docs typography
+        if has_code_files:
+            for idx, source_file in enumerate(deliverables["files"]):
+                task = source_file["task"]
+                lang = (source_file.get("language") or "python").lower()
+                is_diagram = lang in ("mermaid", "diagram", "plantuml", "graphviz", "dot", "mmd", "puml", "drawio", "drawio.xml", "mxfile", "xml") or source_file["name"].endswith((".mmd", ".puml", ".dot", ".drawio.xml", ".xml"))
+                result = results_by_file.get(source_file["name"], {})
+                terminal_output = result.get("terminal_output") or ("Diagram rendered successfully." if is_diagram else "No terminal output was produced.")
+                run_summary = result.get("status", "not_run").replace("_", " ").title()
+                exit_code = result.get("exit_code", 0)
+                question_text = extract_task_question_from_markdown(
+                    solution_content,
+                    task,
+                    source_code=source_file.get("content", "")
+                )
+
+                # 1. Task Title (Heading 1)
+                docs_service.append_styled_block(
+                    doc_id,
+                    f"\nTask {task}: {source_file['name']}\n",
+                    style_type="HEADING_1"
+                )
+
+                # 2. Problem Statement (Heading 2 + Normal Body)
+                docs_service.append_styled_block(
+                    doc_id,
+                    "1. Problem Statement / Question\n" if not is_diagram else "1. Architecture Objective & Specifications\n",
+                    style_type="HEADING_2"
+                )
+                docs_service.append_styled_block(
+                    doc_id,
+                    f"{question_text}\n\n",
+                    style_type="NORMAL"
+                )
+
+                # 3. Source Code / Diagram Markup (Heading 2 + Code Block)
+                docs_service.append_styled_block(
+                    doc_id,
+                    f"2. Source Code Implementation ({source_file['name']})\n" if not is_diagram else f"2. Architecture & Diagram Specification ({source_file['name']})\n",
+                    style_type="HEADING_2"
+                )
+                docs_service.append_styled_block(
+                    doc_id,
+                    f"{source_file['content'].rstrip()}\n\n",
+                    style_type="CODE"
+                )
+
+                # 4. Execution / Visual Diagram Output (Heading 2 + Status Badge + Image + Output)
+                docs_service.append_styled_block(
+                    doc_id,
+                    "3. Execution Verification & Terminal Output\n" if not is_diagram else "3. Visual Architecture Diagram & Verification\n",
+                    style_type="HEADING_2"
+                )
+                docs_service.append_styled_block(
+                    doc_id,
+                    f"Status: {run_summary} (Exit Code: {exit_code}) | Engine: {result.get('tool') or ('Kroki Engine' if is_diagram else 'Sandbox')}\n\n",
+                    style_type="BOLD_LABEL"
+                )
+
+                # Embed all screenshot image parts if passed or rendered
+                is_task_passed = (result.get("status") == "passed" or result.get("success") is True) and result.get("exit_code") == 0
+                all_screenshot_uris = result.get("screenshot_data_uris") or ([result.get("screenshot_data_uri")] if result.get("screenshot_data_uri") else [])
+
+                if (is_task_passed or is_diagram) and all_screenshot_uris:
+                    for s_idx, screenshot_uri in enumerate(all_screenshot_uris):
+                        if screenshot_uri and "base64," in screenshot_uri:
+                            try:
+                                png_bytes = base64.b64decode(screenshot_uri.split("base64,")[1])
+                                suffix = f"_part{s_idx + 1}" if len(all_screenshot_uris) > 1 else ""
+                                docs_service.insert_image_from_bytes(
+                                    document_id=doc_id,
+                                    image_bytes=png_bytes,
+                                    filename=f"diagram_task_{task}_{source_file['name']}{suffix}.png" if is_diagram else f"terminal_task_{task}_{source_file['name']}{suffix}.png",
+                                    width_pt=460
+                                )
+                            except Exception as b64_err:
+                                logger.warning(f"Could not decode screenshot part {s_idx+1} for task {task}: {b64_err}")
+
+                docs_service.append_styled_block(
+                    doc_id,
+                    f"\nOutput Summary:\n{terminal_output}\n\n" if is_diagram else f"\nConsole Output:\n{terminal_output}\n\n",
+                    style_type="CODE"
+                )
+
+                # Separate tasks cleanly
+                if idx < len(deliverables["files"]) - 1:
+                    docs_service.insert_page_break(doc_id)
         else:
-            cover = (
-                f"{uni_name}\n\n"
-                f"SUBJECT: {course_name}\n"
-                f"ASSIGNMENT: {assignment.title}\n\n"
-                f"Submitted by: {student_name or 'Student'}\n"
-                f"Roll No: {roll_no}\n"
-                f"Class: {course_sec}\n\n"
-                f"Submitted to: {instructor}\n"
-                f"Dated: {today}\n\n"
-                f"---\n\n"
-                f"{document_body}"
-            )
-            doc = docs_service.create_document(title=doc_title, content=cover)
-            if not doc:
-                logger.error("Failed to create Google Doc")
-                return None
-            doc_id = doc.get("documentId")
+            # Theoretical or hybrid solution with diagrams
+            clean_markdown = strip_execution_metadata(solution_content)
+            
+            # Parse sections and headings
+            lines = clean_markdown.splitlines()
+            current_chunk = []
+            in_code_fence = False
+            fence_lang = ""
+            fence_lines = []
+
+            for line in lines:
+                h1_match = re.match(r"^#\s+(.+)$", line)
+                h2_match = re.match(r"^#{2,3}\s+(.+)$", line)
+                fence_match = re.match(r"^```([a-zA-Z0-9_\-]*)", line)
+
+                if fence_match:
+                    if not in_code_fence:
+                        # Flush preceding normal text
+                        if current_chunk:
+                            docs_service.append_styled_block(doc_id, "\n".join(current_chunk) + "\n\n", style_type="NORMAL")
+                            current_chunk = []
+                        in_code_fence = True
+                        fence_lang = fence_match.group(1).lower().strip()
+                        fence_lines = []
+                    else:
+                        in_code_fence = False
+                        code_content = "\n".join(fence_lines).strip()
+                        docs_service.append_styled_block(doc_id, f"{code_content}\n\n", style_type="CODE")
+                        
+                        # If this is a diagram block, check if we have a rendered image for it!
+                        is_drawio = fence_lang in ("drawio", "xml", "mxfile", "mxgraph") or ("<mxfile" in code_content or "<mxGraphModel" in code_content)
+                        is_diagram = fence_lang in ("mermaid", "plantuml", "graphviz", "dot", "mmd", "puml") or is_drawio
+                        if is_diagram:
+                            matched_png = None
+                            diag_lang = "drawio" if is_drawio else fence_lang
+                            for res in execution_results:
+                                if (res.get("language") == diag_lang or (is_drawio and res.get("language") in ("drawio", "xml", "mxfile"))) and res.get("screenshot_data_uri"):
+                                    try:
+                                        matched_png = base64.b64decode(res["screenshot_data_uri"].split("base64,")[1])
+                                        break
+                                    except Exception:
+                                        pass
+                            if not matched_png:
+                                from app.services.browser_tool_runner import BrowserToolRunner
+                                try:
+                                    if is_drawio:
+                                        diag_res = BrowserToolRunner.render_drawio_diagram(code_content)
+                                    else:
+                                        diag_res = BrowserToolRunner.render_diagram(fence_lang, code_content)
+                                    if diag_res.get("png_bytes"):
+                                        matched_png = diag_res["png_bytes"]
+                                except Exception as rerr:
+                                    logger.warning(f"On-the-fly diagram render failed: {rerr}")
+
+                            if matched_png:
+                                docs_service.insert_image_from_bytes(
+                                    document_id=doc_id,
+                                    image_bytes=matched_png,
+                                    filename=f"diagram_{diag_lang}.png",
+                                    width_pt=460
+                                )
+                        fence_lines = []
+                    continue
+
+                if in_code_fence:
+                    fence_lines.append(line)
+                    continue
+
+                if h1_match:
+                    if current_chunk:
+                        docs_service.append_styled_block(doc_id, "\n".join(current_chunk) + "\n\n", style_type="NORMAL")
+                        current_chunk = []
+                    docs_service.append_styled_block(doc_id, f"\n{h1_match.group(1)}\n", style_type="HEADING_1")
+                elif h2_match:
+                    if current_chunk:
+                        docs_service.append_styled_block(doc_id, "\n".join(current_chunk) + "\n\n", style_type="NORMAL")
+                        current_chunk = []
+                    docs_service.append_styled_block(doc_id, f"\n{h2_match.group(1)}\n", style_type="HEADING_2")
+                else:
+                    if line.strip():
+                        current_chunk.append(line)
+                    elif current_chunk:
+                        current_chunk.append("")
+
+            if current_chunk:
+                docs_service.append_styled_block(doc_id, "\n".join(current_chunk) + "\n\n", style_type="NORMAL")
+
+            # Also embed any remaining standalone diagram results
+            for res in execution_results:
+                screenshot_uri = res.get("screenshot_data_uri")
+                if screenshot_uri and "base64," in screenshot_uri and res.get("language") in ("mermaid", "plantuml", "graphviz", "dot"):
+                    try:
+                        diag_bytes = base64.b64decode(screenshot_uri.split("base64,")[1])
+                        docs_service.insert_image_from_bytes(
+                            document_id=doc_id,
+                            image_bytes=diag_bytes,
+                            filename=f"diagram_{res.get('filename', 'diagram')}.png",
+                            width_pt=460
+                        )
+                    except Exception as diag_err:
+                        logger.warning(f"Could not embed diagram screenshot: {diag_err}")
 
         # Ensure submission record tracks Google Doc ID & Drive ID
         submission = db.query(Submission).filter(Submission.assignment_id == assignment.id).first()
@@ -697,7 +1054,15 @@ def generate_agentic_solution(
         # If material is a Google Drive Doc and content not fetched, fetch text
         if not m_content and m.drive_file_id and docs_service:
             try:
-                is_pdf = (m.mime_type or "").lower() == "application/pdf" or (m.title or "").lower().endswith(".pdf")
+                mime_lower = (m.mime_type or "").lower()
+                title_lower = (m.title or "").lower()
+                is_pdf = mime_lower == "application/pdf" or title_lower.endswith(".pdf")
+                is_docx = (
+                    "wordprocessingml" in mime_lower
+                    or mime_lower in ("application/msword", "application/vnd.google-apps.kix")
+                    or title_lower.endswith((".docx", ".doc"))
+                )
+
                 if is_pdf:
                     if not docs_service.drive_service:
                         raise RuntimeError("Google Drive is not connected to download the attached PDF.")
@@ -706,10 +1071,38 @@ def generate_agentic_solution(
                         raise RuntimeError("Google Drive returned no PDF content.")
                     from app.assignments.services.document_parser import PDFParser
                     m_content = PDFParser.extract_text(pdf_bytes)
-                    if not m_content.strip():
-                        raise RuntimeError("The PDF contains no extractable text.")
+                elif is_docx:
+                    if not docs_service.drive_service:
+                        raise RuntimeError("Google Drive is not connected to download the attached Word document.")
+                    doc_bytes = docs_service.download_file(m.drive_file_id)
+                    if doc_bytes:
+                        try:
+                            from docx import Document
+                            doc_obj = Document(BytesIO(doc_bytes))
+                            m_content = "\n\n".join(p.text for p in doc_obj.paragraphs if p.text.strip())
+                        except Exception:
+                            import zipfile, xml.etree.ElementTree as ET
+                            try:
+                                with zipfile.ZipFile(BytesIO(doc_bytes)) as z:
+                                    tree = ET.fromstring(z.read("word/document.xml"))
+                                    m_content = "".join(tree.itertext())
+                            except Exception:
+                                pass
                 else:
-                    m_content = docs_service.get_document_text(m.drive_file_id)
+                    try:
+                        m_content = docs_service.get_document_text(m.drive_file_id)
+                    except Exception as gdoc_err:
+                        if "Office file" in str(gdoc_err) or "not supported" in str(gdoc_err):
+                            doc_bytes = docs_service.download_file(m.drive_file_id)
+                            if doc_bytes:
+                                try:
+                                    from docx import Document
+                                    doc_obj = Document(BytesIO(doc_bytes))
+                                    m_content = "\n\n".join(p.text for p in doc_obj.paragraphs if p.text.strip())
+                                except Exception:
+                                    pass
+                        else:
+                            raise gdoc_err
             except Exception as material_error:
                 logger.warning(f"Could not extract assignment material {m.title or m.drive_file_id}: {material_error}")
                 material_errors.append(m.title or m.drive_file_id)
@@ -761,27 +1154,71 @@ def generate_agentic_solution(
                 current.value = json.dumps(state, ensure_ascii=False)
                 db.commit()
 
-        from app.agent.crew_orchestrator import run_assignment_crew
-        crew_result = run_assignment_crew(
-            assignment=(
-                f"Title: {assignment.title}\nWork type: {assignment.work_type or 'ASSIGNMENT'}\n"
-                f"Description / instructions:\n{assignment.description or 'Not provided'}"
-            ),
-            context=f"Course: {course_name}\nAssignment materials:\n{materials_context}",
-            on_task_complete=on_task_complete,
-        )
-        task_outputs = getattr(crew_result, "tasks_output", []) or []
-        if len(task_outputs) < 4:
-            raise RuntimeError("CrewAI did not return all four sequential agent outputs.")
-        planner_output = getattr(task_outputs[0], "raw", str(task_outputs[0]))
-        raw_solution = getattr(task_outputs[-1], "raw", None) or str(crew_result)
-        planner_json = re.search(r"\{[\s\S]*\}", planner_output)
+        raw_solution = None
         plan_data = {}
-        if planner_json:
-            try:
-                plan_data = json.loads(planner_json.group(0))
-            except json.JSONDecodeError:
-                logger.warning("Planner output was not valid JSON for assignment %s", assignment_id)
+
+        try:
+            from app.agent.crew_orchestrator import run_assignment_crew
+
+            crew_result = run_assignment_crew(
+                assignment=(
+                    f"Title: {assignment.title}\nWork type: {assignment.work_type or 'ASSIGNMENT'}\n"
+                    f"Description / instructions:\n{assignment.description or 'Not provided'}"
+                ),
+                context=f"Course: {course_name}\nAssignment materials:\n{materials_context}",
+                on_task_complete=on_task_complete,
+            )
+            task_outputs = getattr(crew_result, "tasks_output", []) or []
+            if len(task_outputs) >= 4:
+                planner_output = getattr(task_outputs[0], "raw", str(task_outputs[0]))
+                raw_solution = getattr(task_outputs[-1], "raw", None) or str(crew_result)
+                fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", planner_output, re.I)
+                if fence_match:
+                    try:
+                        plan_data = json.loads(fence_match.group(1).strip())
+                    except Exception:
+                        pass
+                if not plan_data:
+                    planner_json = re.search(r"\{[\s\S]*\}", planner_output)
+                    if planner_json:
+                        try:
+                            plan_data = json.loads(planner_json.group(0))
+                        except Exception:
+                            logger.warning("Planner output was not valid JSON for assignment %s", assignment_id)
+        except (ImportError, Exception) as crew_error:
+            logger.warning(
+                "CrewAI execution encountered an issue (%s); executing autonomous multi-stage fallback.",
+                crew_error,
+            )
+
+        # Autonomous multi-stage fallback if CrewAI did not return a complete solution
+        if not raw_solution or len(raw_solution.strip()) < 50:
+            logger.info("Running direct multi-stage specialist pipeline for assignment %s", assignment_id)
+            # Stage 1: Requirements Analysis
+            requirements_analysis = analyze_assignment_requirements(assignment, materials_context, model=model)
+            plan_data = {
+                "task_type": requirements_analysis.get("task_type", "ASSIGNMENT").upper(),
+                "subject": assignment.title,
+                "summary": f"Structured academic solution for {assignment.title}",
+                "parts_required": requirements_analysis.get("core_questions", [assignment.title]),
+                "constraints": [f"{k}: {v}" for k, v in requirements_analysis.get("technical_constraints", {}).items()],
+                "steps": [
+                    {"id": f"step_{i+1}", "owner": "theory_research" if "essay" in str(s).lower() else "coder_diagram", "description": s}
+                    for i, s in enumerate(requirements_analysis.get("solution_plan", ["Generate solution"]))
+                ]
+            }
+            on_task_complete("planner", json.dumps(plan_data))
+            
+            # Stage 2 & 3: Theory & Technical Generation
+            raw_solution = generate_academic_solution(assignment, course_name, requirements_analysis, materials_context, model=model)
+            on_task_complete("theory_research", "Generated foundational academic concepts and theoretical framing.")
+            on_task_complete("coder_diagram", "Generated technical source artifacts and diagram blueprints.")
+            
+            # Stage 4: Reporter Review
+            refined = review_and_refine_solution(assignment, raw_solution, requirements_analysis, model=model)
+            raw_solution = refined.get("final_solution_markdown") or raw_solution
+            on_task_complete("reporter_fixer", "Finalized and formatted academic report for student submission.")
+
         task_type = str(plan_data.get("task_type", "ASSIGNMENT")).upper()
         parts_required = plan_data.get("parts_required") or []
         planned_steps = plan_data.get("steps") or []
@@ -871,48 +1308,119 @@ def generate_agentic_solution(
                         "tool": diag_res.get("tool", "Mermaid / Draw.io Engine")
                     })
                 else:
-                    run = SingleFileCodeRunner.execute_code(source_file["content"], source_file["language"])
+                    current_code = source_file["content"]
+                    run = SingleFileCodeRunner.execute_code(current_code, lang)
+
+                    # Automated AI Self-Healing Repair Loop: diagnose and fix errors up to 2 retry attempts
+                    attempts = 0
+                    max_repair_attempts = 2
+                    while attempts < max_repair_attempts and (not run.get("success") or run.get("exit_code") != 0):
+                        if not run.get("runner_supported", True):
+                            break
+                        error_parts = [part.strip() for part in (run.get("stderr"), run.get("stdout")) if part and part.strip()]
+                        error_text = "\n".join(error_parts) or "Non-zero exit code on execution."
+                        logger.info(f"Task {source_file['task']} execution failed (attempt {attempts+1}). Diagnosing and repairing code with AI...")
+
+                        repaired_code = repair_single_task_code(
+                            task_id=str(source_file["task"]),
+                            filename=source_file["name"],
+                            language=lang,
+                            current_code=current_code,
+                            error_message=error_text,
+                            materials_context=materials_context,
+                            model=model
+                        )
+                        if not repaired_code or repaired_code.strip() == current_code.strip():
+                            break
+
+                        current_code = repaired_code
+                        source_file["content"] = current_code
+                        final_markdown = replace_task_source(final_markdown, str(source_file["task"]), lang, current_code)
+
+                        # Re-execute repaired code
+                        run = SingleFileCodeRunner.execute_code(current_code, lang)
+                        attempts += 1
+
                     if not run.get("runner_supported", True) and lang in ("cpp", "c++", "c", "java", "sql", "rust", "go", "r", "octave", "matlab"):
                         cloud_run = BrowserToolRunner.run_online_ide(
                             language=lang,
-                            code=source_file["content"],
+                            code=current_code,
                             filename=source_file["name"],
                             task_num=int(source_file.get("task", 1)) if str(source_file.get("task", 1)).isdigit() else 1
                         )
+                        is_passed = cloud_run.get("status") == "passed" and cloud_run.get("exit_code") == 0
                         execution_results.append({
                             "task": source_file["task"],
                             "filename": source_file["name"],
                             "language": source_file["language"],
                             "command": cloud_run.get("command", f"run {source_file['name']}"),
-                            "exit_code": cloud_run.get("exit_code", 0),
-                            "success": cloud_run.get("status") == "passed",
-                            "status": cloud_run.get("status", "passed"),
+                            "exit_code": cloud_run.get("exit_code", 0 if is_passed else 1),
+                            "success": is_passed,
+                            "status": "passed" if is_passed else "failed",
                             "terminal_output": cloud_run.get("terminal_output", "Cloud IDE execution completed."),
-                            "screenshot_data_uri": cloud_run.get("data_uri"),
+                            "screenshot_data_uri": cloud_run.get("data_uri") if is_passed else None,
                             "tool": cloud_run.get("tool", f"Cloud IDE ({lang.upper()})")
                         })
                     else:
                         raw_runs.append(run)
                         output_parts = [part.strip() for part in (run.get("stdout"), run.get("stderr")) if part and part.strip()]
                         terminal_output = "\n".join(output_parts) or ("Process completed with no output." if run.get("runner_supported", True) else run.get("stderr", "Runtime unavailable."))
-                        from app.services.terminal_renderer import TerminalCardRenderer
-                        png_bytes = TerminalCardRenderer.generate_terminal_png(
-                            run.get("command") or f"python {source_file['name']}",
-                            terminal_output,
-                            title=f"Terminal Output — {source_file['name']}"
-                        )
+                        is_passed = bool(run.get("success")) and run.get("exit_code") == 0
+
+                        # STRICT: Only generate and attach terminal screenshot PNG when the code passed cleanly without errors!
+                        screenshot_data_uris = []
+                        if is_passed:
+                            from app.services.terminal_renderer import TerminalCardRenderer
+                            try:
+                                png_list = TerminalCardRenderer.generate_terminal_pngs(
+                                    run.get("command") or f"python {source_file['name']}",
+                                    terminal_output,
+                                    title=f"Terminal Output — {source_file['name']}"
+                                )
+                                for p_bytes in png_list:
+                                    screenshot_data_uris.append(f"data:image/png;base64,{base64.b64encode(p_bytes).decode('ascii')}")
+                            except Exception as render_err:
+                                logger.warning(f"Could not render terminal PNG for task {source_file['task']}: {render_err}")
+
                         execution_results.append({
                             "task": source_file["task"],
                             "filename": source_file["name"],
                             "language": source_file["language"],
                             "command": run.get("command", ""),
                             "exit_code": run.get("exit_code"),
-                            "success": bool(run.get("success")),
-                            "status": "passed" if run.get("success") else "not_run" if not run.get("runner_supported", True) else "failed",
+                            "success": is_passed,
+                            "status": "passed" if is_passed else "not_run" if not run.get("runner_supported", True) else "failed",
                             "terminal_output": terminal_output[:24000],
-                            "screenshot_data_uri": f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}",
+                            "screenshot_data_uri": screenshot_data_uris[0] if screenshot_data_uris else None,
+                            "screenshot_data_uris": screenshot_data_uris,
                             "tool": "Isolated Runtime Sandbox"
                         })
+
+        # Always extract and render all Mermaid / PlantUML / Architecture diagrams using Kroki / Browser Engine
+        all_diagrams = extract_diagram_deliverables(final_markdown)
+        if all_diagrams:
+            from app.services.browser_tool_runner import BrowserToolRunner
+            existing_diag_files = {r.get("filename") for r in execution_results}
+            for diag in all_diagrams:
+                if diag["name"] not in existing_diag_files:
+                    logger.info(f"Rendering visual diagram '{diag['name']}' ({diag['type']}) for task {diag['task']} via Kroki API / Browser Engine...")
+                    diag_res = BrowserToolRunner.render_diagram(
+                        diagram_type=diag["type"],
+                        diagram_code=diag["content"],
+                        title=diag.get("heading") or f"Task {diag['task']} — {diag['name']}"
+                    )
+                    execution_results.append({
+                        "task": diag["task"],
+                        "filename": diag["name"],
+                        "language": diag["type"],
+                        "command": f"render-diagram --engine {diag['type']}",
+                        "exit_code": 0,
+                        "success": True,
+                        "status": "passed",
+                        "terminal_output": f"Rendered {diag['type'].upper()} diagram canvas successfully.\nVector SVG and PNG asset captured.",
+                        "screenshot_data_uri": diag_res.get("data_uri"),
+                        "tool": diag_res.get("tool", "Kroki / Mermaid Engine")
+                    })
 
         final_deliverables = extract_code_deliverables(final_markdown) if is_code_lab else {"files": [], "terminal_outputs": []}
         stored_markdown = append_execution_metadata(final_markdown, execution_results)

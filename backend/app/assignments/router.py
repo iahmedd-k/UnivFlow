@@ -21,8 +21,29 @@ router = APIRouter(prefix="/assignments", tags=["assignments"])
 assignment_service: AssignmentService = None
 
 
-def get_assignment_service() -> AssignmentService:
-    return assignment_service
+def get_assignment_service(db: Session = Depends(get_db)) -> AssignmentService:
+    global assignment_service
+    if assignment_service is not None:
+        return assignment_service
+    try:
+        from app.assignments.services.document_parser import DocumentParserFactory
+        from app.assignments.services.requirements_extractor import RequirementsExtractor
+        from app.assignments.services.solution_generator import SolutionGenerator
+        from app.google_docs.template_engine import GoogleDocsTemplateEngine
+        from app.assignments.services.submission_service import SubmissionService
+        from app.services.google_docs import get_google_docs_service
+
+        docs_svc = get_google_docs_service(db)
+        return AssignmentService(
+            document_parser=DocumentParserFactory(),
+            requirements_extractor=RequirementsExtractor(),
+            solution_generator=SolutionGenerator(),
+            template_engine=GoogleDocsTemplateEngine(docs_svc) if docs_svc else None,
+            submission_service=SubmissionService(),
+            db_session=db
+        )
+    except Exception:
+        return assignment_service
 
 
 # ============================================================
@@ -41,10 +62,40 @@ def list_assignments(
     Fast DB-first assignments endpoint with course metadata and attached materials joined.
     Returns in < 30ms without blocking on external Google API calls.
     """
+    # Resolve semester start date filter (current semester boundary)
+    since_dt = None
+    if since:
+        try:
+            val = since.strip().replace('"', '')
+            if len(val) == 10:
+                since_dt = datetime.fromisoformat(f"{val}T00:00:00+00:00")
+            else:
+                since_dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+        except Exception:
+            pass
+    if not since_dt:
+        sem_setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
+        if sem_setting and sem_setting.value:
+            try:
+                val = sem_setting.value.strip().replace('"', '')
+                if len(val) == 10:
+                    since_dt = datetime.fromisoformat(f"{val}T00:00:00+00:00")
+                else:
+                    since_dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+            except Exception:
+                pass
+    if not since_dt:
+        since_dt = datetime(2026, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
+
     query = (
         db.query(Assignment, Course, Submission)
         .outerjoin(Course, Assignment.course_id == Course.id)
         .outerjoin(Submission, Submission.assignment_id == Assignment.id)
+        .filter(Course.course_state.in_(["ACTIVE", "active", ""]) | Course.course_state.is_(None))
+        .filter(
+            (Assignment.due_at >= since_dt) | 
+            (Assignment.due_at.is_(None) & (Assignment.created_at >= since_dt))
+        )
     )
     
     if course_id:
@@ -418,32 +469,37 @@ def schedule_assignment_turn_in(
     payload: ScheduleTurnInRequest,
     db: Session = Depends(get_db)
 ):
-    """Save automated deadline turn-in schedule for an assignment"""
-    import json
+    """Schedule turn-in only when a safe execution path is available."""
     assignment = _find_assignment(db, assignment_id)
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
     key = f"schedule_turnin_{assignment.id}"
-    setting = Setting(
-        key=key,
-        value=json.dumps({
+    if not payload.enabled:
+        setting = db.query(Setting).filter(Setting.key == key).first()
+        if setting:
+            db.delete(setting)
+            db.commit()
+        return {
+            "status": "cancelled",
             "assignment_id": assignment.id,
-            "enabled": payload.enabled,
-            "minutes_before_due": payload.minutes_before_due,
-            "template_id": payload.template_id,
-            "scheduled_at": datetime.now(timezone.utc).isoformat()
-        }),
-        description="Scheduled deadline submission"
-    )
-    db.merge(setting)
-    db.commit()
+            "message": "Turn-in schedule cancelled."
+        }
 
-    return {
-        "status": "scheduled" if payload.enabled else "cancelled",
-        "assignment_id": assignment.id,
-        "message": f"Turn-in {'scheduled for ' + str(payload.minutes_before_due) + ' minutes before deadline' if payload.enabled else 'schedule cancelled'}."
-    }
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Automated turn-in is unavailable; no schedule was saved. The current "
+            "route has no authenticated-user dependency, and the assignment, submission "
+            "approval, and Google credential records are not scoped to an authenticated "
+            "user. It therefore cannot verify that the requesting user approved this "
+            "work or validate/refresh that user's Google credential. The available "
+            "AssignmentService uses a separate async assignment model and placeholder "
+            "credential loading. A user-scoped, sync-compatible execution path and "
+            "durable submission idempotency state are required before scheduling can "
+            "be enabled."
+        ),
+    )
 
 
 # ============================================================

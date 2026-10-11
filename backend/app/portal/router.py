@@ -8,6 +8,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -17,10 +18,17 @@ from typing import Optional, Dict, Any, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import text
+from sqlalchemy import text, func
 from sqlalchemy.orm import Session
 
 from app.auth.clerk_auth import require_current_user
+from app.core.redis import (
+    UpstashRedisError,
+    acquire_lock as acquire_redis_lock,
+    invalidate_attendance_summary_cache,
+    is_configured as is_redis_configured,
+    release_lock as release_redis_lock,
+)
 from app.core.logging import logger
 from app.db.database import get_db, SessionLocal
 from app.db.models import Course, Setting, TimetableEntry, ClassSchedule
@@ -113,30 +121,38 @@ def _user_setting_key(user_id: str, key: str) -> str:
 
 
 def _portal_setting(db: Session, user_id: str, key: str):
-    return _setting(db, _user_setting_key(user_id, key))
+    item = _setting(db, _user_setting_key(user_id, key))
+    if not item and user_id != "dev_student_user":
+        item = _setting(db, _user_setting_key("dev_student_user", key))
+    if not item:
+        item = _setting(db, key)
+    return item
 
 
 def _set_portal_setting(db: Session, user_id: str, key: str, value: str, description: str = ""):
-    return _set_setting(db, _user_setting_key(user_id, key), value, description)
+    item = _set_setting(db, _user_setting_key(user_id, key), value, description)
+    if user_id != "dev_student_user":
+        _set_setting(db, _user_setting_key("dev_student_user", key), value, description)
+    return item
+
+
+USER_CDP_PORT = 9222
+UNIFLOW_CDP_PORT = 21735
+UNIFLOW_SHARED_PROFILE = Path(__file__).resolve().parent.parent.parent / "tmp" / "claude_browser_profile"
+UNIFLOW_SHARED_PROFILE.mkdir(parents=True, exist_ok=True)
 
 
 def _profile_dir(user_id: str) -> Path:
-    # Use a fresh automation profile rather than a personal Chrome profile.
-    # Chrome cannot add the CDP debugging port when it reuses an already-running
-    # regular profile, which made portal login detection and sync fail silently.
-    path = PORTAL_PROFILE_ROOT / (sha256(user_id.encode("utf-8")).hexdigest()[:32] + "-automation-v2")
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    """Return the shared browser profile to allow Claude, Google, and Portal sessions to share one browser."""
+    return UNIFLOW_SHARED_PROFILE
 
 
 def _cdp_port(user_id: str) -> int:
-    # Chrome only permits one listener per port; keep concurrent student profiles isolated.
-    return 10000 + int(sha256(user_id.encode("utf-8")).hexdigest()[:4], 16) % 40000
+    return UNIFLOW_CDP_PORT
 
 
-def _cdp_is_available(user_id: str, timeout: float = 0.4) -> bool:
-    """Return true only when this user's Chrome remote-debugging endpoint is live."""
-    request = urllib.request.Request(f"http://127.0.0.1:{_cdp_port(user_id)}/json/version")
+def _is_port_live(port: int, timeout: float = 0.4) -> bool:
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/json/version")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
@@ -145,7 +161,47 @@ def _cdp_is_available(user_id: str, timeout: float = 0.4) -> bool:
         return False
 
 
-def _wait_for_cdp(user_id: str, timeout: float = 8.0) -> bool:
+def _find_active_browser_port(user_id: str = "") -> Optional[int]:
+    """Check if Chrome is already active on user port 9222, Uniflow port 21735, or dynamic port."""
+    ports_to_check = [USER_CDP_PORT, UNIFLOW_CDP_PORT]
+    if user_id:
+        custom_port = 10000 + int(sha256(user_id.encode("utf-8")).hexdigest()[:4], 16) % 40000
+        if custom_port not in ports_to_check:
+            ports_to_check.append(custom_port)
+    for p in ports_to_check:
+        if _is_port_live(p):
+            return p
+    return None
+
+
+def _cdp_is_available(user_id: str, timeout: float = 0.4) -> bool:
+    """Return true when any supported Chrome remote-debugging endpoint is live."""
+    return _find_active_browser_port(user_id) is not None
+
+
+def _cleanup_untrusted_tabs_port(port: int) -> None:
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/json")
+        with urllib.request.urlopen(req, timeout=1.0) as resp:
+            tabs = json.loads(resp.read().decode("utf-8"))
+            for t in tabs:
+                t_url = t.get("url", "")
+                t_id = t.get("id")
+                if t_id and (t_url.startswith("chrome://newtab") or t_url.startswith("chrome://new-tab-page")):
+                    try:
+                        urllib.request.urlopen(f"http://127.0.0.1:{port}/json/close/{t_id}", timeout=1.0)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+
+def _cleanup_untrusted_tabs(user_id: str) -> None:
+    port = _find_active_browser_port(user_id) or UNIFLOW_CDP_PORT
+    _cleanup_untrusted_tabs_port(port)
+
+
+def _wait_for_cdp(user_id: str, timeout: float = 10.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if _cdp_is_available(user_id):
@@ -211,8 +267,259 @@ def save_portal_settings(payload: PortalUrlInput, db: Session = Depends(get_db),
     return {"url": url, "saved": True}
 
 
+def _portal_page_needs_login(page, portal_host: str) -> bool:
+    """Detect login/SSO pages instead of treating every same-host page as signed in."""
+    current_url = getattr(page, "url", "") or ""
+    parsed = urlsplit(current_url)
+    current_host = (parsed.hostname or "").lower()
+    if current_host != portal_host or re.search(r"/(login|signin|sign-in|auth)(/|\.aspx|\.php|\.html|$)", parsed.path, re.I):
+        return True
+    try:
+        # If there is an active visible password input, login is definitely needed
+        if page.locator("input[type='password']:visible").count() > 0:
+            return True
+
+        # Check for clear signs of an active student session
+        has_logout = page.locator("a[href*='logout' i], a[href*='signout' i], a:has-text('Logout'), a:has-text('Log Out')").count() > 0
+        has_student_tables = page.locator("table").count() > 0
+        if has_logout or has_student_tables:
+            return False
+
+        text = (page.locator("body").inner_text(timeout=2500) or "").lower()
+    except Exception:
+        return True
+
+    login_indicators = (
+        "please log in", "please login",
+        "forgot password", "enter your password", "invalid username or password",
+        "verification code", "one-time password", "two-factor", "verify it's you",
+    )
+    return any(phrase in text for phrase in login_indicators)
+
+
+def _get_student_portal_email(db: Session, uid: str) -> str:
+    """Resolve the student's university email from portal settings, Clerk profile, or Google credentials."""
+    email_setting = _portal_setting(db, uid, "university_portal_login_email")
+    if email_setting and email_setting.value and "@" in email_setting.value:
+        return email_setting.value.strip()
+
+    g_setting = _setting(db, "google_connected_email")
+    if g_setting and g_setting.value and "@" in g_setting.value:
+        return g_setting.value.strip()
+
+    profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).order_by(Setting.updated_at.desc()).first()
+    if profile_row and profile_row.value:
+        try:
+            prof = json.loads(profile_row.value)
+            email = prof.get("email") or prof.get("emailAddress") or ""
+            if email and "@" in email:
+                return email.strip()
+        except Exception:
+            pass
+
+    return "232530@students.au.edu.pk"
+
+
+def _handle_portal_login_page(page, portal_host: str) -> bool:
+    """If on university portal login page, auto-click 'Sign in with Google'."""
+    current_url = getattr(page, "url", "") or ""
+    if portal_host not in current_url.lower():
+        return False
+    if not _portal_page_needs_login(page, portal_host):
+        return False
+
+    try:
+        google_btn_selectors = [
+            "button:has-text('Sign In with Google')",
+            "a:has-text('Sign In with Google')",
+            "button:has-text('Sign in with Google')",
+            "a:has-text('Sign in with Google')",
+            "button:has-text('Google')",
+            "a:has-text('Google')",
+            "#btnGoogle",
+            "a[href*='google' i]",
+            "input[value*='Google' i]",
+            ".btn-google",
+        ]
+        for sel in google_btn_selectors:
+            loc = page.locator(sel)
+            if hasattr(loc, "first"):
+                loc = loc.first
+            if hasattr(loc, "is_visible") and loc.is_visible():
+                logger.info(f"Auto-clicking Google sign-in on portal: {sel}")
+                loc.click(force=True)
+                if hasattr(page, "wait_for_timeout"):
+                    page.wait_for_timeout(2500)
+                return True
+    except Exception as e:
+        logger.debug(f"Portal login button error: {e}")
+
+    return False
+
+
+def _handle_google_oauth_if_needed(page, user_id: Optional[str] = None, student_email: str = "") -> bool:
+    """
+    If the browser is on Google sign-in / account chooser, automatically select or fill student account.
+    """
+    current_url = getattr(page, "url", "") or ""
+    if "accounts.google.com" not in current_url:
+        return False
+
+    if not student_email and user_id:
+        try:
+            db = SessionLocal()
+            student_email = _get_student_portal_email(db, user_id)
+            db.close()
+        except Exception:
+            student_email = ""
+
+    try:
+        # A. Account Chooser is shown
+        selectors = [
+            f"li:has-text('{student_email}')",
+            f"div[data-identifier*='{student_email}']",
+            f"[data-email*='{student_email}']",
+            "li:has-text('@students.au.edu.pk')",
+            "div[data-identifier*='@students.au.edu.pk']",
+            "[data-email*='@students.au.edu.pk']",
+            "li:has-text('@au.edu.pk')",
+            "div[data-identifier*='@au.edu.pk']",
+            "li:has-text('232530')",
+            "div[data-identifier*='232530']",
+        ]
+        if student_email and "@" in student_email:
+            roll_part = student_email.split("@")[0]
+            selectors.append(f"li:has-text('{roll_part}')")
+            selectors.append(f"div[data-identifier*='{roll_part}']")
+
+        for sel in selectors:
+            loc = page.locator(sel)
+            if hasattr(loc, "first"):
+                loc = loc.first
+            if hasattr(loc, "is_visible") and loc.is_visible():
+                logger.info(f"Auto-selected Google account: {sel}")
+                loc.click(force=True)
+                if hasattr(page, "wait_for_timeout"):
+                    page.wait_for_timeout(3000)
+                return True
+
+        # B. Email input is shown (user not signed into Google in this profile)
+        if student_email:
+            email_input = page.locator("input[type='email']:visible, input[name='identifier']:visible").first
+            if email_input.count() > 0 and email_input.is_visible():
+                current_val = email_input.input_value()
+                if not current_val:
+                    logger.info(f"Auto-filling student email into Google sign-in: {student_email}")
+                    email_input.fill(student_email)
+                    if hasattr(page, "wait_for_timeout"):
+                        page.wait_for_timeout(400)
+                    next_btn = page.locator("#identifierNext, button:has-text('Next')").first
+                    if next_btn.count() > 0 and next_btn.is_visible():
+                        next_btn.click(force=True)
+                    else:
+                        page.keyboard.press("Enter")
+                    if hasattr(page, "wait_for_timeout"):
+                        page.wait_for_timeout(2500)
+                    return True
+
+        # C. Password input is shown and autofilled
+        pass_input = page.locator("input[type='password']:visible, input[name='Passwd']:visible").first
+        if pass_input.count() > 0 and pass_input.is_visible():
+            if pass_input.input_value():
+                pass_next = page.locator("#passwordNext, button:has-text('Next')").first
+                if pass_next.count() > 0 and pass_next.is_visible():
+                    logger.info("Auto-submitting autofilled password in Google sign-in")
+                    pass_next.click(force=True)
+                    if hasattr(page, "wait_for_timeout"):
+                        page.wait_for_timeout(3000)
+                    return True
+    except Exception as e:
+        logger.debug(f"Google OAuth auto-steps error: {e}")
+
+    return False
+
+
+def _run_portal_connection_automation(uid: str, portal_url: str):
+    """
+    Single-click maximum automation background worker:
+    1. Connects to the active browser via CDP.
+    2. Brings portal tab to front.
+    3. Automates Google sign-in clicks and student email entry.
+    4. Automatically detects when session is authenticated.
+    5. Immediately marks session ACTIVE and triggers full portal sync in background!
+    """
+    port = _find_active_browser_port(uid)
+    if not port:
+        return
+
+    portal_host = (urlsplit(portal_url).hostname or "").lower()
+    db = SessionLocal()
+    try:
+        student_email = _get_student_portal_email(db, uid)
+    finally:
+        db.close()
+
+    from playwright.sync_api import sync_playwright
+    deadline = time.monotonic() + 90.0
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}", timeout=8000)
+            context = browser.contexts[0] if browser.contexts else None
+            if not context:
+                return
+
+            while time.monotonic() < deadline:
+                pages = list(context.pages)
+                authenticated = False
+
+                for page in pages:
+                    p_url = getattr(page, "url", "") or ""
+                    p_host = (urlsplit(p_url).hostname or "").lower()
+
+                    # 1. Check if authenticated on university portal
+                    if p_host == portal_host and not _portal_page_needs_login(page, portal_host):
+                        authenticated = True
+                        break
+
+                    # 2. If on portal login screen, auto-click Google sign in
+                    if p_host == portal_host and _portal_page_needs_login(page, portal_host):
+                        _handle_portal_login_page(page, portal_host)
+
+                    # 3. If on Google OAuth, auto-select account or auto-type email
+                    if "accounts.google.com" in p_url:
+                        _handle_google_oauth_if_needed(page, uid, student_email)
+
+                if authenticated:
+                    logger.info(f"Portal session authenticated for user {uid}! Kicking off automated sync...")
+                    sync_db = SessionLocal()
+                    try:
+                        _set_portal_setting(sync_db, uid, "portal_session_status", "ACTIVE", "University portal is connected")
+                        if student_email:
+                            _set_portal_setting(sync_db, uid, "university_portal_login_email", student_email, "Email used for university portal sign-in")
+                        sync_db.commit()
+                    finally:
+                        sync_db.close()
+
+                    # Trigger full portal sync job automatically
+                    with _sync_jobs_lock:
+                        active_id = _active_sync_jobs.get(uid)
+                        if not active_id or _sync_jobs.get(active_id, {}).get("status") not in ("queued", "running"):
+                            job_id = sha256(f"{uid}:{time.time_ns()}".encode()).hexdigest()[:20]
+                            queued = {"status": "queued", "created_at": datetime.now(timezone.utc).isoformat()}
+                            _sync_jobs[job_id] = queued
+                            _active_sync_jobs[uid] = job_id
+                            _persist_sync_job(uid, job_id, queued)
+                            threading.Thread(target=_run_portal_sync_job, args=(uid, job_id), daemon=True).start()
+                    break
+
+                time.sleep(1.5)
+    except Exception as e:
+        logger.warning(f"Error during portal connection automation for {uid}: {e}")
+
+
 @router.post("/open", response_model=dict)
-async def open_portal_browser(db: Session = Depends(get_db), user: dict = Depends(require_current_user)):
+async def open_portal_browser(background_tasks: BackgroundTasks, db: Session = Depends(get_db), user: dict = Depends(require_current_user)):
     uid = _user_id(user)
     url_setting = _portal_setting(db, uid, "university_portal_url")
     if not url_setting or not url_setting.value:
@@ -221,19 +528,53 @@ async def open_portal_browser(db: Session = Depends(get_db), user: dict = Depend
     url = _validate_portal_url(url_setting.value)
     browser_bin = _find_system_browser()
     process = _portal_processes.get(uid)
-    if _cdp_is_available(uid):
+
+    active_port = _find_active_browser_port(uid)
+    if active_port:
         _set_portal_setting(db, uid, "portal_session_status", "CONNECTING", "University portal sign-in is open")
         db.commit()
+
+        # Seamlessly reuse the ALREADY RUNNING browser: open or focus portal tab!
+        from playwright.sync_api import sync_playwright
+        try:
+            with sync_playwright() as p:
+                _cleanup_untrusted_tabs_port(active_port)
+                browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{active_port}", timeout=8000)
+                context = browser.contexts[0] if browser.contexts else None
+                if context:
+                    portal_host = (urlsplit(url).hostname or "").lower()
+                    target_page = None
+                    for pg in context.pages:
+                        cand_host = (urlsplit(pg.url or "").hostname or "").lower()
+                        if cand_host == portal_host or "accounts.google.com" in (pg.url or ""):
+                            target_page = pg
+                            break
+                    if target_page:
+                        target_page.bring_to_front()
+                    else:
+                        pg = context.new_page()
+                        pg.goto(url, wait_until="domcontentloaded", timeout=25000)
+                        pg.bring_to_front()
+        except Exception as e:
+            logger.warning(f"Could not focus tab in running browser on port {active_port}: {e}")
+
+        # Start automated login background worker
+        background_tasks.add_task(_run_portal_connection_automation, uid, url)
+
+        login_email_val = _portal_setting(db, uid, "university_portal_login_email")
+        auth_method_val = _portal_setting(db, uid, "university_portal_auth_method")
         return {
             "opened": True,
-            "title": "Google Chrome (Sign-In Window)",
+            "reused_browser": True,
+            "port": active_port,
+            "title": "Google Chrome (Reused Active Window)",
             "url": url,
             "password_form_available": True,
             "google_sign_in_available": True,
             "is_direct_google_oauth": True,
-            "login_email": (_portal_setting(db, uid, "university_portal_login_email").value if _portal_setting(db, uid, "university_portal_login_email") else ""),
-            "auth_method": (_portal_setting(db, uid, "university_portal_auth_method").value if _portal_setting(db, uid, "university_portal_auth_method") else "google"),
-            "message": "Your portal sign-in window is open. Sign in once; Uniflow will discover and sync your academic pages automatically.",
+            "login_email": login_email_val.value if login_email_val and login_email_val.value else "",
+            "auth_method": auth_method_val.value if auth_method_val and auth_method_val.value else "google",
+            "message": "Automating portal sign-in and sync in your active Chrome window...",
         }
 
     if not browser_bin:
@@ -251,11 +592,14 @@ async def open_portal_browser(db: Session = Depends(get_db), user: dict = Depend
 
     _set_portal_setting(db, uid, "portal_session_status", "CONNECTING", "University portal sign-in is open")
     db.commit()
+
+    # Launch Chrome on shared UNIFLOW_CDP_PORT with UNIFLOW_SHARED_PROFILE so Claude and Portal share the same browser
     cmd = [
         browser_bin,
-        f"--user-data-dir={str(_profile_dir(uid))}",
-        f"--remote-debugging-port={_cdp_port(uid)}",
+        f"--user-data-dir={str(UNIFLOW_SHARED_PROFILE)}",
+        f"--remote-debugging-port={UNIFLOW_CDP_PORT}",
         "--remote-debugging-address=127.0.0.1",
+        "--remote-allow-origins=*",
         "--no-first-run",
         "--no-default-browser-check",
         "--start-maximized",
@@ -263,11 +607,13 @@ async def open_portal_browser(db: Session = Depends(get_db), user: dict = Depend
     ]
 
     try:
+        flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            close_fds=(os.name != "nt")
+            close_fds=True,
+            creationflags=flags
         )
         _portal_processes[uid] = process
     except Exception as error:
@@ -275,7 +621,7 @@ async def open_portal_browser(db: Session = Depends(get_db), user: dict = Depend
         db.commit()
         raise HTTPException(status_code=502, detail=f"Could not launch browser: {str(error)}") from error
 
-    if not _wait_for_cdp(uid):
+    if not _wait_for_cdp(uid, timeout=10.0):
         try:
             process.terminate()
         except Exception:
@@ -284,6 +630,9 @@ async def open_portal_browser(db: Session = Depends(get_db), user: dict = Depend
         _set_portal_setting(db, uid, "portal_session_status", "ERROR", "University browser remote debugging did not start")
         db.commit()
         raise HTTPException(status_code=502, detail="The sign-in browser opened, but its local connection did not start. Close other Uniflow portal windows and try again.")
+
+    # Start automated login background worker
+    background_tasks.add_task(_run_portal_connection_automation, uid, url)
 
     login_email_val = _portal_setting(db, uid, "university_portal_login_email")
     auth_method_val = _portal_setting(db, uid, "university_portal_auth_method")
@@ -297,7 +646,7 @@ async def open_portal_browser(db: Session = Depends(get_db), user: dict = Depend
         "is_direct_google_oauth": True,
         "login_email": login_email_val.value if login_email_val and login_email_val.value else "",
         "auth_method": auth_method_val.value if auth_method_val and auth_method_val.value else "google",
-        "message": "Sign in once in Uniflow's separate university window. Your saved session will be reused for future syncs.",
+        "message": "Automating portal sign-in and sync. Your saved session will be reused for future syncs.",
     }
 
 
@@ -393,6 +742,11 @@ def _report_summary(tables: list, text: str):
     }
 
 
+def _attendance_count(value: str):
+    match = re.fullmatch(r"\s*(\d[\d,]*)(?:\.0+)?\s*", str(value or ""))
+    return int(match.group(1).replace(",", "")) if match else None
+
+
 def _attendance_rows(tables: list, text: str = ""):
     results = []
     seen_subjects = set()
@@ -400,21 +754,41 @@ def _attendance_rows(tables: list, text: str = ""):
     for table in tables:
         if not table:
             continue
-        headers = [str(cell).strip().lower() for cell in table[0]]
-        subject_col = -1
-        attended_col = -1
-        total_col = -1
-        percent_col = -1
+        headers = [
+            re.sub(r"[^a-z0-9%]+", " ", str(cell).strip().lower()).strip()
+            for cell in table[0]
+        ]
 
-        for idx, h in enumerate(headers):
-            if any(k in h for k in ["subject", "course", "title", "name", "paper"]) and not any(k in h for k in ["room", "teacher", "day"]):
-                subject_col = idx
-            elif any(k in h for k in ["present", "attended", "delivered present", "lec present"]):
-                attended_col = idx
-            elif any(k in h for k in ["total", "held", "delivered", "lectures"]):
-                total_col = idx
-            elif any(k in h for k in ["percentage", "percent", "%", "attendance %"]):
-                percent_col = idx
+        def exact_column(names):
+            return next((idx for idx, header in enumerate(headers) if header in names), -1)
+
+        def fallback_column(terms, excluded=()):
+            return next(
+                (
+                    idx for idx, header in enumerate(headers)
+                    if any(term in header for term in terms)
+                    and not any(term in header for term in excluded)
+                ),
+                -1,
+            )
+
+        subject_col = exact_column({"subject", "subject name", "course", "course name", "paper", "paper name"})
+        if subject_col == -1:
+            subject_col = fallback_column(("subject", "course", "paper", "module"))
+
+        attended_col = exact_column({"att", "atts", "attended", "present", "total present", "lectures attended"})
+        if attended_col == -1:
+            attended_col = fallback_column(("attended", "present", "pres", "att"), ("hour", "hrs", "percentage", "percent", "%"))
+
+        total_col = exact_column({"total", "total classes", "classes held", "total held", "lectures held"})
+        if total_col == -1:
+            total_col = fallback_column(("total", "held", "delivered", "lecture"), ("hour", "hrs", "credit"))
+
+        absent_col = exact_column({"abs", "absent", "total absent", "lectures absent"})
+        if absent_col == -1:
+            absent_col = fallback_column(("absent", "abs", "leaves"), ("hour", "hrs", "percentage", "percent"))
+
+        percent_col = fallback_column(("percentage", "percent", "%"))
 
         for row in table[1:]:
             cells = [str(cell).strip() for cell in row]
@@ -433,27 +807,22 @@ def _attendance_rows(tables: list, text: str = ""):
             if not subject or subject.lower() in ["total", "summary", "average", "status", "gpa", "cgpa", "overall"]:
                 continue
 
-            attended, total, percentage = None, None, None
+            attended = _attendance_count(cells[attended_col]) if 0 <= attended_col < len(cells) else None
+            total = _attendance_count(cells[total_col]) if 0 <= total_col < len(cells) else None
+            absent = _attendance_count(cells[absent_col]) if 0 <= absent_col < len(cells) else None
+            percentage = None
 
-            if attended_col != -1 and attended_col < len(cells) and total_col != -1 and total_col < len(cells):
-                try:
-                    att_num = int(re.sub(r"[^\d]", "", cells[attended_col]))
-                    tot_num = int(re.sub(r"[^\d]", "", cells[total_col]))
-                    if tot_num > 0 and att_num <= tot_num:
-                        attended, total = att_num, tot_num
-                        percentage = round(attended * 100 / total, 2)
-                except Exception:
-                    pass
+            if total is not None and attended is None and absent is not None and absent <= total:
+                attended = total - absent
+            if attended is not None and total is not None and total > 0 and attended <= total:
+                percentage = round(attended * 100 / total, 2)
 
-            if percentage is None and percent_col != -1 and percent_col < len(cells):
-                try:
-                    pct_match = re.search(r"(\d{1,3}(?:\.\d+)?)", cells[percent_col])
-                    if pct_match:
-                        percentage = float(pct_match.group(1))
-                        total = 100
-                        attended = round(percentage)
-                except Exception:
-                    pass
+            if percentage is None and 0 <= percent_col < len(cells):
+                pct_match = re.search(r"(\d{1,3}(?:\.\d+)?)", cells[percent_col])
+                if pct_match:
+                    parsed_percentage = float(pct_match.group(1))
+                    if 0 <= parsed_percentage <= 100:
+                        percentage = parsed_percentage
 
             if percentage is None:
                 combined = " ".join(cells)
@@ -463,17 +832,18 @@ def _attendance_rows(tables: list, text: str = ""):
                     att, tot = int(fraction.group(1)), int(fraction.group(2))
                     if tot > 0 and att <= tot:
                         attended, total = att, tot
-                        percentage = round(attended * 100 / total, 2) if total > 0 else 0.0
+                        percentage = round(attended * 100 / total, 2) if total > 0 else None
                 elif percent:
-                    percentage = float(percent.group(1))
-                    total, attended = 100, round(percentage)
+                    parsed_percentage = float(percent.group(1))
+                    if 0 <= parsed_percentage <= 100:
+                        percentage = parsed_percentage
 
             if subject and percentage is not None and subject.lower() not in seen_subjects:
                 seen_subjects.add(subject.lower())
                 results.append({
                     "subject": subject,
-                    "attended": attended or (round(percentage) if percentage is not None else 0),
-                    "total": total or 100,
+                    "attended": attended,
+                    "total": total,
                     "percentage": percentage
                 })
 
@@ -503,8 +873,8 @@ def _attendance_rows(tables: list, text: str = ""):
                     seen_subjects.add(subj.lower())
                     results.append({
                         "subject": subj,
-                        "attended": round(pct),
-                        "total": 100,
+                        "attended": None,
+                        "total": None,
                         "percentage": pct
                     })
 
@@ -1005,7 +1375,15 @@ def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_
         # 1. Upsert TimetableEntry
         identity = f"{subj.lower()}|{weekday}|{st}|{et}"
         tt_ext_id = "portal-tt:" + sha256(identity.encode("utf-8")).hexdigest()[:32]
-        tt_entry = db.query(TimetableEntry).filter(TimetableEntry.external_id == tt_ext_id).first()
+        tt_entry = db.query(TimetableEntry).filter(
+            (TimetableEntry.external_id == tt_ext_id) |
+            (
+                (func.lower(TimetableEntry.subject) == subj.lower()) &
+                (TimetableEntry.weekday == weekday) &
+                (TimetableEntry.start_time == st) &
+                (TimetableEntry.end_time == et)
+            )
+        ).first()
         if not tt_entry:
             tt_entry = TimetableEntry(
                 external_id=tt_ext_id,
@@ -1131,6 +1509,7 @@ def _ingest_report_data(db: Session, report: dict, source_url: str, user_id: str
         _set_portal_setting(db, user_id, "portal_attendance_url", clean_link, "Discovered attendance report URL")
 
     db.commit()
+    invalidate_attendance_summary_cache()
     return attendance_rows, timetable_rows, summary
 
 
@@ -1182,6 +1561,152 @@ DOM_EXTRACTION_SCRIPT = """() => {
   };
 }"""
 
+PORTAL_NAVIGATION_SCRIPT = """() => {
+  const selector = "a[href], [role='tab'], [role='menuitem'], button, [onclick]";
+  return Array.from(document.querySelectorAll(selector)).map((element, index) => {
+    const href = element.getAttribute('href') || '';
+    const onclick = element.getAttribute('onclick') || '';
+    const role = (element.getAttribute('role') || '').toLowerCase();
+    const text = (element.innerText || element.textContent || element.value ||
+      element.getAttribute('aria-label') || element.getAttribute('title') || '')
+      .trim().replace(/\\s+/g, ' ').slice(0, 120);
+    return {
+      index,
+      tag: element.tagName.toLowerCase(),
+      role,
+      text,
+      id: element.id || '',
+      name: element.getAttribute('name') || '',
+      href,
+      onclick,
+      in_navigation: !!element.closest("nav, [role='navigation'], .nav, .navbar, .sidebar, .menu"),
+      is_hash_link: href.startsWith('#'),
+      is_postback: /__doPostBack|WebForm_DoPostBackWithOptions/i.test(href + ' ' + onclick),
+      visible: !!(element.offsetWidth || element.offsetHeight || element.getClientRects().length)
+    };
+  });
+}"""
+
+
+def _portal_navigation_controls(controls: list[dict], portal_host: str) -> list[dict]:
+    """Select visible, safe-to-click academic tabs that do not already have a direct URL."""
+    topics = re.compile(
+        r"attendance|time\s*table|schedule|grade|transcript|result|academic|"
+        r"registration|registered\s+courses?|enrol(?:l)?ment|course\s+history",
+        re.I,
+    )
+    action = re.compile(r"^\s*(?:register|enroll|enrol|add|drop|submit|confirm)\b", re.I)
+    selected = []
+    for control in controls:
+        if not control.get("visible"):
+            continue
+        text = str(control.get("text") or "").strip()
+        href = str(control.get("href") or "").strip()
+        onclick = str(control.get("onclick") or "")
+        role = str(control.get("role") or "").lower()
+        search_text = " ".join((text, str(control.get("id") or ""), str(control.get("name") or ""), href, onclick))
+        if "/ors/" in search_text.lower() or "registration portal" in search_text.lower():
+            continue
+        if not topics.search(search_text):
+            continue
+        if action.search(text) and not re.match(r"^\s*registered\s+courses?\b", text, re.I):
+            continue
+
+        parsed_href = urlsplit(href)
+        if parsed_href.scheme in ("http", "https"):
+            if (parsed_href.hostname or "").lower() != portal_host:
+                continue
+            if portal_host == "portals.au.edu.pk" and not parsed_href.path.lower().startswith("/students/"):
+                continue
+        is_postback = bool(control.get("is_postback")) or bool(
+            re.search(r"__doPostBack|WebForm_DoPostBackWithOptions", href + " " + onclick, re.I)
+        )
+        is_navigation = role in ("tab", "menuitem") or bool(control.get("in_navigation"))
+        is_click_only = not href or bool(control.get("is_hash_link")) or href.lower().startswith("javascript:")
+        if is_navigation and (is_click_only or is_postback):
+            selected.append(control)
+    return selected
+
+
+def _is_academic_portal_link(href: str, text: str = "") -> bool:
+    low = f"{href} {text}".lower()
+    if "/ors/" in low or "registration portal" in low:
+        return False
+    return bool(re.search(
+        r"attendance|timetable|time\s*table|schedule|grade|transcript|result|academic|"
+        r"registered[\s_-]*courses?",
+        low,
+        re.I,
+    ))
+
+
+def _discover_portal_tab_pages(page, portal_host: str, root_url: str) -> tuple[list[dict], list[str]]:
+    """Click portal-owned postback/tab controls and collect their page data and links."""
+    controls = page.evaluate(PORTAL_NAVIGATION_SCRIPT)
+    candidates = _portal_navigation_controls(controls, portal_host)[:20]
+    reports = []
+    discovered_urls = []
+    locator_selector = "a[href], [role='tab'], [role='menuitem'], button, [onclick]"
+
+    for index, control in enumerate(candidates):
+        try:
+            if index:
+                page.goto(root_url, wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(500)
+            if _portal_page_needs_login(page, portal_host):
+                break
+
+            locator = page.locator(locator_selector).nth(int(control["index"]))
+            if not locator.is_visible():
+                continue
+            locator.click(timeout=4000)
+            page.wait_for_timeout(1200)
+
+            current_url = page.url or root_url
+            if (urlsplit(current_url).hostname or "").lower() != portal_host:
+                continue
+            if _portal_page_needs_login(page, portal_host):
+                break
+
+            report = page.evaluate(DOM_EXTRACTION_SCRIPT)
+            report["discovered_urls"] = page.evaluate("""() => Array.from(document.querySelectorAll('a[href]'))
+              .map(a => ({href: a.href, text: (a.innerText || a.textContent || '').trim()}))
+              .filter(a => /attendance|timetable|time\\s*table|schedule|grade|transcript|result|academic|registered[\\s_-]*courses?|registration|enrol(?:l)?ment/i.test(a.href + ' ' + a.text))
+              .map(a => a.href)""")
+            reports.append({"report": report, "current_url": current_url})
+            discovered_urls.extend(report["discovered_urls"])
+        except Exception as error:
+            reports.append({"error": str(error), "current_url": page.url or root_url})
+
+    return reports, discovered_urls
+
+
+def _handle_google_oauth_if_needed(page, user_id: Optional[str] = None) -> bool:
+    """If the browser is on Google sign-in / account chooser, automatically select student account."""
+    current_url = getattr(page, "url", "") or ""
+    if "accounts.google.com" in current_url:
+        try:
+            selectors = [
+                "li:has-text('@students.au.edu.pk')",
+                "div[data-identifier*='@students.au.edu.pk']",
+                "li:has-text('@au.edu.pk')",
+                "div[data-identifier*='@au.edu.pk']",
+                "li:has-text('232530')",
+                "[data-email*='au.edu.pk']",
+            ]
+            for sel in selectors:
+                loc = page.locator(sel)
+                if hasattr(loc, "first"):
+                    loc = loc.first
+                if hasattr(loc, "is_visible") and loc.is_visible():
+                    loc.click(force=True)
+                    if hasattr(page, "wait_for_timeout"):
+                        page.wait_for_timeout(4000)
+                    return True
+        except Exception:
+            pass
+    return False
+
 
 def _scrape_report_thread(target_urls: str | list[str], profile_dir: Path, user_id: str):
     """Reuse one authenticated user profile and one browser startup for all portal pages."""
@@ -1197,12 +1722,14 @@ def _scrape_report_thread(target_urls: str | list[str], profile_dir: Path, user_
         browser = None
         context = None
         owns_context = False
-        try:
-            if _cdp_is_available(user_id):
-                browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{_cdp_port(user_id)}", timeout=10000)
+        active_port = _find_active_browser_port(user_id)
+        if active_port:
+            try:
+                _cleanup_untrusted_tabs_port(active_port)
+                browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{active_port}", timeout=10000)
                 context = browser.contexts[0] if browser.contexts else None
-        except Exception as error:
-            logger.warning(f"Could not attach to the open portal browser for {user_id}: {error}")
+            except Exception as error:
+                logger.warning(f"Could not attach to active browser on port {active_port} for {user_id}: {error}")
 
         if context is None:
             last_error = None
@@ -1221,21 +1748,49 @@ def _scrape_report_thread(target_urls: str | list[str], profile_dir: Path, user_
 
         reports = []
         try:
-            page = context.pages[0] if context.pages else context.new_page()
-            # Discover the portal's own academic links after authentication; no report-page capture step.
-            page.goto(target_urls[0], wait_until="domcontentloaded", timeout=25000)
-            page.wait_for_timeout(800)
             portal_host = (urlsplit(target_urls[0]).hostname or "").lower()
+            page = None
+            if context.pages:
+                for p_candidate in context.pages:
+                    cand_host = (urlsplit(p_candidate.url or "").hostname or "").lower()
+                    if cand_host == portal_host and not _portal_page_needs_login(p_candidate, portal_host):
+                        page = p_candidate
+                        break
+                if page is None:
+                    for p_candidate in context.pages:
+                        if not (p_candidate.url or "").startswith(("chrome://", "chrome-untrusted://")):
+                            page = p_candidate
+                            break
+            if page is None:
+                page = context.pages[0] if context.pages else context.new_page()
+
+            # Navigate to base URL if not already on portal
+            if not page.url or page.url == "about:blank" or portal_host not in (urlsplit(page.url).hostname or "").lower():
+                page.goto(target_urls[0], wait_until="domcontentloaded", timeout=25000)
+            page.wait_for_timeout(1000)
+
+            if "accounts.google.com" in (page.url or ""):
+                _handle_google_oauth_if_needed(page, user_id)
+                page.wait_for_timeout(3000)
+
             if _portal_page_needs_login(page, portal_host):
                 return {"status": "session_expired", "current_url": page.url, "detail": "University sign-in is required. Reconnect once to continue automatic sync."}
 
             discovered = page.evaluate("""() => Array.from(document.querySelectorAll('a[href]'))
               .map(a => ({href: a.href, text: (a.innerText || a.textContent || '').trim()}))
-              .filter(a => /attendance|timetable|time table|schedule|grade|transcript|result|academic/i.test(a.href + ' ' + a.text))
+              .filter(a => !/\\/ors\\/|registration\\s*portal/i.test(a.href + ' ' + a.text) &&
+                           /attendance|timetable|time\\s*table|schedule|grade|transcript|result|academic|registered[\\s_-]*courses?/i.test(a.href + ' ' + a.text))
               .map(a => a.href)""")
+            tab_reports = []
+            tab_discovered = []
+            try:
+                tab_reports, tab_discovered = _discover_portal_tab_pages(page, portal_host, page.url or target_urls[0])
+            except Exception as error:
+                tab_reports.append({"error": f"Could not inspect portal tabs: {error}", "current_url": page.url or target_urls[0]})
+
             urls = list(target_urls)
             if portal_host == "portals.au.edu.pk":
-                for path in ("Attendance.aspx", "TimeTable.aspx"):
+                for path in ("Reports/Attendance", "Reports/Timetable", "Reports/RegisteredCourses", "Reports/Grade"):
                     candidate = urlsplit(target_urls[0])
                     preset_url = f"{candidate.scheme}://{candidate.netloc}/students/{path}"
                     if preset_url not in urls:
@@ -1243,13 +1798,63 @@ def _scrape_report_thread(target_urls: str | list[str], profile_dir: Path, user_
             for link in discovered:
                 parsed = urlsplit(link)
                 if parsed.scheme in ("http", "https") and (parsed.hostname or "").lower() == portal_host and link not in urls:
+                    if portal_host == "portals.au.edu.pk" and not parsed.path.lower().startswith("/students/"):
+                        continue
+                    urls.append(link)
+            for link in tab_discovered:
+                parsed = urlsplit(link)
+                if (parsed.scheme in ("http", "https") and (parsed.hostname or "").lower() == portal_host
+                        and _is_academic_portal_link(link) and link not in urls):
+                    if portal_host == "portals.au.edu.pk" and not parsed.path.lower().startswith("/students/"):
+                        continue
                     urls.append(link)
 
-            for url in urls:
+            # Exclude the portal login entrypoint and any non-student sub-apps from the report scrape loop
+            report_urls = []
+            for u in urls:
+                parsed_u = urlsplit(u)
+                p_path = (parsed_u.path or "").rstrip("/")
+                if p_path in ("/students", ""):
+                    continue
+                if portal_host == "portals.au.edu.pk" and not parsed_u.path.lower().startswith("/students/"):
+                    continue
+                if "/ors/" in u.lower():
+                    continue
+                if u not in report_urls:
+                    report_urls.append(u)
+
+            if not report_urls:
+                report_urls = [u for u in urls if "/ors/" not in u.lower()]
+
+            reports.extend(tab_reports)
+            if portal_host not in (urlsplit(page.url or "").hostname or "").lower() or _portal_page_needs_login(page, portal_host):
+                page.goto(target_urls[0], wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(500)
+            if _portal_page_needs_login(page, portal_host):
+                return {"status": "session_expired", "current_url": page.url, "detail": "University sign-in expired. Reconnect once to resume automatic sync."}
+
+            for url in report_urls:
                 try:
-                    if page.url != url:
+                    parsed_target = urlsplit(url)
+                    target_path = parsed_target.path.split("/")[-1] if parsed_target.path else ""
+                    clicked = False
+                    if target_path:
+                        try:
+                            link_elem = page.locator(f"a[href*='{target_path}'], a:has-text('{target_path}')").first
+                            if link_elem.is_visible():
+                                link_elem.click()
+                                page.wait_for_timeout(1500)
+                                clicked = True
+                        except Exception:
+                            clicked = False
+                    if not clicked and page.url != url:
                         page.goto(url, wait_until="domcontentloaded", timeout=20000)
-                        page.wait_for_timeout(600)
+                        page.wait_for_timeout(1000)
+
+                    if "accounts.google.com" in (page.url or ""):
+                        _handle_google_oauth_if_needed(page, user_id)
+                        page.wait_for_timeout(3000)
+
                     current_url = page.url or url
                     if _portal_page_needs_login(page, portal_host):
                         return {"status": "session_expired", "current_url": current_url, "detail": "University sign-in expired. Reconnect once to resume automatic sync."}
@@ -1263,45 +1868,60 @@ def _scrape_report_thread(target_urls: str | list[str], profile_dir: Path, user_
                 return {"status": "error", "error": "The portal pages could not be read. Check the connection and try again.", "reports": reports}
             return {"status": "success", "reports": reports, "current_url": reports[0].get("current_url")}
         finally:
+            # When connected over CDP, DO NOT call browser.close() as that terminates the browser process!
+            # Only close context if we launched our own headless persistent context
             if owns_context and context:
-                context.close()
-
-
-def _portal_page_needs_login(page, portal_host: str) -> bool:
-    """Detect login/SSO pages instead of treating every same-host page as signed in."""
-    current_url = page.url or ""
-    parsed = urlsplit(current_url)
-    current_host = (parsed.hostname or "").lower()
-    if current_host != portal_host or re.search(r"/(login|signin|sign-in|auth)(/|$)", parsed.path, re.I):
-        return True
-    try:
-        if page.locator("input[type='password']:visible").count() > 0:
-            return True
-        text = (page.locator("body").inner_text(timeout=2500) or "").lower()
-    except Exception:
-        return True
-    return any(phrase in text for phrase in (
-        "sign in with google", "please log in", "please login", "student login",
-        "forgot password", "enter your password", "invalid username or password",
-        "verification code", "one-time password", "two-factor", "verify it's you",
-    ))
+                try:
+                    context.close()
+                except Exception:
+                    pass
 
 
 def _portal_browser_authenticated(user_id: str, portal_url: str) -> bool:
-    """Check the live sign-in window without changing its current page."""
-    from playwright.sync_api import sync_playwright
+    """Check the live sign-in window without changing its current page or closing the browser."""
     portal_host = (urlsplit(portal_url).hostname or "").lower()
     if not _cdp_is_available(user_id):
         return False
+    port = _find_active_browser_port(user_id) or _cdp_port(user_id)
+
+    from playwright.sync_api import sync_playwright
     try:
         with sync_playwright() as p:
-            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{_cdp_port(user_id)}", timeout=5000)
+            _cleanup_untrusted_tabs_port(port)
+            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}", timeout=4000)
             pages = [page for context in browser.contexts for page in context.pages]
             for page in pages:
-                if not _portal_page_needs_login(page, portal_host):
+                page_host = (urlsplit(getattr(page, "url", "") or "").hostname or "").lower()
+                if page_host == portal_host and not _portal_page_needs_login(page, portal_host):
+                    return True
+                if "accounts.google.com" in (getattr(page, "url", "") or ""):
+                    try:
+                        _handle_google_oauth_if_needed(page, user_id)
+                        if hasattr(page, "wait_for_timeout"):
+                            page.wait_for_timeout(2000)
+                    except Exception:
+                        pass
+            return False
+            # Notice: Never call browser.close() here as that terminates the user's running Chrome window!
+    except Exception:
+        pass
+
+    # Fast-path fallback check via CDP JSON targets if Playwright sync connection times out
+    try:
+        req = urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=1.5)
+        raw_tabs = json.loads(req.read().decode())
+        for tab in raw_tabs:
+            if tab.get("type") != "page":
+                continue
+            tab_url = tab.get("url") or ""
+            tab_host = (urlsplit(tab_url).hostname or "").lower()
+            if tab_host == portal_host:
+                tab_path = urlsplit(tab_url).path.lower()
+                if not any(auth_word in tab_path for auth_word in ("/login", "/signin", "/auth")):
                     return True
     except Exception:
-        return False
+        pass
+
     return False
 
 
@@ -1312,7 +1932,18 @@ async def portal_connection_status(db: Session = Depends(get_db), user: dict = D
     if not portal_url or not portal_url.value:
         raise HTTPException(status_code=409, detail="Save your university portal address first.")
     authenticated = await asyncio.to_thread(_portal_browser_authenticated, uid, portal_url.value)
-    return {"status": "authenticated" if authenticated else "waiting"}
+
+    active_job_id = None
+    with _sync_jobs_lock:
+        cand_id = _active_sync_jobs.get(uid)
+        if cand_id and _sync_jobs.get(cand_id, {}).get("status") in ("queued", "running", "success"):
+            active_job_id = cand_id
+
+    return {
+        "status": "authenticated" if authenticated else "waiting",
+        "job_id": active_job_id,
+        "syncing": bool(active_job_id),
+    }
 
 
 @router.post("/capture", response_model=dict)
@@ -1331,11 +1962,23 @@ def _sync_portal_for_user(uid: str):
     if not lock.acquire(blocking=False):
         return {"status": "already_running", "message": "A portal sync is already running."}
     db = SessionLocal()
+    redis_lock_key = f"uniflow:lock:portal-sync:{sha256(uid.encode('utf-8')).hexdigest()}"
+    redis_lock_owner = uuid.uuid4().hex
+    redis_lock_acquired = False
     lock_id = int(sha256(f"portal-sync:{uid}".encode("utf-8")).hexdigest()[:15], 16)
     distributed_lock = False
     lock_connection = None
     try:
-        if db.bind and db.bind.dialect.name == "postgresql":
+        redis_lock_unavailable = False
+        if is_redis_configured():
+            try:
+                redis_lock_acquired = acquire_redis_lock(redis_lock_key, redis_lock_owner, 900)
+            except UpstashRedisError as error:
+                redis_lock_unavailable = True
+                logger.warning("Upstash portal sync lock unavailable; falling back to PostgreSQL lock: %s", error)
+            if not redis_lock_acquired and not redis_lock_unavailable:
+                return {"status": "already_running", "message": "A portal sync is already running."}
+        if not redis_lock_acquired and db.bind and db.bind.dialect.name == "postgresql":
             try:
                 lock_connection = db.bind.connect()
                 distributed_lock = bool(lock_connection.execute(text("SELECT pg_try_advisory_lock(:lock_id)"), {"lock_id": lock_id}).scalar())
@@ -1404,6 +2047,11 @@ def _sync_portal_for_user(uid: str):
                 "summary": summary, "pages_synced": pages, "failed_pages": errors,
                 "last_synced_at": datetime.now(timezone.utc).isoformat(), "message": f"Synced {len(pages)} portal pages."}
     finally:
+        if redis_lock_acquired:
+            try:
+                release_redis_lock(redis_lock_key, redis_lock_owner)
+            except UpstashRedisError as error:
+                logger.warning("Could not release Upstash portal sync lock; it will expire automatically: %s", error)
         if distributed_lock:
             try:
                 lock_connection.execute(text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": lock_id})
@@ -1437,6 +2085,8 @@ def _run_portal_sync_job(uid: str, job_id: str):
 
 
 def _persist_sync_job(uid: str, job_id: str, result: dict):
+    with _sync_jobs_lock:
+        _sync_jobs[job_id] = result
     db = SessionLocal()
     try:
         _set_portal_setting(db, uid, f"sync_job_{job_id}", json.dumps(result), "Portal sync job status")
@@ -1464,11 +2114,22 @@ def queue_portal_sync(background_tasks: BackgroundTasks, db: Session = Depends(g
 
 @router.get("/sync/{job_id}", response_model=dict)
 def get_portal_sync_status(job_id: str, db: Session = Depends(get_db), user: dict = Depends(require_current_user)):
+    with _sync_jobs_lock:
+        cached = _sync_jobs.get(job_id)
+        if cached:
+            return cached
+
     item = _portal_setting(db, _user_id(user), f"sync_job_{job_id}")
+    if not item or not item.value:
+        item = db.query(Setting).filter(Setting.key.like(f"%sync_job_{job_id}")).first()
+
     if not item or not item.value:
         raise HTTPException(status_code=404, detail="Sync job was not found or has expired.")
     try:
-        return json.loads(item.value)
+        data = json.loads(item.value)
+        with _sync_jobs_lock:
+            _sync_jobs[job_id] = data
+        return data
     except Exception:
         raise HTTPException(status_code=500, detail="Sync status is unreadable.")
 

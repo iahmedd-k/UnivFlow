@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = "http://localhost:8000/api/v1/auth/google"
-    google_scopes: str = "https://www.googleapis.com/auth/classroom.coursework.students https://www.googleapis.com/auth/classroom.coursework.me.readonly https://www.googleapis.com/auth/classroom.announcements.readonly https://www.googleapis.com/auth/classroom.courses.readonly https://www.googleapis.com/auth/classroom.rosters.readonly https://www.googleapis.com/auth/documents.readonly https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
+    google_scopes: str = "https://www.googleapis.com/auth/classroom.coursework.students https://www.googleapis.com/auth/classroom.coursework.me.readonly https://www.googleapis.com/auth/classroom.announcements.readonly https://www.googleapis.com/auth/classroom.courses.readonly https://www.googleapis.com/auth/classroom.rosters.readonly https://www.googleapis.com/auth/documents.readonly https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
 
     ai_provider: str = "groq"
     groq_api_key: str = ""
@@ -29,10 +29,10 @@ class Settings(BaseSettings):
     pollinations_image_model: str = "zimage"
 
     # Model assignments used by the sequential CrewAI assignment workflow.
-    planner_agent_model: str = "openai/gpt-oss-120b"
-    theory_agent_model: str = "gemini-3.8-flash"
-    coder_agent_model: str = "qwen/qwen3.8-27b"
-    reporter_agent_model: str = "gemini-3.5-flash-lite"
+    planner_agent_model: str = "llama-3.3-70b-versatile"
+    theory_agent_model: str = "gemini-2.0-flash"
+    coder_agent_model: str = "llama-3.3-70b-versatile"
+    reporter_agent_model: str = "gemini-2.0-flash"
 
     claude_enabled: bool = False
 
@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
+    smtp_user: str = ""
     smtp_password: str = ""
     smtp_tls: bool = True
     email_from: str = ""
@@ -72,6 +73,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     redis_url: str = "redis://localhost:6379/0"
+    upstash_redis_rest_url: str = ""
+    upstash_redis_rest_token: str = ""
     scheduler_timezone: str = "UTC"
 
     cloudinary_cloud_name: str = ""

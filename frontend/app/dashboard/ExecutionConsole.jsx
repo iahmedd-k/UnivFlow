@@ -3,35 +3,6 @@
 import { useMemo } from 'react';
 import Icon from '@/app/dashboard/Icon';
 
-export interface ExecutionResult {
-  success: boolean;
-  execution_id: string;
-  execution_type: string;
-  language: string;
-  stdout: string;
-  stderr: string;
-  output: string;
-  exit_code: number | null;
-  signal: string | null;
-  timed_out: boolean;
-  execution_time: number;
-  attempt: number;
-  error_type: string | null;
-  error_message: string | null;
-  columns?: string[];
-  rows?: any[][];
-  affected_rows?: number;
-  database_type?: string;
-  database_name?: string;
-}
-
-interface ExecutionConsoleProps {
-  result: ExecutionResult | null;
-  code?: string;
-  showCode?: boolean;
-  compact?: boolean;
-}
-
 const STATUS_CONFIG = {
   success: { label: '✓ Success', color: '#10b981', bg: '#ecfdf5', border: '#10b98133', icon: 'checkCircle' },
   error: { label: '✗ Error', color: '#ef4444', bg: '#fef2f2', border: '#ef444433', icon: 'alertCircle' },
@@ -39,9 +10,9 @@ const STATUS_CONFIG = {
   unsupported_language: { label: '⚠ Unsupported', color: '#6b7280', bg: '#f9fafb', border: '#9ca3af33', icon: 'alertTriangle' },
   backend_unavailable: { label: '⚠ Backend Unavailable', color: '#ef4444', bg: '#fef2f2', border: '#ef444433', icon: 'serverOff' },
   limit_exceeded: { label: '⚠ Limit Exceeded', color: '#f59e0b', bg: '#fffbeb', border: '#f59e0b33', icon: 'alertTriangle' },
-} as const;
+};
 
-const LANGUAGE_COLORS: Record<string, string> = {
+const LANGUAGE_COLORS = {
   python: '#3776ab',
   javascript: '#f7df1e',
   typescript: '#3178c6',
@@ -55,18 +26,18 @@ const LANGUAGE_COLORS: Record<string, string> = {
   mongodb: '#47a248',
 };
 
-function formatTime(ms: number): string {
+function formatTime(ms) {
   if (ms < 1000) return `${ms.toFixed(0)}ms`;
   return `${(ms / 1000).toFixed(2)}s`;
 }
 
-function formatExitCode(code: number | null, signal: string | null): string {
+function formatExitCode(code, signal) {
   if (signal) return `Signal: ${signal}`;
   if (code === null) return 'N/A';
   return `Exit code: ${code}`;
 }
 
-function StatusBadge({ status }: { status: keyof typeof STATUS_CONFIG }) {
+function StatusBadge({ status }) {
   const config = STATUS_CONFIG[status] || STATUS_CONFIG.error;
   return (
     <span
@@ -83,21 +54,16 @@ function StatusBadge({ status }: { status: keyof typeof STATUS_CONFIG }) {
         fontWeight: 600,
       }}
     >
-      <Icon name={config.icon as any} size={12} />
+      <Icon name={config.icon} size={12} />
       {config.label}
     </span>
   );
 }
 
-function InfoRow({ label, value, icon, monospace = false }: { 
-  label: string; 
-  value: string; 
-  icon?: string; 
-  monospace?: boolean 
-}) {
+function InfoRow({ label, value, icon, monospace = false }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
-      {icon && <Icon name={icon as any} size={14} style={{ color: '#64748b', flexShrink: 0 }} />}
+      {icon && <Icon name={icon} size={14} style={{ color: '#64748b', flexShrink: 0 }} />}
       <span style={{ fontSize: 11, color: '#64748b', fontWeight: 500, minWidth: 100 }}>{label}</span>
       <span style={{ fontSize: 11, color: '#1e293b', fontFamily: monospace ? 'ui-monospace, monospace' : 'inherit', wordBreak: 'break-all' }}>
         {value}
@@ -106,7 +72,7 @@ function InfoRow({ label, value, icon, monospace = false }: {
   );
 }
 
-function CodeBlock({ code, language }: { code: string; language: string }) {
+function CodeBlock({ code, language }) {
   return (
     <div style={{ borderRadius: 8, border: '1px solid #e2e8f0', overflow: 'hidden', background: '#0f172a' }}>
       <div style={{ padding: '8px 12px', background: '#1e293b', borderBottom: '1px solid #334155', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -121,12 +87,7 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
   );
 }
 
-function OutputSection({ label, content, color, emptyMessage }: { 
-  label: string; 
-  content: string; 
-  color: string; 
-  emptyMessage: string 
-}) {
+function OutputSection({ label, content, color, emptyMessage }) {
   const hasContent = content && content.trim().length > 0;
   
   return (
@@ -147,7 +108,7 @@ function OutputSection({ label, content, color, emptyMessage }: {
   );
 }
 
-function DatabaseResultsTable({ columns, rows }: { columns: string[]; rows: any[][] }) {
+function DatabaseResultsTable({ columns, rows }) {
   if (!columns.length || !rows.length) return null;
 
   return (
@@ -184,7 +145,7 @@ function DatabaseResultsTable({ columns, rows }: { columns: string[]; rows: any[
   );
 }
 
-export default function ExecutionConsole({ result, code, showCode = true, compact = false }: ExecutionConsoleProps) {
+export default function ExecutionConsole({ result, code, showCode = true, compact = false }) {
   if (!result) {
     return (
       <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
@@ -195,25 +156,25 @@ export default function ExecutionConsole({ result, code, showCode = true, compac
   }
 
   const isDatabase = result.execution_type === 'database';
-  const statusKey = result.success ? 'success' : (result.status || 'error') as keyof typeof STATUS_CONFIG;
+  const statusKey = result.success ? 'success' : (result.status || 'error');
   const languageColor = LANGUAGE_COLORS[result.language] || '#6657d9';
 
-  const metadata = useMemo(() => [
-    { label: 'Language', value: result.language.toUpperCase(), icon: 'code' },
-    { label: 'Execution Time', value: formatTime(result.execution_time * 1000), icon: 'clock' },
-    { label: 'Attempt', value: String(result.attempt), icon: 'gitBranch' },
+  const metadata = [
+    { label: 'Language', value: (result.language || '').toUpperCase(), icon: 'code' },
+    { label: 'Execution Time', value: formatTime((result.execution_time || 0) * 1000), icon: 'clock' },
+    { label: 'Attempt', value: String(result.attempt || 1), icon: 'gitBranch' },
     { label: formatExitCode(result.exit_code, result.signal), value: '', icon: 'terminal' },
     { label: result.timed_out ? 'Status' : '', value: result.timed_out ? 'Timed Out' : '', icon: 'alertTriangle' },
-  ].filter(m => m.value), [result]);
+  ].filter(m => m.value);
 
-  const databaseMetadata = useMemo(() => [
+  const databaseMetadata = [
     { label: 'Database', value: result.database_type?.toUpperCase() || 'Unknown', icon: 'database' },
     { label: 'Database Name', value: result.database_name || 'N/A', icon: 'file' },
-    { label: 'Execution Time', value: formatTime(result.execution_time * 1000), icon: 'clock' },
+    { label: 'Execution Time', value: formatTime((result.execution_time || 0) * 1000), icon: 'clock' },
     { label: 'Columns', value: String(result.columns?.length || 0), icon: 'list' },
     { label: 'Rows Returned', value: String(result.rows?.length || 0), icon: 'table' },
     { label: 'Affected Rows', value: String(result.affected_rows || 0), icon: 'edit' },
-  ].filter(m => m.value), [result]);
+  ].filter(m => m.value);
 
   if (compact) {
     return (

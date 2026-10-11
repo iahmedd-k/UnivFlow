@@ -183,9 +183,9 @@ export default function DiagramDemo() {
   const [compact, setCompact] = useState(false);
   const [outputFormat, setOutputFormat] = useState('svg');
 
-  const handleTypeChange = (type: string) => {
+  const handleTypeChange = (type) => {
     setSelectedType(type);
-    setSource(SAMPLE_DIAGRAMS[type as keyof typeof SAMPLE_DIAGRAMS] || '');
+    setSource(SAMPLE_DIAGRAMS[type] || '');
     setResult(null);
     setError('');
   };
@@ -210,7 +210,7 @@ export default function DiagramDemo() {
         max_attempts: 2,
       }, token);
       setResult(response);
-    } catch (err: any) {
+    } catch (err) {
       setError(err.message || 'Generation failed');
     } finally {
       setLoading(false);

@@ -57,15 +57,10 @@ def send_email(
             plain_text_content=Content("text/plain", text_content),
         )
 
-        # Anti-spam headers
-        mail.add_header(Header("Precedence", "bulk"))
+        # Transactional email headers
         mail.add_header(Header("Auto-Submitted", "auto-generated"))
         mail.add_header(Header("X-Priority", "3"))
-        mail.add_header(Header("X-MSMail-Priority", "Normal"))
         mail.add_header(Header("Importance", "Normal"))
-
-        # List-Unsubscribe (required for bulk)
-        mail.add_header(Header("List-Unsubscribe", f"<mailto:{from_email}?subject=unsubscribe>"))
 
         if reply_to:
             mail.reply_to = Email(reply_to)
@@ -83,14 +78,55 @@ def send_email(
         response = client.send(mail)
         
         if 200 <= response.status_code < 300:
-            logger.info(f"Email sent to {to_email}: {subject} (status: {response.status_code})")
+            safe_subj = subject.encode("ascii", "replace").decode("ascii")
+            logger.info(f"Email sent to {to_email}: {safe_subj} (status: {response.status_code})")
             return True
         else:
-            logger.error(f"SendGrid error: {response.status_code} - {response.body}")
-            return False
+            logger.warning(f"SendGrid error: {response.status_code} - {response.body}, falling back to SMTP")
+            return send_smtp_email(to_email, subject, html_content, text_content)
 
     except Exception as e:
-        logger.error(f"Failed to send email to {to_email}: {e}")
+        logger.warning(f"SendGrid send failed for {to_email}: {e}, falling back to SMTP")
+        return send_smtp_email(to_email, subject, html_content, text_content)
+
+
+def send_smtp_email(to_email: str, subject: str, html_content: str, text_content: str = None) -> bool:
+    """Fallback email sender via SMTP (e.g. Gmail)"""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    user = settings.smtp_username or settings.smtp_user or ""
+    pwd = (settings.smtp_password or "").replace(" ", "")
+    host = settings.smtp_host or "smtp.gmail.com"
+    port = settings.smtp_port or 587
+    from_email = settings.email_from or user
+
+    if not (user and pwd and host):
+        logger.error("SMTP credentials not fully configured")
+        return False
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = from_email
+        msg["To"] = to_email
+
+        if text_content:
+            msg.attach(MIMEText(text_content, "plain"))
+        if html_content:
+            msg.attach(MIMEText(html_content, "html"))
+
+        server = smtplib.SMTP(host, port, timeout=12)
+        if settings.smtp_tls:
+            server.starttls()
+        server.login(user, pwd)
+        server.sendmail(from_email, [to_email], msg.as_string())
+        server.quit()
+        logger.info(f"Email delivered via SMTP fallback to {to_email}: {subject}")
+        return True
+    except Exception as e:
+        logger.error(f"SMTP fallback failed for {to_email}: {e}")
         return False
 
 

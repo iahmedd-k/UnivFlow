@@ -7,18 +7,18 @@ import Icon from '@/app/dashboard/Icon';
 function getStatus(assignment) {
   const state = assignment.submission_state;
   if (state === 'TURNED_IN' || state === 'RETURNED') {
-    return { label: 'Submitted', pillClass: 'product-pill success' };
+    return { label: 'Submitted', className: 'bg-[#eaf7f1] text-[#438a71]' };
   }
   if (state === 'DRAFT') {
-    return { label: 'Draft', pillClass: 'product-pill' };
+    return { label: 'Draft', className: 'bg-[#f1f1f6] text-[#6e7281]' };
   }
   if (assignment.due_at && new Date(assignment.due_at) < new Date()) {
-    return { label: 'Overdue', pillClass: 'product-pill error' };
+    return { label: 'Overdue', className: 'bg-[#fff0f0] text-[#b15252]' };
   }
   if (assignment.status === 'APPROVED') {
-    return { label: 'Approved', pillClass: 'product-pill success' };
+    return { label: 'Approved', className: 'bg-[#eaf7f1] text-[#438a71]' };
   }
-  return { label: 'Upcoming', pillClass: 'product-pill warning' };
+  return { label: 'Upcoming', className: 'bg-[#fff4e4] text-[#a87936]' };
 }
 
 export default function AssignmentCard({ assignment, onOpen, viewMode = 'grid' }) {
@@ -39,138 +39,87 @@ export default function AssignmentCard({ assignment, onOpen, viewMode = 'grid' }
     return (
       <Link
         href={targetHref}
-        className="product-row group"
-        style={{ textDecoration: 'none', display: 'flex', alignItems: 'center' }}
+        className="group flex min-h-[60px] items-center gap-3 border-b border-[#f1f1f4] px-[13px] py-3 text-inherit no-underline last:border-b-0 hover:bg-[#fafafd]"
       >
-        <span className="product-icon" aria-hidden="true" style={{ width: 32, height: 32, flex: '0 0 32px' }}>
+        <span className="grid size-8 shrink-0 place-items-center rounded-[9px] bg-violet-light text-violet">
           <Icon name={isQuiz ? 'clipboard' : 'book'} size={16}/>
         </span>
-        <div className="product-row-main">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <strong style={{ fontSize: 13, color: '#2c2f3c' }}>
-              {assignment.title || 'Untitled assignment'}
-            </strong>
-          </div>
-          <small style={{ color: '#858998', fontSize: 11 }}>
+        <span className="flex min-w-0 flex-1 flex-col gap-1">
+          <strong className="truncate text-[13px] font-semibold text-[#2c2f3c]">
+            {assignment.title || 'Untitled assignment'}
+          </strong>
+          <small className="text-xs text-[#858998]">
             {assignment.course_name || 'Course'}
             {assignment.work_type ? ` · ${assignment.work_type.replace('_', ' ')}` : ''}
           </small>
-        </div>
-        <span className="product-row-meta" style={{ fontSize: 11, color: '#858998', textAlign: 'right' }}>
+        </span>
+        <span className="whitespace-nowrap text-right text-xs text-[#858998] max-sm:hidden">
           Due {dueDateStr}
           {relativeStr && (
-            <span style={{ display: 'block', fontSize: 10, color: status.label === 'Overdue' ? '#b34d4d' : '#6657d9' }}>
+            <span className={`block text-xs ${status.label === 'Overdue' ? 'text-[#b34d4d]' : 'text-violet'}`}>
               {relativeStr}
             </span>
           )}
         </span>
-        <span className={status.pillClass}>{status.label}</span>
-        <span style={{ fontSize: 11, fontWeight: 600, color: '#6657d9', marginLeft: 8, whiteSpace: 'nowrap' }}>
+        <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-semibold ${status.className}`}>
+          {status.label}
+        </span>
+        <span className="ml-2 inline-flex shrink-0 items-center whitespace-nowrap text-xs font-semibold text-violet max-sm:hidden">
           Open <Icon name="arrowUpRight" size={13}/>
         </span>
       </Link>
     );
   }
 
-  // Grid Mode (Rich Surface Card)
   return (
     <Link
       href={targetHref}
-      className="surface-card group"
-      style={{
-        padding: '18px 20px',
-        display: 'flex',
-        flexDirection: 'column',
-        justifyContent: 'space-between',
-        transition: 'all 0.15s ease',
-        borderRadius: 11,
-        textDecoration: 'none',
-        color: 'inherit',
-      }}
+      className="group flex flex-col justify-between rounded-[11px] border border-[#ebebf0] bg-white p-[18px_20px] text-inherit transition-all duration-150 hover:-translate-y-px hover:border-[#d6d0fb] hover:shadow-md"
     >
       <div>
-        {/* Top bar: Course Pill & Status Badge */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 12 }}>
-          <span
-            style={{
-              fontSize: 10,
-              fontWeight: 600,
-              color: '#5b4cc6',
-              background: '#f4f1ff',
-              border: '1px solid #e6e1fb',
-              borderRadius: 6,
-              padding: '2px 8px',
-              maxWidth: '65%',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <span className="max-w-[65%] truncate rounded-md border border-[#e6e1fb] bg-[#f4f1ff] px-2 py-0.5 text-xs font-semibold text-[#5b4cc6]">
             {assignment.course_name || 'Course'}
           </span>
-          <span className={status.pillClass} style={{ flexShrink: 0 }}>
+          <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-semibold ${status.className}`}>
             {status.label}
           </span>
         </div>
 
-        {/* Title and Icon */}
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 10 }}>
-          <span
-            style={{
-              width: 26,
-              height: 26,
-              flex: '0 0 26px',
-              borderRadius: 7,
-              background: isQuiz ? '#fff3e8' : '#f0edff',
-              color: isQuiz ? '#d88752' : '#6657d9',
-              display: 'grid',
-              placeItems: 'center',
-              fontSize: 13,
-              marginTop: 1,
-            }}
-          >
+        <div className="mb-2.5 flex items-start gap-2.5">
+          <span className={`mt-px grid size-[26px] shrink-0 place-items-center rounded-[7px] text-[13px] ${isQuiz ? 'bg-[#fff3e8] text-[#d88752]' : 'bg-violet-light text-violet'}`}>
             <Icon name={isQuiz ? 'clipboard' : 'file'} size={15}/>
           </span>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <h3
-              style={{
-                fontSize: 13,
-                fontWeight: 600,
-                color: '#2c2f3b',
-                lineHeight: 1.4,
-                margin: 0,
-                overflow: 'hidden',
-                display: '-webkit-box',
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: 'vertical',
-              }}
-            >
+          <span className="min-w-0 flex-1">
+            <span className="line-clamp-2 text-[13px] font-semibold leading-[1.4] text-[#2c2f3b]">
               {assignment.title || 'Untitled assignment'}
-            </h3>
-            <span style={{ display: 'block', fontSize: 10, fontWeight: 500, color: '#9a9cab', marginTop: 3, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            </span>
+            <span className="mt-[3px] block text-xs font-medium uppercase tracking-[0.04em] text-[#9a9cab]">
               {assignment.work_type ? assignment.work_type.replace('_', ' ') : isQuiz ? 'Quiz' : 'Assignment'}
             </span>
-          </div>
+          </span>
         </div>
       </div>
 
-      {/* Footer Area: Due Date & Action */}
-      <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #f2f2f5' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11, color: '#858998', marginBottom: 8 }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+      <div className="mt-3.5 border-t border-[#f2f2f5] pt-3">
+        <div className="mb-2 flex items-center justify-between gap-2 text-xs text-[#858998]">
+          <span className="inline-flex min-w-0 items-center gap-[5px]">
             <Icon name="clock" size={13}/>
-            <span>{dueDateStr}</span>
+            <span className="truncate">{dueDateStr}</span>
           </span>
           {relativeStr && (
-            <span style={{ fontSize: 10, fontWeight: 600, color: status.label === 'Overdue' ? '#b34d4d' : '#6657d9' }}>
+            <span className={`shrink-0 text-xs font-semibold ${status.label === 'Overdue' ? 'text-[#b34d4d]' : 'text-violet'}`}>
               {relativeStr}
             </span>
           )}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 10, color: '#9a9cab' }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>{materialsCount > 0 && <Icon name="paperclip" size={12}/>} {materialsCount > 0 ? `${materialsCount} ${materialsCount === 1 ? 'attachment' : 'attachments'}` : 'No attachments'}</span>
-          <span style={{ fontSize: 11, fontWeight: 600, color: '#6657d9', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+        <div className="flex items-center justify-between gap-2 text-xs text-[#9a9cab]">
+          <span className="inline-flex min-w-0 items-center gap-[5px] truncate">
+            {materialsCount > 0 && <Icon name="paperclip" size={12}/>}
+            {materialsCount > 0 ? `${materialsCount} ${materialsCount === 1 ? 'attachment' : 'attachments'}` : 'No attachments'}
+          </span>
+          <span className="inline-flex shrink-0 items-center gap-[3px] text-xs font-semibold text-violet">
             Open Page <Icon name="arrowUpRight" size={13}/>
           </span>
         </div>

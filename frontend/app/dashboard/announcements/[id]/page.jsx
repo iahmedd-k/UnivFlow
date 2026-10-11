@@ -33,54 +33,55 @@ export default function AnnouncementDetailPage() {
     load();
   }, [announcementId, getToken]);
 
-  if (loading) return <div className="flex items-center justify-center h-64">Loading...</div>;
-  if (error) return <div className="text-red-600 p-4">Error: {error}</div>;
-  if (!announcement) return <div className="p-8 text-center">Announcement not found</div>;
+  if (loading) return <div className="flex min-h-64 items-center justify-center text-sm text-muted" role="status">Loading announcement…</div>;
+  if (error) return <div className="rounded-lg border border-rose-border bg-rose-bg p-4 text-sm text-rose" role="alert">Error: {error}</div>;
+  if (!announcement) return <div className="rounded-xl border border-line bg-white p-8 text-center text-sm text-muted">Announcement not found</div>;
 
   const publishedAt = announcement.published_at ? format(new Date(announcement.published_at), 'MMMM d, yyyy \'at\' h:mm a') : 'Unknown';
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-4">
-        <Link href="/dashboard/announcements" className="text-gray-400 hover:text-gray-600" aria-label="Back to announcements"><Icon name="arrowLeft" size={16}/></Link>
+    <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-ink">
+      <header className="flex items-center gap-4">
+        <Link href="/dashboard/announcements" className="grid size-10 shrink-0 place-items-center rounded-lg border border-line bg-white text-muted transition hover:bg-paper hover:text-ink" aria-label="Back to announcements"><Icon name="arrowLeft" size={16}/></Link>
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">{announcement.title}</h1>
-          <p className="text-gray-500 mt-1">Announcement Details</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Activity & updates</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">{announcement.title}</h1>
+          <p className="mt-1 text-sm text-muted">Announcement details</p>
         </div>
-      </div>
+      </header>
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-        <div className="mb-6">
-          <p className="text-sm text-gray-500 mb-1">Published</p>
-          <p className="text-gray-900">{publishedAt}</p>
+      <article className="rounded-xl border border-line bg-white p-5 shadow-sm sm:p-6">
+        <div className="mb-5">
+          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted">Published</p>
+          <p className="text-sm text-ink">{publishedAt}</p>
         </div>
 
-        <div className="mb-6">
-          <p className="text-sm text-gray-500 mb-1">Source</p>
-          <p className="font-medium text-gray-900">{announcement.source || 'Unknown'}</p>
+        <div className="mb-5">
+          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted">Source</p>
+          <p className="text-sm font-medium text-ink">{announcement.source || 'Unknown'}</p>
         </div>
 
         <div>
-          <p className="text-sm text-gray-500 mb-2">Content</p>
-          <div className="prose prose-sm max-w-none text-gray-700 whitespace-pre-wrap bg-gray-50 p-4 rounded-lg">
+          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Content</p>
+          <div className="whitespace-pre-wrap break-words rounded-lg bg-paper p-4 text-sm leading-6 text-ink">
             {announcement.content || 'No content'}
           </div>
         </div>
 
         {announcement.url && (
-          <div className="mt-6 pt-6 border-t">
-            <a href={announcement.url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">
+          <div className="mt-6 border-t border-line pt-5">
+            <a href={announcement.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm font-semibold text-violet hover:text-violet-dark hover:underline">
               View in Google Classroom <Icon name="externalLink" size={13}/>
             </a>
           </div>
         )}
 
-        <div className="flex justify-end gap-2 mt-6">
-          <Link href="/dashboard/announcements" className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+        <div className="mt-6 flex justify-end gap-2 border-t border-line pt-5">
+          <Link href="/dashboard/announcements" className="inline-flex min-h-10 items-center rounded-lg border border-line px-4 text-sm font-semibold text-ink transition hover:bg-paper">
             Back to Announcements
           </Link>
         </div>
-      </div>
-    </div>
+      </article>
+    </main>
   );
 }

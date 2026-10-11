@@ -28,50 +28,51 @@ export default function AnnouncementsPage() {
     load();
   }, [getToken]);
 
-  if (loading) return <div className="flex items-center justify-center h-64">Loading...</div>;
-  if (error) return <div className="text-red-600 p-4">Error: {error}</div>;
+  if (loading) return <div className="flex min-h-64 items-center justify-center text-sm text-muted" role="status">Loading announcements…</div>;
+  if (error) return <div className="rounded-lg border border-rose-border bg-rose-bg p-4 text-sm text-rose" role="alert">Error: {error}</div>;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-ink">
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Announcements</h1>
-          <p className="text-gray-500 mt-1">Class announcements and updates</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Activity & updates</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">Announcements</h1>
+          <p className="mt-1 text-sm text-muted">Class announcements and updates</p>
         </div>
-      </div>
+      </header>
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+      <section className="overflow-hidden rounded-xl border border-line bg-white shadow-sm" aria-label="Announcements">
         {announcements.length === 0 ? (
-          <div className="p-12 text-center text-gray-500">
+          <div className="p-12 text-center text-sm text-muted">
             No announcements.
           </div>
         ) : (
-          <div className="divide-y divide-gray-100">
+          <div className="divide-y divide-line">
             {announcements.map((ann) => (
               <Link
                 key={ann.id}
                 href={`/dashboard/announcements/${ann.id}`}
-                className="block px-6 py-4 hover:bg-gray-50 transition-colors"
+                className="block px-5 py-4 transition-colors hover:bg-paper sm:px-6"
               >
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                   <div className="flex-1 min-w-0">
-                    <h3 className="font-semibold text-gray-900 truncate">{ann.title}</h3>
-                    <p className="text-sm text-gray-500 mt-1">
+                    <h2 className="truncate text-base font-semibold text-ink">{ann.title}</h2>
+                    <p className="mt-1 text-sm text-muted">
                       {ann.published_at ? format(new Date(ann.published_at), 'MMM d, yyyy h:mm a') : 'Unknown date'} • {ann.source || 'Unknown'}
                     </p>
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className="px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-700">
+                    <span className="rounded-full bg-violet-light px-3 py-1.5 text-xs font-semibold text-violet-dark">
                       {ann.source || 'Announcement'}
                     </span>
-                    <Icon name="arrowUpRight" size={13} className="text-gray-300" />
+                    <Icon name="arrowUpRight" size={16} className="text-muted" />
                   </div>
                 </div>
               </Link>
             ))}
           </div>
         )}
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }

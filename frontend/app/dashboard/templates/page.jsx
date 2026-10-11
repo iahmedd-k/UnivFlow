@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAuth, useUser } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 import Icon from '@/app/dashboard/Icon';
@@ -53,11 +53,7 @@ export default function TemplatesPage() {
     solutionSnippet: '1. Executive Summary & Architecture Overview\n\nThis report presents the distributed consensus mechanism, load balancing metrics, and microservice decoupling strategy implemented for the university capstone project...',
   });
 
-  useEffect(() => {
-    loadTemplates();
-  }, [getToken]);
-
-  const loadTemplates = async () => {
+  const loadTemplates = useCallback(async () => {
     try {
       const token = await getToken();
       const data = await api.getAssignmentTemplates(token);
@@ -67,7 +63,11 @@ export default function TemplatesPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [getToken]);
+
+  useEffect(() => {
+    loadTemplates();
+  }, [loadTemplates]);
 
   const extractDocIdFromUrl = (urlOrId) => {
     if (!urlOrId) return '';
@@ -338,7 +338,7 @@ export default function TemplatesPage() {
             </p>
           </div>
           {copiedTag && (
-            <span className="text-xs bg-emerald-50 text-emerald-700 font-medium px-3 py-1 rounded-full border border-emerald-200 animate-fade-in">
+            <span className="animate-pulse rounded-full border border-brand-border bg-brand-bg px-3 py-1.5 text-xs font-semibold text-brand-hover">
               <Icon name="check" size={13}/> Copied {copiedTag}
             </span>
           )}

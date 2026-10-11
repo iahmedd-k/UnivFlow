@@ -23,18 +23,18 @@ const TABS = [
 function getStatus(assignment) {
   const state = assignment.submission_state;
   if (state === 'TURNED_IN' || state === 'RETURNED') {
-    return { label: 'Submitted', pillClass: 'product-pill success' };
+    return { label: 'Submitted', pillClass: 'inline-flex items-center rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700' };
   }
   if (state === 'DRAFT') {
-    return { label: 'Draft', pillClass: 'product-pill' };
+    return { label: 'Draft', pillClass: 'inline-flex items-center rounded-full bg-neutral-100 px-2 py-1 text-xs font-semibold text-neutral-600' };
   }
   if (assignment.due_at && new Date(assignment.due_at) < new Date()) {
-    return { label: 'Overdue', pillClass: 'product-pill error' };
+    return { label: 'Overdue', pillClass: 'inline-flex items-center rounded-full bg-red-50 px-2 py-1 text-xs font-semibold text-red-700' };
   }
   if (assignment.status === 'APPROVED') {
-    return { label: 'Approved', pillClass: 'product-pill success' };
+    return { label: 'Approved', pillClass: 'inline-flex items-center rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700' };
   }
-  return { label: 'Upcoming', pillClass: 'product-pill warning' };
+  return { label: 'Upcoming', pillClass: 'inline-flex items-center rounded-full bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-700' };
 }
 
 export default function AssignmentDetailPage() {
@@ -78,21 +78,21 @@ export default function AssignmentDetailPage() {
     loadAssignment();
   }, [loadAssignment]);
 
-  const handleTurnIn = async (id, templateId, fileNames, token) => {
-    await api.turnInAssignment(id, { template_id: templateId, templateId, fileNames }, token);
+  const handleTurnIn = async (id, templateId, files, token) => {
+    await api.turnInAssignment(id, { template_id: templateId, files }, token);
     await loadAssignment();
   };
 
   if (loading) {
     return (
-      <main className="product-page" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5">
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Link href="/dashboard/assignments" className="product-action secondary" style={{ textDecoration: 'none' }}>
+          <Link href="/dashboard/assignments" className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md border border-neutral-200 bg-white px-3 text-xs font-semibold text-neutral-700 no-underline hover:bg-neutral-50">
             <Icon name="arrowLeft" size={13}/> Back to assignments
           </Link>
         </div>
-        <div className="product-card" style={{ padding: 40, textAlign: 'center', color: '#858998' }}>
-          <span className="loading-dot" style={{ display: 'inline-block', marginBottom: 10 }} />
+        <div className="rounded-xl border border-neutral-200 bg-white p-10 text-center text-neutral-500">
+          <span className="mb-2.5 inline-block h-2 w-2 animate-pulse rounded-full bg-indigo-500" />
           <p style={{ fontSize: 13, margin: 0 }}>Loading assignment workspace…</p>
         </div>
       </main>
@@ -101,13 +101,13 @@ export default function AssignmentDetailPage() {
 
   if (error || !assignment) {
     return (
-      <main className="product-page" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5">
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Link href="/dashboard/assignments" className="product-action secondary" style={{ textDecoration: 'none' }}>
+          <Link href="/dashboard/assignments" className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md border border-neutral-200 bg-white px-3 text-xs font-semibold text-neutral-700 no-underline hover:bg-neutral-50">
           <Icon name="arrowLeft" size={13}/> Back to assignments
           </Link>
         </div>
-        <div className="product-alert" role="alert">
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800" role="alert">
           <strong>Error loading assignment:</strong> {error || 'Assignment not found.'}
         </div>
       </main>
@@ -128,12 +128,12 @@ export default function AssignmentDetailPage() {
   const materials = assignment.materials || [];
 
   return (
-    <main className="product-page pb-12" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-12">
       {/* Top Back and Navigation Bar */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <Link
           href="/dashboard/assignments"
-          className="product-action secondary"
+          className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md border border-neutral-200 bg-white px-3 text-xs font-semibold text-neutral-700 no-underline hover:bg-neutral-50"
           style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}
         >
           <Icon name="arrowLeft" size={13} />
@@ -144,7 +144,7 @@ export default function AssignmentDetailPage() {
             href={assignment.url}
             target="_blank"
             rel="noreferrer"
-            className="product-action secondary"
+            className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md border border-neutral-200 bg-white px-3 text-xs font-semibold text-neutral-700 no-underline hover:bg-neutral-50"
             style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}
           >
             <span>Classroom post</span>
@@ -154,7 +154,7 @@ export default function AssignmentDetailPage() {
       </div>
 
       {/* Main Page Header */}
-      <header className="product-heading" style={{ alignItems: 'flex-start' }}>
+      <header className="flex flex-col items-start justify-between gap-4">
         <div style={{ maxWidth: '800px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
             <span
@@ -182,36 +182,36 @@ export default function AssignmentDetailPage() {
       </header>
 
       {/* 3 Overview Metric Cards */}
-      <section className="overview-stats" aria-label="Assignment metrics" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
-        <article className="overview-stat">
-          <span className="stat-icon stat-lilac"><Icon name="book" size={18}/></span>
-          <div className="stat-text">
+      <section className="grid grid-cols-1 gap-3.5 md:grid-cols-3" aria-label="Assignment metrics">
+        <article className="flex items-center gap-3 rounded-xl border border-[#ededf2] bg-white p-4">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-purple-50 text-purple-700"><Icon name="book" size={18}/></span>
+          <div className="flex min-w-0 flex-col gap-1 text-xs text-[#858998]">
             <span>Course & work type</span>
-            <strong style={{ fontSize: 16 }}>{assignment.course_name || 'Coursework'}</strong>
+            <strong className="text-base font-semibold text-[#343746]">{assignment.course_name || 'Coursework'}</strong>
             <small className="capitalize">{assignment.work_type ? assignment.work_type.replace('_', ' ') : 'Graded Assignment'}</small>
           </div>
         </article>
 
-        <article className="overview-stat">
-          <span className="stat-icon stat-peach"><Icon name="clock" size={18}/></span>
-          <div className="stat-text">
+        <article className="flex items-center gap-3 rounded-xl border border-[#ededf2] bg-white p-4">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-amber-50 text-amber-700"><Icon name="clock" size={18}/></span>
+          <div className="flex min-w-0 flex-col gap-1 text-xs text-[#858998]">
             <span>Submission deadline</span>
-            <strong style={{ fontSize: 15, color: isOverdue ? '#b15252' : '#2c2f3c' }}>
+            <strong className={`text-[15px] font-semibold ${isOverdue ? 'text-red-700' : 'text-[#2c2f3c]'}`}>
               {hasValidDue ? format(due, 'MMM d, yyyy') : 'No deadline'}
             </strong>
-            <small style={{ color: isOverdue ? '#b15252' : '#6657d9', fontWeight: 600 }}>
+            <small className={`font-semibold ${isOverdue ? 'text-red-700' : 'text-[#6657d9]'}`}>
               {relativeStr || 'Open submission'}
             </small>
           </div>
         </article>
 
-        <article className="overview-stat">
-          <span className={`stat-icon ${isSubmitted ? 'stat-mint' : isOverdue ? '' : 'stat-blue'}`} style={isOverdue && !isSubmitted ? { background: '#fff0f0', color: '#b15252' } : {}}>
+        <article className="flex items-center gap-3 rounded-xl border border-[#ededf2] bg-white p-4">
+          <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-lg ${isSubmitted ? 'bg-emerald-50 text-emerald-700' : isOverdue ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'}`}>
             <Icon name={isSubmitted ? 'checkCircle' : isOverdue ? 'alert' : 'clipboard'} size={18}/>
           </span>
-          <div className="stat-text">
+          <div className="flex min-w-0 flex-col gap-1 text-xs text-[#858998]">
             <span>Current state</span>
-            <strong style={{ fontSize: 16, color: isSubmitted ? '#47a887' : isOverdue ? '#b15252' : '#2c2f3c' }}>
+            <strong className={`text-base font-semibold ${isSubmitted ? 'text-emerald-700' : isOverdue ? 'text-red-700' : 'text-[#2c2f3c]'}`}>
               {isSubmitted ? 'Turned in' : isOverdue ? 'Overdue' : 'Pending'}
             </strong>
             <small>{assignment.max_points ? `${assignment.max_points} Maximum Points` : 'Coursework Deliverable'}</small>
@@ -220,8 +220,8 @@ export default function AssignmentDetailPage() {
       </section>
 
       {/* Main Tab Bar Strip */}
-      <div className="surface-card" style={{ padding: 0, overflow: 'hidden' }}>
-        <nav className="product-tabs" style={{ borderBottom: '1px solid #f0f0f3', background: '#fff' }} aria-label="Assignment workspace tabs">
+      <div className="overflow-hidden rounded-xl border border-[#ebebf0] bg-white shadow-sm">
+        <nav className="flex gap-1.5 overflow-auto border-b border-[#f0f0f3] bg-white px-4 py-3" aria-label="Assignment workspace tabs">
           {TABS.map((t) => {
             const isActive = tab === t.id;
             return (
@@ -230,7 +230,7 @@ export default function AssignmentDetailPage() {
                 type="button"
                 onClick={() => setTab(t.id)}
                 aria-pressed={isActive}
-                className={`product-tab ${isActive ? 'active' : ''}`}
+                className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border px-3.5 py-2 text-xs ${isActive ? 'border-[#e9e5ff] bg-[#f2efff] font-semibold text-[#5e4fc5]' : 'border-transparent bg-transparent text-[#777b89] hover:bg-neutral-50'}`}
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '9px 14px' }}
               >
                 <Icon name={t.icon} size={14}/>
@@ -241,11 +241,11 @@ export default function AssignmentDetailPage() {
         </nav>
 
         {/* Tab Panel Body */}
-        <div style={{ padding: '20px 22px', background: '#fdfdfe' }}>
+        <div className="bg-[#fdfdfe] p-5 sm:p-6">
           {tab === 'overview' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
               {/* Instructions Box */}
-              <section className="product-card" style={{ padding: '18px 20px', borderRadius: 10 }}>
+              <section className="rounded-xl border border-[#ebebf0] bg-white p-5 shadow-sm">
                 <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #f2f2f5', paddingBottom: 10, marginBottom: 12 }}>
                   <span style={{ fontSize: 11, fontWeight: 700, color: '#858998', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                     Assignment Instructions
@@ -281,7 +281,7 @@ export default function AssignmentDetailPage() {
               </section>
 
               {/* Materials & References */}
-              <section className="product-card" style={{ padding: '18px 20px', borderRadius: 10 }}>
+              <section className="rounded-xl border border-[#ebebf0] bg-white p-5 shadow-sm">
                 <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #f2f2f5', paddingBottom: 10, marginBottom: 14 }}>
                   <span style={{ fontSize: 11, fontWeight: 700, color: '#858998', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                     Materials & References ({materials.length})
@@ -296,10 +296,10 @@ export default function AssignmentDetailPage() {
                         href={m.url || '#'}
                         target="_blank"
                         rel="noreferrer"
-                        className="quick-link"
+                        className="flex min-h-14 items-center gap-3 rounded-lg border border-neutral-200 bg-white p-3 text-neutral-800 no-underline transition hover:border-indigo-200 hover:bg-indigo-50/50"
                         style={{ minHeight: 56, padding: '10px 12px' }}
                       >
-                        <span className="quick-icon quick-blue" style={{ fontSize: 14 }}>
+                        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-indigo-50 text-sm text-indigo-600">
                           <Icon name={m.material_type === 'drive_file' ? 'file' : m.material_type === 'link' ? 'link' : 'paperclip'} size={16}/>
                         </span>
                         <span>
@@ -343,24 +343,21 @@ export default function AssignmentDetailPage() {
                   <button
                     type="button"
                     onClick={() => setTab('tutor')}
-                    className="product-action secondary"
-                    style={{ cursor: 'pointer' }}
+                    className="inline-flex min-h-9 cursor-pointer items-center justify-center gap-2 rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb]"
                   >
                     <span><Icon name="lightbulb" size={14}/> Ask AI Tutor</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setTab('solver')}
-                    className="product-action secondary"
-                    style={{ cursor: 'pointer' }}
+                    className="inline-flex min-h-9 cursor-pointer items-center justify-center gap-2 rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb]"
                   >
                     <span><Icon name="code" size={14}/> AI Solver</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setTab('turnin')}
-                    className="product-action"
-                    style={{ cursor: 'pointer' }}
+                    className="inline-flex min-h-9 cursor-pointer items-center justify-center gap-2 rounded-md border border-[#6657d9] bg-[#6657d9] px-3 text-xs font-semibold text-white hover:bg-[#5142c1]"
                   >
                     <span><Icon name="upload" size={14}/> Turn In</span>
                   </button>

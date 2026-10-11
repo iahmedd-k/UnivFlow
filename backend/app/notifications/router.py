@@ -1,17 +1,38 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 
 from app.db.database import get_db
 from app.db.repositories import NotificationRepository
-from app.db.models import Notification, NotificationStatus
+from app.db.models import Notification, NotificationStatus, Setting
 from app.services.email import send_email
 from app.core.config import settings
 from app.core.logging import logger
+from app.auth.clerk_auth import get_current_user_optional
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
+
+
+def _get_user_notification_email(db: Session, user_id: str) -> Optional[str]:
+    """Get the user's configured notification email from settings"""
+    setting = db.query(Setting).filter(Setting.key == f"notification_email_{user_id}").first()
+    return setting.value if setting and setting.value else None
+
+
+@router.get("/my-email", response_model=dict)
+def get_my_notification_email(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Get the current user's configured notification email"""
+    user_id = clerk_user.get("id") if clerk_user else None
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User not authenticated")
+    
+    email = _get_user_notification_email(db, user_id)
+    return {"email": email}
 
 
 @router.get("", response_model=List[dict])
@@ -222,14 +243,24 @@ def send_pending_notifications(background_tasks: BackgroundTasks, limit: int = 5
 @router.post("/create", response_model=dict)
 def create_notification(
     notification_type: str,
-    recipient: str,
-    subject: str,
+    recipient: str = None,
+    subject: str = "Uniflow Notification",
     payload: str = None,
     external_id: str = None,
     idempotency_key: str = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
-    """Create a new notification (queued as PENDING)"""
+    """Create a new notification (queued as PENDING). If recipient not provided, uses current user's notification email."""
+    # Determine recipient
+    if not recipient:
+        user_id = clerk_user.get("id") if clerk_user else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated and no recipient provided")
+        recipient = _get_user_notification_email(db, user_id)
+        if not recipient:
+            raise HTTPException(status_code=400, detail="No notification email configured. Please set one in Settings.")
+
     # Check idempotency
     if idempotency_key:
         existing = db.query(Notification).filter(Notification.idempotency_key == idempotency_key).first()
@@ -253,4 +284,82 @@ def create_notification(
         "message": "Notification created",
         "notification_id": notification.id,
         "status": notification.status.value,
+    }
+
+
+@router.post("/create-for-me", response_model=dict)
+def create_notification_for_me(
+    notification_type: str,
+    subject: str = "Uniflow Notification",
+    payload: str = None,
+    external_id: str = None,
+    idempotency_key: str = None,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Create a notification for the current user using their configured notification email"""
+    user_id = clerk_user.get("id") if clerk_user else None
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User not authenticated")
+
+    recipient = _get_user_notification_email(db, user_id)
+    if not recipient:
+        raise HTTPException(status_code=400, detail="No notification email configured. Please set one in Settings.")
+
+    return create_notification(
+        notification_type=notification_type,
+        recipient=recipient,
+        subject=subject,
+        payload=payload,
+        external_id=external_id,
+        idempotency_key=idempotency_key,
+        db=db,
+        clerk_user=clerk_user
+    )
+
+
+@router.post("/check-alerts", response_model=dict)
+def check_and_send_alerts(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Trigger on-demand check for low-attendance class-day warnings, upcoming 10-min class reminders, and GCR deadlines."""
+    from app.services.alert_service import AlertService
+    user_id = clerk_user.get("id") if clerk_user else "dev_student_user"
+    service = AlertService(db)
+    att_alerts = service.generate_daily_attendance_warnings(user_id=user_id, send_immediately=True)
+    tt_reminders = service.generate_upcoming_class_reminders(user_id=user_id, send_immediately=True)
+    gcr_alerts = service.generate_upcoming_assignment_reminders(user_id=user_id, send_immediately=True)
+    return {
+        "status": "success",
+        "attendance_warnings_generated": len(att_alerts),
+        "attendance_warnings": att_alerts,
+        "timetable_reminders_generated": len(tt_reminders),
+        "timetable_reminders": tt_reminders,
+        "assignment_deadlines_generated": len(gcr_alerts),
+        "assignment_deadlines": gcr_alerts,
+    }
+
+
+@router.get("/preview-alerts", response_model=dict)
+def preview_alerts(
+    target_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Preview low-attendance warnings without persisting or sending emails."""
+    from app.services.alert_service import AlertService
+    from datetime import date
+    user_id = clerk_user.get("id") if clerk_user else "dev_student_user"
+    service = AlertService(db)
+    
+    t_date = date.fromisoformat(target_date) if target_date else None
+    att_alerts = service.generate_daily_attendance_warnings(
+        user_id=user_id, target_date=t_date, send_immediately=False
+    )
+    # Rollback to avoid persisting previewed notifications
+    db.rollback()
+    return {
+        "user_id": user_id,
+        "attendance_warnings": att_alerts,
     }

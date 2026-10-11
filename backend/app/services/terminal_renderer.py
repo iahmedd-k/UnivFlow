@@ -27,11 +27,8 @@ class TerminalCardRenderer:
     }
 
     @classmethod
-    def generate_terminal_png(cls, command: str, output_text: str, title: str = "Assignment code run") -> bytes:
-        """Render the captured command and real process output as a PNG evidence image."""
-        from PIL import Image, ImageDraw, ImageFont
-
-        width = 1280
+    def _get_fonts(cls):
+        from PIL import ImageFont
         font = None
         title_font = None
         for font_path in [
@@ -63,13 +60,18 @@ class TerminalCardRenderer:
             font = ImageFont.load_default()
         if not title_font:
             title_font = font
+        return font, title_font
 
-        source_lines = (output_text or "").strip().splitlines() or ["No output."]
-        lines = [f"$ {command or 'run solution file'}"]
-        for line in source_lines:
-            lines.extend(textwrap.wrap(line, width=104, replace_whitespace=False, drop_whitespace=False) or [""])
-        if len(lines) > 50:
-            lines = [lines[0], "[earlier output omitted]", *lines[-48:]]
+    @classmethod
+    def generate_single_card_png(cls, command: str, raw_lines: List[str], title: str = "Assignment code run", is_continuation: bool = False) -> bytes:
+        """Render a single high-definition terminal card PNG from a given list of wrapped lines."""
+        from PIL import Image, ImageDraw
+
+        width = 1280
+        font, title_font = cls._get_fonts()
+
+        cmd_prefix = "$ " if not is_continuation else "$ ... (continued) "
+        lines = [f"{cmd_prefix}{command or 'run solution file'}"] + (raw_lines or ["No output."])
 
         line_height = 26
         header_height = 48
@@ -103,6 +105,46 @@ class TerminalCardRenderer:
         buffer = BytesIO()
         image.save(buffer, format="PNG", optimize=True)
         return buffer.getvalue()
+
+    @classmethod
+    def generate_terminal_pngs(cls, command: str, output_text: str, title: str = "Terminal Output", max_lines_per_card: int = 24) -> List[bytes]:
+        """
+        Render terminal output into one or multiple high-definition PNG screenshots.
+        If output is large, splits cleanly into Part 1, Part 2 (half-and-half / multi-part)
+        so 100% of the terminal evidence is preserved and visible.
+        """
+        source_lines = (output_text or "").strip().splitlines() or ["No output."]
+        wrapped_lines: List[str] = []
+        for line in source_lines:
+            wrapped_lines.extend(textwrap.wrap(line, width=104, replace_whitespace=False, drop_whitespace=False) or [""])
+
+        total_lines = len(wrapped_lines)
+        if total_lines <= max_lines_per_card:
+            # Single card is sufficient
+            png_bytes = cls.generate_single_card_png(command, wrapped_lines, title=title, is_continuation=False)
+            return [png_bytes]
+
+        # Multiple cards needed (split half and half or into chunks of max_lines_per_card)
+        num_parts = (total_lines + max_lines_per_card - 1) // max_lines_per_card
+        chunk_size = (total_lines + num_parts - 1) // num_parts
+
+        png_list: List[bytes] = []
+        for part_idx in range(num_parts):
+            start = part_idx * chunk_size
+            end = min(start + chunk_size, total_lines)
+            chunk = wrapped_lines[start:end]
+            part_title = f"{title} (Part {part_idx + 1}/{num_parts})"
+            is_cont = part_idx > 0
+            png_bytes = cls.generate_single_card_png(command, chunk, title=part_title, is_continuation=is_cont)
+            png_list.append(png_bytes)
+
+        return png_list
+
+    @classmethod
+    def generate_terminal_png(cls, command: str, output_text: str, title: str = "Assignment code run") -> bytes:
+        """Render captured terminal output into a single PNG image."""
+        pngs = cls.generate_terminal_pngs(command, output_text, title=title, max_lines_per_card=80)
+        return pngs[0] if pngs else b""
 
     @classmethod
     def generate_terminal_svg(

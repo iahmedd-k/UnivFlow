@@ -26,11 +26,16 @@ class GoogleDocsTemplateEngine:
     DEFAULT_PLACEHOLDERS = {
         "STUDENT_NAME": "Student's full name",
         "STUDENT_ID": "Student ID number",
+        "ROLL_NO": "Student roll number / registration ID",
         "COURSE_NAME": "Course full name",
+        "LAB_NAME": "Lab or subject full name",
         "COURSE_CODE": "Course code (e.g., CS101)",
         "ASSIGNMENT_TITLE": "Assignment title",
+        "ASSIGNMENT_NO": "Assignment or lab number",
         "INSTRUCTOR_NAME": "Instructor/Professor name",
+        "TEACHER_NAME": "Teacher name",
         "SUBMISSION_DATE": "Date of submission (formatted)",
+        "DATED": "Dated date string",
         "DUE_DATE": "Assignment due date",
         "UNIVERSITY_NAME": "University name",
         "SEMESTER": "Current semester/term",
@@ -135,16 +140,19 @@ class GoogleDocsTemplateEngine:
         # Assignment metadata
         assignment_defaults = {
             "COURSE_NAME": assignment_metadata.get("course_name", ""),
+            "LAB_NAME": assignment_metadata.get("course_name", "") or assignment_metadata.get("title", "Lab"),
             "COURSE_CODE": assignment_metadata.get("course_code", ""),
             "SUBJECT_NAME": assignment_metadata.get("course_name", "") or assignment_metadata.get("title", ""),
             "ASSIGNMENT_TITLE": assignment_metadata.get("title", ""),
             "ASSIGNMENT_NO": str(assignment_metadata.get("assignment_number", "") or assignment_metadata.get("title", "")),
             "INSTRUCTOR_NAME": assignment_metadata.get("instructor", ""),
+            "TEACHER_NAME": assignment_metadata.get("instructor", ""),
             "PROFESSOR_NAME": assignment_metadata.get("instructor", ""),
             "DUE_DATE": self._format_date(assignment_metadata.get("due_date")),
             "SEMESTER": assignment_metadata.get("semester", ""),
             "SECTION": assignment_metadata.get("section", ""),
             "CLASS": assignment_metadata.get("section", "") or assignment_metadata.get("semester", ""),
+            "DATED": datetime.now().strftime("%B %d, %Y"),
         }
         
         # Current date
@@ -330,28 +338,34 @@ class GoogleDocsTemplateEngine:
     
     def get_default_template_structure(self) -> str:
         """Return a default template structure as text (for creating new templates)."""
-        return """{{UNIVERSITY_LOGO}}
+        return """AIR UNIVERSITY, ISLAMABAD
+FACULTY OF COMPUTING & ARTIFICIAL INTELLIGENCE
+================================================================================
+ACADEMIC LAB REPORT / ASSIGNMENT SUBMISSION
+================================================================================
 
-{{UNIVERSITY_NAME}}
+COURSE:            {{COURSE_NAME}}
+COURSE CODE:       {{COURSE_CODE}}
+ASSIGNMENT / LAB:  {{ASSIGNMENT_TITLE}}
+INSTRUCTOR:        {{INSTRUCTOR_NAME}}
+SUBMISSION DATE:   {{SUBMISSION_DATE}}
+DUE DATE:          {{DUE_DATE}}
 
-{{COURSE_NAME}} ({{COURSE_CODE}})
-{{SEMESTER}} - Section {{SECTION}}
+--------------------------------------------------------------------------------
+STUDENT INFORMATION
+--------------------------------------------------------------------------------
+STUDENT NAME:      {{STUDENT_NAME}}
+ROLL NUMBER / ID:  {{STUDENT_ID}}
+PROGRAM / SECTION: {{SECTION}}
+STUDENT EMAIL:     {{EMAIL}}
+INSTITUTION:       {{UNIVERSITY_NAME}}
+================================================================================
 
-{{ASSIGNMENT_TITLE}}
-
-Submitted by: {{STUDENT_NAME}}
-Student ID: {{STUDENT_ID}}
-Email: {{EMAIL}}
-Instructor: {{INSTRUCTOR_NAME}}
-Date Submitted: {{SUBMISSION_DATE}}
-Due Date: {{DUE_DATE}}
-
----
+LAB WORK & SOLUTION
 
 {{SOLUTION_CONTENT}}
 
----
-
+--------------------------------------------------------------------------------
 Declaration: I certify that this work is my own and all sources have been properly acknowledged.
 
 Signature: _________________________  Date: {{SUBMISSION_DATE}}"""

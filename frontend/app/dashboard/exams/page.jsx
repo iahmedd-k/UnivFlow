@@ -43,36 +43,35 @@ export default function ExamsPage() {
     finally { setBusy(false); }
   };
 
-  return <main className="product-page">
-    <header className="product-heading"><div><p className="eyebrow">EXAM PREPARATION</p><h1>Study planner</h1><p>Paste your syllabus, select synced Classroom materials, and build a grounded plan or ask questions.</p></div><span className="product-pill">{exams.length} upcoming exams</span></header>
-    {error && <div className="product-alert">{error}</div>}
-    <section className="product-card"><header className="product-card-head"><div><p className="eyebrow">YOUR EXAMS</p><h2>Upcoming schedule</h2></div></header>
-      {loading ? <div className="product-empty">Loading exam data…</div> : exams.length ? <div className="product-list">{exams.map((exam) => <Link key={exam.id} href={`/dashboard/exams/${exam.id}`} className="product-row"><span className="product-row-main"><strong>{exam.title}</strong><small>{exam.date ? format(new Date(exam.date), 'EEE, MMM d, yyyy') : 'Date to be announced'} · {exam.time || 'Time TBA'} · {exam.room || 'Room TBA'}</small></span><span className="product-action secondary">View exam</span></Link>)}</div> : <div className="product-empty"><strong>No exams synced yet</strong>Sync your university portal or Classroom to populate exam dates.</div>}
+  const cardClass = 'min-w-0 overflow-hidden rounded-xl border border-line bg-white shadow-sm';
+  const cardHeaderClass = 'flex items-center justify-between gap-3 border-b border-line px-5 py-4';
+  const eyebrowClass = 'mb-1 text-xs font-semibold uppercase tracking-wide text-muted';
+  const fieldClass = 'flex flex-col gap-1.5 text-sm font-medium text-ink';
+  const inputClass = 'w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm text-ink outline-none placeholder:text-muted focus:border-violet focus:ring-2 focus:ring-violet/20';
+  const buttonClass = 'inline-flex min-h-10 items-center justify-center rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50';
+
+  return <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-ink">
+    <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p className={eyebrowClass}>Exam preparation</p><h1 className="text-2xl font-semibold tracking-tight">Study planner</h1><p className="mt-1 max-w-2xl text-sm leading-6 text-muted">Paste your syllabus, select synced Classroom materials, and build a grounded plan or ask questions.</p></div><span className="inline-flex w-fit rounded-full bg-violet-light px-3 py-1.5 text-sm font-semibold text-violet-dark">{exams.length} upcoming exams</span></header>
+    {error && <div className="rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose" role="alert">{error}</div>}
+    <section className={cardClass}><header className={cardHeaderClass}><div><p className={eyebrowClass}>Your exams</p><h2 className="text-base font-semibold">Upcoming schedule</h2></div></header>
+      {loading ? <div className="p-8 text-center text-sm text-muted" role="status">Loading exam data…</div> : exams.length ? <div className="divide-y divide-line">{exams.map((exam) => <Link key={exam.id} href={`/dashboard/exams/${exam.id}`} className="flex flex-col gap-3 px-5 py-4 transition hover:bg-paper sm:flex-row sm:items-center sm:justify-between"><span className="flex min-w-0 flex-col gap-1"><strong className="text-sm font-semibold">{exam.title}</strong><small className="text-sm text-muted">{exam.date ? format(new Date(exam.date), 'EEE, MMM d, yyyy') : 'Date to be announced'} · {exam.time || 'Time TBA'} · {exam.room || 'Room TBA'}</small></span><span className="inline-flex min-h-9 w-fit items-center rounded-lg border border-line px-3 text-sm font-semibold text-ink">View exam</span></Link>)}</div> : <div className="p-8 text-center"><strong className="block text-sm font-semibold">No exams synced yet</strong><span className="mt-1 block text-sm text-muted">Sync your university portal or Classroom to populate exam dates.</span></div>}
     </section>
-    <div className="product-grid study-grid">
-      <section className="product-card"><header className="product-card-head"><div><p className="eyebrow">BUILD A PLAN</p><h2>Syllabus and materials</h2></div></header><form className="product-card-body" onSubmit={runPlan}>
-        <label className="product-field"><span>Exam (optional)</span><select value={examId} onChange={(e) => setExamId(e.target.value)}><option value="">General study plan</option>{exams.map((exam) => <option key={exam.id} value={exam.id}>{exam.title}</option>)}</select></label>
-        <label className="product-field"><span>Paste your syllabus or topic list</span><textarea required minLength={10} value={syllabus} onChange={(e) => setSyllabus(e.target.value)} placeholder={'Paste topics, chapters, or learning outcomes here…\n\nExample: Week 1 — data structures; Week 2 — trees and graphs'} rows={7} /></label>
-        <div className="product-field"><span>Synced Google Classroom materials <small>{selected.length} selected</small></span>{materials.length ? <div className="study-materials">{materials.map((item) => <label key={item.id}><input type="checkbox" checked={selected.includes(item.id)} onChange={(e) => setSelected((ids) => e.target.checked ? [...ids, item.id] : ids.filter((id) => id !== item.id))} /><span><strong>{item.title}</strong><small>{item.course_name}{item.assignment ? ` · ${item.assignment}` : ''}</small></span></label>)}</div> : <p className="product-note">No Google Classroom Drive materials are synced yet. Connect Google and sync coursework first.</p>}</div>
-        <button className="product-action" type="submit" disabled={busy || loading || syllabus.trim().length < 10}>{busy ? 'Building study plan…' : 'Generate study plan'}</button>
+    <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-2">
+      <section className={cardClass}><header className={cardHeaderClass}><div><p className={eyebrowClass}>Build a plan</p><h2 className="text-base font-semibold">Syllabus and materials</h2></div></header><form className="flex flex-col gap-4 p-5" onSubmit={runPlan}>
+        <label className={fieldClass}>Exam (optional)<select className={inputClass} value={examId} onChange={(e) => setExamId(e.target.value)}><option value="">General study plan</option>{exams.map((exam) => <option key={exam.id} value={exam.id}>{exam.title}</option>)}</select></label>
+        <label className={fieldClass}>Paste your syllabus or topic list<textarea className={`${inputClass} min-h-40 resize-y`} required minLength={10} value={syllabus} onChange={(e) => setSyllabus(e.target.value)} placeholder={'Paste topics, chapters, or learning outcomes here…\n\nExample: Week 1 — data structures; Week 2 — trees and graphs'} rows={7} /></label>
+        <div className={fieldClass}><span>Synced Google Classroom materials <small className="ml-1 font-normal text-muted">{selected.length} selected</small></span>{materials.length ? <div className="max-h-56 divide-y divide-line overflow-y-auto rounded-lg border border-line">{materials.map((item) => <label className="flex cursor-pointer items-start gap-3 p-3 hover:bg-paper" key={item.id}><input className="mt-1 size-4 accent-violet" type="checkbox" checked={selected.includes(item.id)} onChange={(e) => setSelected((ids) => e.target.checked ? [...ids, item.id] : ids.filter((id) => id !== item.id))} /><span className="flex min-w-0 flex-col gap-1"><strong className="text-sm">{item.title}</strong><small className="text-xs text-muted">{item.course_name}{item.assignment ? ` · ${item.assignment}` : ''}</small></span></label>)}</div> : <p className="rounded-lg bg-paper p-3 text-sm leading-6 text-muted">No Google Classroom Drive materials are synced yet. Connect Google and sync coursework first.</p>}</div>
+        <button className={buttonClass} type="submit" disabled={busy || loading || syllabus.trim().length < 10}>{busy ? 'Building study plan…' : 'Generate study plan'}</button>
       </form></section>
-      <section className="product-card"><header className="product-card-head"><div><p className="eyebrow">ASK YOUR COURSE MATERIALS</p><h2>Study chat</h2></div></header><div className="product-card-body study-chat">
-        <p className="product-note">Answers use the selected Classroom files and pasted syllabus. Uniflow will say when the material does not cover a question.</p>
-        <div className="study-messages" aria-live="polite">
-              {messages.length ? messages.map((message, index) => (
-                <article className={`study-message ${message.role}`} key={index}>
-                  <small>{message.role === 'you' ? 'You' : 'Study assistant'}</small>
-                  {message.role === 'you' ? (
-                    <p style={{ whiteSpace: 'pre-wrap' }}>{message.text}</p>
-                  ) : (
-                    <MarkdownRenderer content={message.text} />
-                  )}
-                </article>
-              )) : <div className="product-empty">Ask about a topic, request an explanation, or quiz yourself.</div>}
-            </div>
-        <form className="study-chat-form" onSubmit={ask}><input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask about your syllabus…" aria-label="Ask about your course materials" /><button className="product-action" disabled={busy || !question.trim()}>{busy ? 'Thinking…' : 'Ask'}</button></form>
+      <section className={`${cardClass} flex min-h-[520px] flex-col`}><header className={cardHeaderClass}><div><p className={eyebrowClass}>Ask your course materials</p><h2 className="text-base font-semibold">Study chat</h2></div></header><div className="flex min-h-0 flex-1 flex-col gap-4 p-5">
+        <p className="text-sm leading-6 text-muted">Answers use the selected Classroom files and pasted syllabus. Uniflow will say when the material does not cover a question.</p>
+        <div className="flex min-h-[300px] flex-1 flex-col gap-3 overflow-y-auto rounded-lg bg-paper p-4" aria-live="polite">
+          {messages.length ? messages.map((message, index) => <article className={`max-w-[90%] rounded-xl border px-4 py-3 text-sm leading-6 ${message.role === 'you' ? 'ml-auto border-violet bg-violet text-white' : 'border-line bg-white text-ink'}`} key={index}><small className={`mb-1 block text-xs font-semibold ${message.role === 'you' ? 'text-white/75' : 'text-muted'}`}>{message.role === 'you' ? 'You' : 'Study assistant'}</small>{message.role === 'you' ? <p className="whitespace-pre-wrap">{message.text}</p> : <MarkdownRenderer content={message.text} />}</article>) : <div className="m-auto max-w-sm text-center text-sm leading-6 text-muted">Ask about a topic, request an explanation, or quiz yourself.</div>}
+          {busy && <p className="text-sm text-muted" role="status">Thinking…</p>}
+        </div>
+        <form className="flex gap-2" onSubmit={ask}><input className={inputClass} value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask about your syllabus…" aria-label="Ask about your course materials" /><button className={buttonClass} disabled={busy || !question.trim()}>{busy ? 'Thinking…' : 'Ask'}</button></form>
       </div></section>
     </div>
-    {plan && <section className="product-card"><header className="product-card-head"><div><p className="eyebrow">GENERATED FROM YOUR INPUT</p><h2>Study plan</h2></div><button className="product-action secondary" type="button" onClick={() => navigator.clipboard?.writeText(plan)}>Copy plan</button></header><div className="product-card-body study-plan" aria-live="polite"><MarkdownRenderer content={plan} /></div></section>}
+    {plan && <section className={cardClass}><header className={cardHeaderClass}><div><p className={eyebrowClass}>Generated from your input</p><h2 className="text-base font-semibold">Study plan</h2></div><button className={secondaryButtonClass} type="button" onClick={() => navigator.clipboard?.writeText(plan)}>Copy plan</button></header><div className="p-5" aria-live="polite"><MarkdownRenderer content={plan} /></div></section>}
   </main>;
 }

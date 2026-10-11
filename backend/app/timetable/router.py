@@ -17,6 +17,7 @@ import pytesseract
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.redis import invalidate_attendance_summary_cache
 from app.db.database import get_db
 from app.db.models import TimetableEntry, Setting
 from datetime import timezone
@@ -617,7 +618,14 @@ def get_timetable_classes(
         )
     
     entries = query.all()
-    return [_entry_dict(entry) for entry in entries]
+    seen = set()
+    unique_entries = []
+    for entry in entries:
+        key = (entry.subject.strip().lower(), entry.weekday, entry.start_time, entry.end_time)
+        if key not in seen:
+            seen.add(key)
+            unique_entries.append(entry)
+    return [_entry_dict(entry) for entry in unique_entries]
 
 
 @router.get("/today", response_model=List[dict])
@@ -637,8 +645,15 @@ def get_todays_classes(
         )
     
     entries = query.all()
+    seen = set()
+    unique_entries = []
+    for entry in entries:
+        key = (entry.subject.strip().lower(), entry.weekday, entry.start_time, entry.end_time)
+        if key not in seen:
+            seen.add(key)
+            unique_entries.append(entry)
     return [
-        _entry_dict(entry) for entry in entries
+        _entry_dict(entry) for entry in unique_entries
         if (not entry.semester_start or entry.semester_start.date() <= today)
         and (not entry.semester_end or entry.semester_end.date() >= today)
     ]
@@ -674,6 +689,7 @@ def save_timetable_classes(payload: List[TimetableClassInput] = Body(max_length=
             db.flush()
             saved.append(entry)
     db.commit()
+    invalidate_attendance_summary_cache()
     for entry in saved:
         db.refresh(entry)
     return [_entry_dict(entry) for entry in saved]
@@ -683,6 +699,7 @@ def save_timetable_classes(payload: List[TimetableClassInput] = Body(max_length=
 def clear_all_timetable_classes(db: Session = Depends(get_db)):
     deleted_count = db.query(TimetableEntry).delete()
     db.commit()
+    invalidate_attendance_summary_cache()
     return {"deleted": True, "count": deleted_count}
 
 
@@ -717,6 +734,7 @@ def update_timetable_class(
         entry.semester_end = datetime.combine(item.semester_end, time.max)
 
     db.commit()
+    invalidate_attendance_summary_cache()
     db.refresh(entry)
     return _entry_dict(entry)
 
@@ -728,4 +746,5 @@ def delete_timetable_class(entry_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Timetable class not found.")
     db.delete(entry)
     db.commit()
+    invalidate_attendance_summary_cache()
     return {"deleted": True, "id": entry_id}

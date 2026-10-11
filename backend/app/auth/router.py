@@ -5,6 +5,7 @@ import httpx
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import RedirectResponse
@@ -19,6 +20,7 @@ from app.db.repositories import GoogleCredentialRepository
 from app.db.models import Setting
 from app.core.logging import logger
 from app.auth.clerk_auth import get_current_user_optional
+from pydantic import BaseModel, EmailStr
 
 # Only allow HTTP transport in local development/test environments
 if settings.environment == "development" or settings.debug:
@@ -36,6 +38,15 @@ class UserSyncRequest(BaseModel):
     imageUrl: Optional[str] = ""
 
 
+class NotificationEmailRequest(BaseModel):
+    email: EmailStr
+
+
+class NotificationEmailResponse(BaseModel):
+    email: Optional[str] = None
+    message: str
+
+
 # Per-user cache for connected Google emails: {user_id: email}
 _cached_google_emails: Dict[str, str] = {}
 
@@ -51,6 +62,28 @@ def _check_rate_limit(key: str, limit: int = 20, window_sec: int = 60) -> None:
         raise HTTPException(status_code=429, detail="Too many requests. Please try again in a moment.")
     records.append(now)
     _rate_limit_records[key] = records
+
+
+def _safe_oauth_redirect_to(redirect_to: Optional[str]) -> Optional[str]:
+    """Accept only same-site dashboard paths for the post-OAuth return destination."""
+    if not redirect_to or not redirect_to.startswith("/") or redirect_to.startswith("//") or "\\" in redirect_to:
+        return None
+    parsed = urlsplit(redirect_to)
+    if parsed.scheme or parsed.netloc or not parsed.path.startswith("/dashboard/"):
+        return None
+    return urlunsplit(("", "", parsed.path, parsed.query, parsed.fragment))
+
+
+def _oauth_frontend_redirect(redirect_to: Optional[str] = None, **query_params: str) -> str:
+    """Build a frontend callback URL without allowing an external redirect."""
+    frontend = urlsplit(settings.frontend_url)
+    destination = _safe_oauth_redirect_to(redirect_to)
+    destination_parts = urlsplit(destination) if destination else None
+    path = destination_parts.path if destination_parts else ""
+    target_path = f"{frontend.path.rstrip('/')}{path}"
+    query = parse_qsl(destination_parts.query, keep_blank_values=True) if destination_parts else []
+    query.extend((key, value) for key, value in query_params.items() if value is not None)
+    return urlunsplit((frontend.scheme, frontend.netloc, target_path, urlencode(query), ""))
 
 
 @router.get("/status")
@@ -169,7 +202,10 @@ def google_auth(
     state_key = f"oauth_csrf_state_{csrf_token}"
     state_setting = Setting(
         key=state_key,
-        value=json.dumps({"created_at": time.time()}),
+        value=json.dumps({
+            "created_at": time.time(),
+            "redirect_to": _safe_oauth_redirect_to(redirect_to),
+        }),
         description="OAuth CSRF State Token"
     )
     db.merge(state_setting)
@@ -203,11 +239,22 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
     code = request.query_params.get("code")
     error = request.query_params.get("error")
     state = request.query_params.get("state")
+    redirect_to = None
 
     if error:
         logger.error(f"Google OAuth error received: {error}")
+        if state:
+            state_key = f"oauth_csrf_state_{state}"
+            state_record = db.query(Setting).filter(Setting.key == state_key).first()
+            if state_record:
+                try:
+                    redirect_to = _safe_oauth_redirect_to(json.loads(state_record.value).get("redirect_to"))
+                except (TypeError, json.JSONDecodeError):
+                    pass
+                db.delete(state_record)
+                db.commit()
         return RedirectResponse(
-            url=f"{settings.frontend_url}?google_error={error}",
+            url=_oauth_frontend_redirect(redirect_to, google_error=error),
             status_code=302
         )
 
@@ -219,13 +266,17 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
         state_key = f"oauth_csrf_state_{state}"
         state_record = db.query(Setting).filter(Setting.key == state_key).first()
         if state_record:
+            try:
+                redirect_to = _safe_oauth_redirect_to(json.loads(state_record.value).get("redirect_to"))
+            except (TypeError, json.JSONDecodeError):
+                redirect_to = None
             # Clean up used state token
             db.delete(state_record)
             db.commit()
         elif not (settings.environment == "development" or settings.debug):
             logger.warning(f"OAuth state mismatch or expired: {state}")
             return RedirectResponse(
-                url=f"{settings.frontend_url}?google_error=invalid_oauth_state",
+                url=_oauth_frontend_redirect(google_error="invalid_oauth_state"),
                 status_code=302
             )
 
@@ -246,7 +297,7 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
         if token_resp.status_code != 200:
             logger.error(f"Token exchange failed from Google: {token_resp.status_code} - {token_resp.text}")
             return RedirectResponse(
-                url=f"{settings.frontend_url}?google_error=token_exchange_failed",
+                url=_oauth_frontend_redirect(redirect_to, google_error="token_exchange_failed"),
                 status_code=302
             )
 
@@ -293,14 +344,18 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
 
         # Clean redirect to frontend
         return RedirectResponse(
-            url=f"{settings.frontend_url}?google_connected=true&email={user_email}",
+            url=_oauth_frontend_redirect(
+                redirect_to,
+                google_connected="true",
+                email=user_email,
+            ),
             status_code=302
         )
 
     except Exception as e:
         logger.error(f"Error during Google OAuth callback: {e}", exc_info=True)
         return RedirectResponse(
-            url=f"{settings.frontend_url}?google_error=token_exchange_failed",
+            url=_oauth_frontend_redirect(redirect_to, google_error="token_exchange_failed"),
             status_code=302
         )
 
@@ -352,3 +407,57 @@ def get_user_info(creds: Credentials) -> dict:
     from googleapiclient.discovery import build
     service = build("oauth2", "v2", credentials=creds)
     return service.userinfo().get().execute()
+
+
+def _get_notification_email_key(user_id: str) -> str:
+    return f"notification_email_{user_id}"
+
+
+@router.get("/notification-email", response_model=NotificationEmailResponse)
+def get_notification_email(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Get the user's configured notification email"""
+    user_id = clerk_user.get("id") if clerk_user else "default"
+    key = _get_notification_email_key(user_id)
+    setting = db.query(Setting).filter(Setting.key == key).first()
+    email = setting.value if setting and setting.value else None
+    return NotificationEmailResponse(email=email, message="Notification email retrieved")
+
+
+@router.put("/notification-email", response_model=NotificationEmailResponse)
+def set_notification_email(
+    payload: NotificationEmailRequest,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Set the user's notification email for alerts and notifications"""
+    user_id = clerk_user.get("id") if clerk_user else "default"
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User not authenticated")
+
+    key = _get_notification_email_key(user_id)
+    setting = db.query(Setting).filter(Setting.key == key).first()
+    if setting:
+        setting.value = payload.email
+    else:
+        setting = Setting(key=key, value=payload.email, description="User notification email for alerts")
+        db.add(setting)
+    db.commit()
+    return NotificationEmailResponse(email=payload.email, message="Notification email updated successfully")
+
+
+@router.delete("/notification-email", response_model=NotificationEmailResponse)
+def delete_notification_email(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Remove the user's notification email preference"""
+    user_id = clerk_user.get("id") if clerk_user else "default"
+    key = _get_notification_email_key(user_id)
+    setting = db.query(Setting).filter(Setting.key == key).first()
+    if setting:
+        db.delete(setting)
+        db.commit()
+    return NotificationEmailResponse(email=None, message="Notification email removed")

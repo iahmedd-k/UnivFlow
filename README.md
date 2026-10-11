@@ -1,248 +1,85 @@
-# Uniflow Multi-Portal Attendance Automation
+# Uniflow
 
-A robust **Node.js + Playwright** automation tool that logs into multiple university student portals, extracts attendance metrics (overall attendance percentage, attendance margin gap), and generates structured reports.
+Uniflow is an academic support platform with a Next.js web client and a FastAPI backend. It brings course work, assignments, classroom activity, schedules, document workflows, and AI-assisted study tools into one application.
 
-Human intervention is required **only once per portal** (on the first run to complete manual login / Google 2FA). Every subsequent run is **fully automatic** using persistent browser profiles.
+## Repository layout
 
----
-
-## Key Features
-
-- 🔄 **One-Time Human Login**: Authenticate once (including 2FA/CAPTCHA), and Playwright preserves the authenticated session cookies and local storage indefinitely in `./profiles/<portal-name>/`.
-- ⚡ **Zero-Overhead Session Validation**: On every run, the engine checks session validity before touching login pages. If the session is alive, it skips authentication entirely and goes straight to data extraction.
-- 🔀 **Flexible Auth Support**:
-  - **Credentials-based**: Automates username/password form submission from `.env`.
-  - **Google Sign-In / SSO**: Launches real Google Chrome with stealth flags, supports Google Account Chooser auto-selection, and pauses gracefully for one-time 2FA if needed.
-- 📋 **Config-Driven**: Define portals cleanly in `portals.config.js` with selectors, custom URLs, or optional custom scrapers.
-- 📊 **Automated Reporting**: Outputs a formatted `console.table()` summary and persists historical metrics into `attendance-report.json`.
-- 🛡️ **Stealth Anti-Detection**: Disables automation blink flags, removes `navigator.webdriver`, and runs real Chrome (`channel: 'chrome'`) to prevent Google bot blocking.
-
----
-
-## Installation
-
-### 1. Prerequisites
-- [Node.js](https://nodejs.org/) (v18 or higher recommended)
-- Google Chrome installed on your system (for real Chrome channel)
-
-### 2. Install Dependencies
-In the project directory:
-
-```bash
-npm install
+```text
+.
+├── backend/                 FastAPI application, database migrations, and Python tests
+│   ├── app/                 API domains, services, integrations, and persistence
+│   ├── alembic/             Database migration history
+│   ├── scripts/             Local maintenance and seed commands
+│   └── tests/               Automated backend tests
+├── frontend/                Next.js App Router application
+│   ├── app/                 Pages, layouts, route handlers, and UI components
+│   └── public/              Static browser assets
+├── .env.example             Environment variable template
+└── package.json             Root development and workspace commands
 ```
 
-*(Optional: If Playwright browsers need to be installed, run `npx playwright install chromium`)*
+## Requirements
 
----
+- Node.js 18 or newer
+- Python 3.12 or newer
+- npm
+
+External services such as Supabase, S3-compatible storage, Google APIs, Groq, Gemini, Piston, and Kroki are optional or feature-specific. Configure only the services needed for your local workflow.
+
+## Local setup
+
+1. Copy `.env.example` to `.env` and fill in the credentials for the services you plan to use. Keep real secrets out of Git.
+2. Install the frontend and root JavaScript dependencies:
+
+   ```bash
+   npm install
+   ```
+
+3. Install backend dependencies from the repository root:
+
+   ```bash
+   python -m venv backend/.venv
+   # Windows PowerShell
+   .\backend\.venv\Scripts\Activate.ps1
+   # macOS/Linux: source backend/.venv/bin/activate
+   python -m pip install -r backend/requirements.txt
+   ```
+
+4. Start both services:
+
+   ```bash
+   npm run dev
+   ```
+
+The frontend runs at `http://localhost:3000`; the API runs at `http://localhost:8000`. FastAPI's interactive API documentation is available at `http://localhost:8000/docs`.
+
+To run either service independently, use `npm run dev:frontend` or `npm run dev:backend`.
+
+## Common commands
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start frontend and backend in parallel |
+| `npm run build` | Build the frontend for production |
+| `npm run lint` | Run frontend linting |
+| `npm test` | Run backend tests with pytest |
+| `npm run db:migrate` | Apply Alembic database migrations |
+| `npm run db:seed` | Seed local development data |
+
+Backend commands expect the Python environment to be activated. They can also be run directly from `backend/`, for example `python -m pytest` and `alembic upgrade head`.
 
 ## Configuration
 
-### 1. Environment Secrets (`.env`)
-Copy `.env.example` to `.env`:
+`.env.example` documents the available settings for application URLs, authentication, database/storage connections, AI providers, code execution, and diagram rendering. The frontend uses its own `.env.local` file for Next.js-specific public configuration. Never commit `.env`, `.env.local`, API keys, OAuth credentials, browser profiles, or local databases.
 
-```bash
-cp .env.example .env
-```
+## Engineering notes
 
-Edit `.env` with your student credentials:
+- Keep API route handlers in their domain package under `backend/app/`; place reusable business logic in services and provider-specific code in integrations.
+- Keep database schema changes in Alembic migrations under `backend/alembic/versions/`.
+- Keep frontend routes and route handlers in the Next.js App Router under `frontend/app/`; extract shared UI and API helpers into focused modules.
+- Add automated backend tests under `backend/tests/` and frontend tests alongside an established test setup when one is introduced.
+- `ASSIGNMENT_SOLVER_FLOW.md` documents the assignment-solving workflow.
 
-```env
-# Default student credentials
-UNIV_EMAIL=your_student_email@university.edu.pk
-UNIV_PASSWORD=your_secure_password
+## License
 
-# General Settings
-HEADLESS=false
-DEFAULT_TIMEOUT_MS=60000
-MANUAL_LOGIN_TIMEOUT_MS=120000
-```
-
-> **Note**: Per-portal credentials overrides are supported. For example, if a specific portal uses different credentials, set `AIR_UNIV_EMAIL=...` and point to it in `portals.config.js`.
-
-### 2. Portal Configuration (`portals.config.js`)
-Edit [portals.config.js](file:///d:/Ahmed%20Dev/Projects/Uniflow/portals.config.js) to configure your university portals:
-
-```javascript
-export const portals = [
-  {
-    name: 'StudentPortal_Credentials',
-    description: 'Air University Student Portal',
-    url: 'https://portals.au.edu.pk/students/',
-    dashboardUrl: 'https://portals.au.edu.pk/students/dashboard.aspx',
-    attendanceUrl: 'https://portals.au.edu.pk/students/attendance.aspx',
-    loginType: 'credentials',
-    selectors: {
-      usernameInput: 'input[name="txtRegNo"]',
-      passwordInput: 'input[name="txtPassword"]',
-      submitButton: 'input[type="submit"]',
-      sessionValidation: '#ctl00_lblUserName',
-      loginIndicator: 'input[name="txtPassword"]',
-      attendancePercent: '#ctl00_MainContent_lblOverallAttendance',
-      attendanceGap: '#ctl00_MainContent_lblAttendanceGap',
-    }
-  },
-  {
-    name: 'UniversityLMS_Google',
-    description: 'University LMS with Google Sign-In',
-    url: 'https://lms.university.edu.pk/login',
-    dashboardUrl: 'https://lms.university.edu.pk/my/',
-    attendanceUrl: 'https://lms.university.edu.pk/mod/attendance/index.php',
-    loginType: 'google',
-    selectors: {
-      googleSignInButton: 'a.btn-google',
-      googleAccountChooserSelector: 'div[data-identifier="{EMAIL}"]',
-      sessionValidation: '.userbutton',
-      loginIndicator: 'a.btn-google',
-      attendancePercent: '.att-summary-percentage',
-      attendanceGap: '.att-summary-gap',
-    }
-  }
-];
-```
-
----
-
-## How It Works
-
-```mermaid
-flowchart TD
-    Start([Run Scraper]) --> Launch[Launch Persistent Chrome Context for Portal]
-    Launch --> Validate{isSessionValid?}
-    Validate -- Valid (Cached Session) --> Scrape[Scrape Attendance % & Gap]
-    Validate -- Expired / First Run --> CheckType{Login Type?}
-    CheckType -- credentials --> CredsLogin[Auto-fill Username & Password]
-    CredsLogin --> Scrape
-    CheckType -- google --> GoogleCheck{Account Chooser Available?}
-    GoogleCheck -- Yes --> AutoChoose[Auto-click Matching Email]
-    GoogleCheck -- No / 2FA --> Prompt[Prompt Human for One-Time 2FA in Window]
-    AutoChoose --> Scrape
-    Prompt --> Scrape
-    Scrape --> Record[Record in Table & attendance-report.json]
-    Record --> NextPortal{More Portals?}
-    NextPortal -- Yes --> Launch
-    NextPortal -- No --> Done([Finish])
-```
-
-### First-Run Behavior
-1. The browser launches in headful mode.
-2. If Google SSO or 2FA is required, the terminal displays:
-   ```
-   ==============================================================================
-   🔔 FIRST-TIME GOOGLE LOGIN REQUIRED FOR "UniversityLMS_Google"
-   👉 Please complete your sign-in and 2FA in the opened browser window.
-   ⏳ The scraper will automatically resume once logged in (timeout: 120s)...
-   ==============================================================================
-   ```
-3. You perform the login / 2FA in the browser window.
-4. Once completed, your authenticated profile is stored in `./profiles/<portal-name>/`.
-
-### Subsequent Runs (Fully Automatic)
-- On future runs, `isSessionValid()` loads the portal dashboard directly.
-- The session is detected as active, skipping login prompts and Google auth entirely.
-- Attendance metrics are scraped in seconds.
-
----
-
-## Usage
-
-### Run All Configured Portals
-```bash
-npm start
-# or
-node index.js
-```
-
-### Run a Single Specific Portal (for Testing)
-```bash
-node index.js --portal StudentPortal_Credentials
-```
-
----
-
-## Output & Report Format
-
-### Console Output
-```text
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 ATTENDANCE SUMMARY REPORT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-┌─────────┬────────────────────────────┬──────────────┬────────────────┬──────────┬────────┐
-│ (index) │ Portal                     │ Status       │ Attendance %   │ Gap      │ Error  │
-├─────────┼────────────────────────────┼──────────────┼────────────────┼──────────┼────────┤
-│ 0       │ StudentPortal_Credentials  │ ✅ SUCCESS   │ 87.5%          │ +3 safe  │ -      │
-│ 1       │ UniversityLMS_Google       │ ✅ SUCCESS   │ 92.0%          │ +5 safe  │ -      │
-└─────────┴────────────────────────────┴──────────────┴────────────────┴──────────┴────────┘
-```
-
-### JSON Report (`attendance-report.json`)
-The script writes and maintains historical snapshots:
-```json
-{
-  "lastUpdated": "2026-09-27T04:55:00.000Z",
-  "summary": {
-    "totalPortals": 2,
-    "successful": 2,
-    "failed": 0
-  },
-  "results": [
-    {
-      "portal": "StudentPortal_Credentials",
-      "status": "SUCCESS",
-      "latestPercent": "87.5%",
-      "gap": "+3 safe",
-      "scrapedAt": "2026-09-27T04:54:55.123Z",
-      "error": null
-    }
-  ],
-  "history": [ ... ]
-}
-```
-
----
-
-## Adding a New Portal
-
-1. Open [portals.config.js](file:///d:/Ahmed%20Dev/Projects/Uniflow/portals.config.js).
-2. Append a new object to the `portals` array:
-   - Provide a unique `name`.
-   - Set `loginType` to `"credentials"` or `"google"`.
-   - Fill in the relevant selectors for login inputs, session indicator, and attendance values.
-3. Test your portal individually:
-   ```bash
-   node index.js --portal <YourPortalName>
-   ```
-
----
-
-## Scheduling Recurring Runs
-
-### 1. Windows (Task Scheduler)
-Create a `.bat` runner script or schedule Node directly:
-1. Open **Task Scheduler** (`taskschd.msc`).
-2. Click **Create Basic Task** -> Name it `Uniflow Attendance Scraper`.
-3. Set Trigger (e.g., Daily at 8:00 AM).
-4. Set Action -> **Start a program**:
-   - **Program/script**: `C:\Program Files\nodejs\node.exe` (or your node path)
-   - **Add arguments**: `index.js`
-   - **Start in**: `D:\Ahmed Dev\Projects\Uniflow`
-5. Finish the setup.
-
-### 2. Linux / macOS (Cron)
-Add a cron job with `crontab -e`:
-
-```bash
-# Run daily at 8:00 AM
-0 8 * * * cd /path/to/Uniflow && /usr/bin/node index.js >> /path/to/Uniflow/cron.log 2>&1
-```
-
----
-
-## Troubleshooting
-
-- **Google blocks automated login**:
-  Ensure you are using `channel: 'chrome'` and `HEADLESS=false` on the first run. The script includes stealth overrides (`navigator.webdriver`) to ensure smooth authentication.
-- **Selector changed or missing**:
-  If a portal updates its UI, only `latestPercent` and `gap` will fallback to `"N/A"`, without breaking other portals in the batch. Update the corresponding selector in `portals.config.js`.
-- **Resetting a Portal's Session**:
-  Simply delete the folder `./profiles/<portal-name>/` to start fresh with a new one-time login.
+No license is currently specified in this repository.
