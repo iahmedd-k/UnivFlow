@@ -28,10 +28,6 @@
   "engines": {
     "node": ">=18.0.0",
     "python": ">=3.11"
-  },
-  "dependencies": {
-    "react-markdown": "^10.1.0",
-    "rehype-highlight": "^7.0.2",
-    "remark-gfm": "^4.0.1"
   }
 }
+
