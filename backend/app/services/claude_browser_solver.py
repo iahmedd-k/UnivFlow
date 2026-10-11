@@ -64,7 +64,9 @@ def is_cdp_port_live(port: int, timeout: float = 0.5) -> bool:
 
 
 def get_active_cdp_port() -> Optional[int]:
-    """Check if Uniflow's dedicated port 21735 is responding."""
+    """Check if Chrome remote debugging is responding on user port 9222 or dedicated port 21735."""
+    if is_cdp_port_live(USER_CDP_PORT):
+        return USER_CDP_PORT
     if is_cdp_port_live(CLAUDE_CDP_PORT):
         return CLAUDE_CDP_PORT
     return None
