@@ -24,7 +24,7 @@ from app.core.logging import logger
 from app.services.google_docs import get_google_docs_service
 from app.services.ai_solution import export_solution_to_google_doc
 
-CLAUDE_PROFILE_DIR = Path(__file__).resolve().parent.parent.parent / "tmp" / "claude_browser_profile"
+CLAUDE_PROFILE_DIR = Path(os.path.expandvars(r"%LOCALAPPDATA%\UniflowChromeProfile"))
 CLAUDE_MATERIALS_DIR = Path(__file__).resolve().parent.parent.parent / "tmp" / "materials"
 CLAUDE_MATERIALS_DIR.mkdir(parents=True, exist_ok=True)
 CLAUDE_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
@@ -64,11 +64,11 @@ def is_cdp_port_live(port: int, timeout: float = 0.5) -> bool:
 
 
 def get_active_cdp_port() -> Optional[int]:
-    """Check if either user's port 9222 or Uniflow's port 21735 is responding."""
-    if is_cdp_port_live(USER_CDP_PORT):
-        return USER_CDP_PORT
+    """Check if Uniflow's dedicated port 21735 or secondary port 9222 is responding."""
     if is_cdp_port_live(CLAUDE_CDP_PORT):
         return CLAUDE_CDP_PORT
+    if is_cdp_port_live(USER_CDP_PORT):
+        return USER_CDP_PORT
     return None
 
 

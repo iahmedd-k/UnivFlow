@@ -29,6 +29,11 @@ if "%ERRORLEVEL%"=="0" (
     timeout /t 1 /nobreak >nul
 )
 
-start "" %CHROME_BIN% --remote-debugging-port=9222 http://localhost:3000
-echo Chrome launched on port 9222 pointing to http://localhost:3000
+:: Set persistent Uniflow Chrome user data directory
+set UNIFLOW_PROFILE=%LOCALAPPDATA%\UniflowChromeProfile
+if not exist "%UNIFLOW_PROFILE%" mkdir "%UNIFLOW_PROFILE%"
+
+start "" %CHROME_BIN% --user-data-dir="%UNIFLOW_PROFILE%" --remote-debugging-port=21735 --remote-allow-origins=* --no-first-run --no-default-browser-check http://localhost:3000
+echo Chrome launched on port 21735 with persistent profile!
 echo You can now use Uniflow, the Portal, and Claude in this single window!
+
