@@ -17,6 +17,26 @@ export default function SolutionPanel({ assignment }) {
   const [notice, setNotice] = useState('');
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [activeFileTab, setActiveFileTab] = useState(0);
+  const [uploadingMaterial, setUploadingMaterial] = useState(false);
+  const [materialsList, setMaterialsList] = useState(assignment?.materials || []);
+
+  const handleMaterialUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingMaterial(true);
+    setError('');
+    try {
+      const token = getToken ? await getToken() : null;
+      const res = await api.uploadAssignmentMaterial(assignment.id, file, token);
+      setNotice(`Uploaded "${file.name}"! Document ready for autonomous solving.`);
+      setMaterialsList((prev) => [...prev, { id: res.material_id, title: file.name, material_type: 'local_upload' }]);
+    } catch (err) {
+      setError(err.message || 'Failed to upload document.');
+    } finally {
+      setUploadingMaterial(false);
+      e.target.value = '';
+    }
+  };
 
   const refresh = useCallback(async () => {
     const token = getToken ? await getToken() : null;
@@ -85,7 +105,7 @@ export default function SolutionPanel({ assignment }) {
         token
       );
       if (provider === 'claude_browser') {
-        setNotice('Connecting to Chrome! Claude will review the attached assignment PDF and generate your solution…');
+        setNotice('Zero-Touch Pipeline Active: Auto-fetching Drive docs, scanning Downloads, opening Chrome, auto-authenticating into Claude with Google, and synthesizing your solution…');
       } else {
         setNotice('The autonomous multi-agent solver has started! Breaking down rubric requirements…');
       }
@@ -433,6 +453,39 @@ export default function SolutionPanel({ assignment }) {
               flexWrap: 'wrap',
             }}
           >
+            {/* Reference Materials & Local Upload Bar */}
+            <div style={{ width: '100%', marginBottom: 14, padding: '12px 14px', background: '#f8f8fc', borderRadius: 8, border: '1px solid #ebebf2' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Icon name="fileText" size={15} />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: '#333745' }}>
+                    Reference Materials & Question Sheets ({materialsList.length} attached)
+                  </span>
+                </div>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: '#6657d9', cursor: 'pointer', background: '#ffffff', padding: '4px 10px', borderRadius: 6, border: '1px solid #dcd7fa' }}>
+                  <Icon name="upload" size={13} />
+                  <span>{uploadingMaterial ? 'Uploading…' : '+ Attach Question Sheet / PDF'}</span>
+                  <input
+                    type="file"
+                    accept=".pdf,.docx,.doc,.txt"
+                    onChange={handleMaterialUpload}
+                    disabled={uploadingMaterial}
+                    style={{ display: 'none' }}
+                  />
+                </label>
+              </div>
+              {materialsList.length > 0 && (
+                <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {materialsList.map((m, idx) => (
+                    <span key={m.id || idx} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: '#ffffff', border: '1px solid #e2e2ec', padding: '3px 8px', borderRadius: 5, fontSize: 11, color: '#4b5063' }}>
+                      <Icon name="file" size={12} />
+                      <span style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.title || 'Attachment'}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <div
                 style={{
@@ -450,10 +503,10 @@ export default function SolutionPanel({ assignment }) {
               </div>
               <div>
                 <strong style={{ display: 'block', fontSize: 12, color: '#2c2f3b' }}>
-                  Workflow: Planner → Theory → Coder → Reporter
+                  Zero-Touch Autonomous Pipeline
                 </strong>
                 <span style={{ fontSize: 11, color: '#858998' }}>
-                  Models are configured per role in backend settings
+                  Auto-fetches Drive files · Scans Downloads · Auto-signs in with Google
                 </span>
               </div>
             </div>

@@ -319,6 +319,15 @@ export const api = {
     body: JSON.stringify(payload),
   }),
 
+  uploadAssignmentMaterial: async (assignmentId, file, token = null) => {
+    const form = new FormData();
+    form.append('file', file);
+    return fetchFromApi(`/classroom/assignments/${assignmentId}/materials/upload`, token, {
+      method: 'POST',
+      body: form,
+    });
+  },
+
   // AI Solution Generation & Agentic Export
   generateAssignmentSolution: async (assignmentId, data = {}, token = null) => fetchFromApi(`/classroom/assignments/${assignmentId}/solution/generate`, token, {
     method: 'POST',

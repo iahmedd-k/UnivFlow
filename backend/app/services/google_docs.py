@@ -584,8 +584,32 @@ class GoogleDocsService:
             return None
 
     def download_file(self, file_id: str) -> Optional[bytes]:
-        """Download file content"""
+        """Download file content, automatically exporting Google Docs/Sheets/Slides to PDF."""
         try:
+            # Check metadata to handle native Google Workspace formats
+            meta = self.get_file(file_id)
+            mime_type = meta.get("mimeType", "") if meta else ""
+
+            if mime_type.startswith("application/vnd.google-apps."):
+                if "folder" in mime_type:
+                    logger.warning(f"File {file_id} is a Google Drive folder; cannot download as binary.")
+                    return None
+                
+                export_mime = "application/pdf"
+                logger.info(f"Exporting Google Workspace doc {file_id} ({mime_type}) to {export_mime}")
+                try:
+                    request = self.drive_service.files().export_media(fileId=file_id, mimeType=export_mime)
+                    file_io = io.BytesIO()
+                    downloader = MediaIoBaseDownload(file_io, request)
+                    done = False
+                    while not done:
+                        status, done = downloader.next_chunk()
+                    return file_io.getvalue()
+                except Exception as export_err:
+                    logger.debug(f"export_media fallback to direct export for {file_id}: {export_err}")
+                    return self.drive_service.files().export(fileId=file_id, mimeType=export_mime).execute()
+
+            # Binary file download (PDF, DOCX, ZIP, images, etc.)
             request = self.drive_service.files().get_media(fileId=file_id)
             file_io = io.BytesIO()
             downloader = MediaIoBaseDownload(file_io, request)
@@ -594,7 +618,16 @@ class GoogleDocsService:
                 status, done = downloader.next_chunk()
             return file_io.getvalue()
         except HttpError as e:
+            if "Only files with binary content can be downloaded" in str(e):
+                try:
+                    logger.info(f"Retrying download of {file_id} via export_media to PDF...")
+                    return self.drive_service.files().export(fileId=file_id, mimeType="application/pdf").execute()
+                except Exception as inner_e:
+                    logger.error(f"Fallback export failed for {file_id}: {inner_e}")
             logger.error(f"Error downloading file {file_id}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error downloading file {file_id}: {e}")
             return None
 
     def upload_file(self, name: str, content: bytes, mime_type: str, folder_id: str = None) -> Optional[Dict]:

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body, Request, File, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -996,6 +996,64 @@ def _attach_submission_files(classroom_service, course_id: str, coursework_id: s
     except Exception as error:
         logger.error(f"Failed to attach Drive files to Google Classroom: {error}")
         raise HTTPException(status_code=502, detail="Failed to attach files to Google Classroom") from error
+
+
+@router.post("/assignments/{assignment_id}/materials/upload", response_model=dict)
+async def upload_assignment_material(
+    assignment_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """Upload a local assignment problem sheet / PDF / document directly into assignment materials."""
+    from app.db.models import Assignment, AssignmentMaterial
+    from pathlib import Path
+    import re
+
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    materials_dir = Path(__file__).resolve().parent.parent.parent / "tmp" / "materials"
+    materials_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_filename = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', file.filename or "uploaded_material.pdf")
+    dest_path = materials_dir / f"assignment_{assignment_id}_{safe_filename}"
+
+    content = await file.read()
+    dest_path.write_bytes(content)
+
+    extracted_text = ""
+    if safe_filename.lower().endswith(".txt"):
+        try:
+            extracted_text = content.decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+    elif safe_filename.lower().endswith(".pdf"):
+        try:
+            import io
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(content))
+            extracted_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        except Exception:
+            pass
+
+    mat = AssignmentMaterial(
+        assignment_id=assignment_id,
+        material_type="local_upload",
+        title=file.filename,
+        content=extracted_text if extracted_text else None,
+        mime_type=file.content_type,
+    )
+    db.add(mat)
+    db.commit()
+
+    return {
+        "status": "uploaded",
+        "material_id": mat.id,
+        "filename": file.filename,
+        "bytes": len(content),
+        "local_path": str(dest_path.resolve())
+    }
 
 
 # ===== AI Solution Generation & Agentic Flow =====

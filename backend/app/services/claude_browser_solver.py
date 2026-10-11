@@ -159,6 +159,7 @@ def get_student_metadata(db: Session, course: Optional[Course]) -> Dict[str, str
     return {
         "student_name": student_name,
         "roll_no": roll_no,
+        "student_email": user_email or "232530@students.au.edu.pk",
         "course_name": course_name,
         "instructor": instructor,
         "section": section,
@@ -168,7 +169,59 @@ def get_student_metadata(db: Session, course: Optional[Course]) -> Dict[str, str
     }
 
 
-def prepare_assignment_materials(db: Session, assignment: Assignment) -> List[str]:
+def scan_local_downloads_for_assignment(assignment: Assignment, course: Optional[Course] = None) -> List[str]:
+    """Scan the user's Downloads folder for newly downloaded assignment sheets or lab manuals."""
+    downloads_dir = Path.home() / "Downloads"
+    if not downloads_dir.exists() or not downloads_dir.is_dir():
+        return []
+
+    found_files: List[str] = []
+    keywords = set()
+    for text in (assignment.title, getattr(course, "name", ""), getattr(course, "external_id", "")):
+        if text:
+            clean_words = re.findall(r'[a-zA-Z0-9]{3,}', text.lower())
+            keywords.update(clean_words)
+
+    keywords = {k for k in keywords if k not in {"the", "and", "for", "with", "from", "fall", "spring", "2026", "2025"}}
+
+    now = time.time()
+    valid_exts = {".pdf", ".docx", ".doc", ".txt", ".zip", ".py", ".cpp", ".sql", ".java", ".asm"}
+
+    try:
+        for item in downloads_dir.iterdir():
+            if item.is_file() and item.suffix.lower() in valid_exts:
+                try:
+                    mtime = item.stat().st_mtime
+                    if now - mtime < 7 * 86400:
+                        fname = item.name.lower()
+                        if any(k in fname for k in keywords) or ("assignment" in fname and str(assignment.id) in fname) or ("lab" in fname and any(k in fname for k in keywords)):
+                            dest = CLAUDE_MATERIALS_DIR / f"assignment_{assignment.id}_dl_{item.name}"
+                            if not dest.exists() or dest.stat().st_size == 0:
+                                shutil.copy2(item, dest)
+                            found_files.append(str(dest.resolve()))
+                except Exception:
+                    pass
+    except Exception as err:
+        logger.debug(f"Downloads scan error: {err}")
+
+    return found_files
+
+
+def extract_assignment_question_text(db: Session, assignment: Assignment) -> str:
+    """Extract all text content from assignment description and attached materials."""
+    parts = []
+    if assignment.description and assignment.description.strip():
+        parts.append(f"Assignment Description / Instructions:\n{assignment.description.strip()}")
+
+    materials = db.query(AssignmentMaterial).filter(AssignmentMaterial.assignment_id == assignment.id).all()
+    for m in materials:
+        if m.content and m.content.strip():
+            parts.append(f"--- Attachment: {m.title or 'Reference Material'} ---\n{m.content.strip()}")
+
+    return "\n\n".join(parts)
+
+
+def prepare_assignment_materials(db: Session, assignment: Assignment, course: Optional[Course] = None) -> List[str]:
     """
     Ensure all assignment files (PDFs, docs) are downloaded locally and ready for upload to Claude.
     Returns list of absolute file paths.
@@ -177,15 +230,13 @@ def prepare_assignment_materials(db: Session, assignment: Assignment) -> List[st
     file_paths: List[str] = []
     docs_service = get_google_docs_service(db)
 
-    # First check existing cached materials in materials dir
+    # 1. Check existing cached materials in materials dir
     cached_pattern = f"assignment_{assignment.id}_"
     for f in CLAUDE_MATERIALS_DIR.glob(f"{cached_pattern}*"):
-        if f.is_file() and f.stat().st_size > 0:
+        if f.is_file() and f.stat().st_size > 0 and not f.name.endswith("_questions.txt"):
             file_paths.append(str(f.resolve()))
 
-    if file_paths:
-        return list(dict.fromkeys(file_paths))
-
+    # 2. Check and download from Google Drive
     for m in materials:
         if m.drive_file_id and docs_service:
             try:
@@ -200,13 +251,18 @@ def prepare_assignment_materials(db: Session, assignment: Assignment) -> List[st
                     if data:
                         dest_path.write_bytes(data)
                         logger.info(f"Downloaded material for assignment {assignment.id}: {dest_path}")
-                
+
                 if dest_path.exists() and dest_path.stat().st_size > 0:
                     file_paths.append(str(dest_path.resolve()))
             except Exception as e:
                 logger.warning(f"Could not download material {m.id} for assignment {assignment.id}: {e}")
 
-    # Fallback: if materials only have extracted content, dump to a question markdown file
+    # 3. Check local Downloads folder
+    dl_files = scan_local_downloads_for_assignment(assignment, course)
+    file_paths.extend(dl_files)
+    file_paths = list(dict.fromkeys(file_paths))
+
+    # 4. Fallback: if materials only have extracted content and no binaries, dump to question text
     if not file_paths:
         combined_text = []
         for m in materials:
@@ -218,6 +274,92 @@ def prepare_assignment_materials(db: Session, assignment: Assignment) -> List[st
             file_paths.append(str(text_path.resolve()))
 
     return list(dict.fromkeys(file_paths))
+
+
+def _handle_claude_login_and_oauth(page, student_email: str = "232530@students.au.edu.pk", max_retries: int = 3) -> bool:
+    """
+    Zero-touch Claude login automation:
+    Auto-clicks 'Continue with Google', auto-selects student Google account, and redirects into Claude chat.
+    """
+    for attempt in range(max_retries):
+        cur_url = (getattr(page, "url", "") or "").lower()
+
+        try:
+            inp = page.locator('div[contenteditable="true"]').first
+            if inp.count() > 0 and inp.is_visible():
+                return True
+        except Exception:
+            pass
+
+        # Auto-dismiss Claude onboarding modals
+        for dismiss_sel in (
+            "button:has-text('Acknowledge')",
+            "button:has-text('Got it')",
+            "button:has-text('Accept')",
+            "button:has-text('Continue')",
+            "button:has-text('I agree')",
+            "button:has-text('Skip')",
+            "[aria-label*='Close' i]",
+        ):
+            try:
+                btn = page.locator(dismiss_sel).first
+                if btn.count() > 0 and btn.is_visible():
+                    logger.info(f"Auto-dismissing Claude modal: {dismiss_sel}")
+                    btn.click(force=True)
+                    if hasattr(page, "wait_for_timeout"):
+                        page.wait_for_timeout(1000)
+            except Exception:
+                pass
+
+        # If on Google OAuth page
+        if "accounts.google.com" in cur_url:
+            try:
+                from app.portal.router import _handle_google_oauth_if_needed
+                logger.info(f"Handling Google OAuth for Claude (email: {student_email})...")
+                _handle_google_oauth_if_needed(page, student_email=student_email)
+                if hasattr(page, "wait_for_timeout"):
+                    page.wait_for_timeout(3000)
+            except Exception as e:
+                logger.debug(f"OAuth helper error: {e}")
+            continue
+
+        # Look for Continue with Google on Claude
+        google_btns = (
+            "button:has-text('Continue with Google')",
+            "a:has-text('Continue with Google')",
+            "button:has-text('Log in with Google')",
+            "button:has-text('Sign in with Google')",
+            "button[data-testid*='google' i]",
+        )
+        clicked_google = False
+        for sel in google_btns:
+            try:
+                g_btn = page.locator(sel).first
+                if g_btn.count() > 0 and g_btn.is_visible():
+                    logger.info(f"Auto-clicking Claude 'Continue with Google': {sel}")
+                    g_btn.click(force=True)
+                    clicked_google = True
+                    if hasattr(page, "wait_for_timeout"):
+                        page.wait_for_timeout(3000)
+                    break
+            except Exception:
+                pass
+
+        if not clicked_google:
+            try:
+                login_btn = page.locator("a[href*='/login' i], button:has-text('Log in'), button:has-text('Sign in')").first
+                if login_btn.count() > 0 and login_btn.is_visible() and "login" not in cur_url:
+                    login_btn.click(force=True)
+                    if hasattr(page, "wait_for_timeout"):
+                        page.wait_for_timeout(2000)
+            except Exception:
+                pass
+
+    try:
+        inp = page.locator('div[contenteditable="true"]').first
+        return inp.count() > 0 and inp.is_visible()
+    except Exception:
+        return False
 
 
 def build_academic_cover_markdown(meta: Dict[str, str], assignment_title: str) -> str:
@@ -256,7 +398,8 @@ def solve_assignment_via_claude_browser(
 
     course = db.query(Course).filter(Course.id == assignment.course_id).first()
     meta = get_student_metadata(db, course)
-    attachment_paths = prepare_assignment_materials(db, assignment)
+    attachment_paths = prepare_assignment_materials(db, assignment, course)
+    extracted_text = extract_assignment_question_text(db, assignment)
 
     # 1. Ensure Chrome CDP endpoint is ready
     port = get_active_cdp_port()
@@ -313,25 +456,32 @@ def solve_assignment_via_claude_browser(
         # Allow SPA hydration
         page.wait_for_timeout(3000)
 
-        # 3. Check login status
-        lower_url = (page.url or "").lower()
-        if any(token in lower_url for token in ("login", "logout", "signin")):
-            return {
-                "status": "needs_login",
-                "error": "Claude is not signed in. The Chrome window is open on screen. Please click 'Continue with Google' to sign in, then click Solve again."
-            }
-
-        # Check for message input element (ProseMirror contenteditable)
+        # 3. Check login status & trigger zero-touch auto-login
         prompt_selector = 'div[contenteditable="true"]'
-        try:
-            page.wait_for_selector(prompt_selector, timeout=12000)
-        except Exception:
-            # Check if login button is visible
-            login_el = page.query_selector("button:has-text('Continue with Google'), a:has-text('Continue with Google'), button:has-text('Log in'), button:has-text('Sign in')")
-            if login_el or any(token in (page.url or "").lower() for token in ("login", "logout", "signin")):
+        lower_url = (getattr(page, "url", "") or "").lower()
+
+        if any(token in lower_url for token in ("login", "logout", "signin")) or "accounts.google.com" in lower_url:
+            logger.info("Attempting zero-touch Claude sign-in via Google OAuth...")
+            student_email = meta.get("student_email") or "232530@students.au.edu.pk"
+            _handle_claude_login_and_oauth(page, student_email=student_email)
+
+            # Recheck URL after auto-login attempt
+            lower_url = (getattr(page, "url", "") or "").lower()
+            if any(token in lower_url for token in ("login", "logout", "signin")) or "accounts.google.com" in lower_url:
                 return {
                     "status": "needs_login",
-                    "error": "Please sign in to Claude with Google in the opened Chrome browser window, then rerun the solver."
+                    "error": "Claude is not signed in. The Chrome window is open on screen. Please click 'Continue with Google' to sign in, then click Solve again."
+                }
+
+        # Verify chat input box exists
+        try:
+            page.wait_for_selector(prompt_selector, timeout=6000)
+        except Exception:
+            login_el = page.query_selector("button:has-text('Continue with Google'), a:has-text('Continue with Google'), button:has-text('Log in'), button:has-text('Sign in')")
+            if login_el or any(token in (getattr(page, "url", "") or "").lower() for token in ("login", "logout", "signin")):
+                return {
+                    "status": "needs_login",
+                    "error": "Claude is not signed in. The Chrome window is open on screen. Please click 'Continue with Google' to sign in, then click Solve again."
                 }
             return {
                 "status": "error",
@@ -341,15 +491,50 @@ def solve_assignment_via_claude_browser(
         # 4. Upload assignment attachments / PDFs
         file_names_str = ""
         if attachment_paths:
-            file_input = page.query_selector('input[type="file"]')
-            if file_input:
-                logger.info(f"Attaching {len(attachment_paths)} file(s) to Claude: {attachment_paths}")
-                file_input.set_input_files(attachment_paths)
-                # Wait for upload processing in Claude
+            logger.info(f"Attaching {len(attachment_paths)} file(s) to Claude: {attachment_paths}")
+            attached = False
+            # Try 1: locate input[type="file"]
+            try:
+                file_input = page.locator('input[type="file"]').first
+                if file_input.count() > 0:
+                    file_input.set_input_files(attachment_paths)
+                    attached = True
+            except Exception as direct_err:
+                logger.debug(f"Direct set_input_files error: {direct_err}")
+
+            # Try 2: click attach button with expect_file_chooser
+            if not attached:
+                attach_selectors = [
+                    'button[aria-label*="Attach" i]',
+                    'button[aria-label*="Upload" i]',
+                    'button[data-testid*="attach" i]',
+                    'button:has(svg[aria-label*="attach" i])',
+                    'button:has(svg)',
+                ]
+                for btn_sel in attach_selectors:
+                    try:
+                        btn = page.locator(btn_sel).first
+                        if btn.count() > 0 and btn.is_visible():
+                            with page.expect_file_chooser(timeout=4000) as fc_info:
+                                btn.click()
+                            file_chooser = fc_info.value
+                            file_chooser.set_files(attachment_paths)
+                            attached = True
+                            break
+                    except Exception:
+                        pass
+
+            if attached:
                 page.wait_for_timeout(4000)
                 file_names_str = ", ".join(Path(f).name for f in attachment_paths)
 
-        # 5. Build Comprehensive Academic Prompt
+        # 5. Build Comprehensive Academic Prompt with Guaranteed Question Extraction
+        questions_block = ""
+        if assignment.description and assignment.description.strip():
+            questions_block += f"\nASSIGNMENT INSTRUCTIONS & QUESTIONS:\n{assignment.description.strip()}\n"
+        if extracted_text and extracted_text.strip():
+            questions_block += f"\nEXTRACTED REFERENCE MATERIAL CONTENT:\n{extracted_text.strip()[:10000]}\n"
+
         prompt_text = (
             f"You are an expert academic specialist and professor in {meta['course_name']} at Air University, Islamabad.\n\n"
             f"STUDENT DETAILS:\n"
@@ -359,8 +544,9 @@ def solve_assignment_via_claude_browser(
             f"- Course: {meta['course_name']}\n"
             f"- Assignment Title: {assignment.title}\n"
             f"- Instructor: {meta['instructor']}\n\n"
+            f"{questions_block}\n"
             f"INSTRUCTIONS:\n"
-            f"1. Thoroughly review and solve EVERY question, task, problem statement, and requirement presented in the attached assignment material"
+            f"1. Thoroughly review and solve EVERY question, task, problem statement, and requirement presented above and in the attached assignment material"
             f"{f' ({file_names_str})' if file_names_str else ''}.\n"
             f"2. For each question:\n"
             f"   - Clearly restate the Question / Problem Statement.\n"
@@ -375,13 +561,18 @@ def solve_assignment_via_claude_browser(
         input_el = page.locator(prompt_selector).first
         input_el.click()
         page.wait_for_timeout(300)
-        
-        # Use clipboard or keyboard insert_text to handle multiline cleanly without lag
+
+        # Insert prompt cleanly
         page.keyboard.insert_text(prompt_text)
         page.wait_for_timeout(1000)
 
-        # Locate send button
-        send_btn = page.locator('button[aria-label*="Send"], button[aria-label="Send Message"]').first
+        # Wait until send button is enabled (in case file upload is finalizing)
+        send_btn = page.locator('button[aria-label*="Send" i], button[aria-label="Send Message" i]').first
+        for _ in range(8):
+            if send_btn.is_visible() and send_btn.is_enabled():
+                break
+            page.wait_for_timeout(1000)
+
         if send_btn.is_visible() and send_btn.is_enabled():
             send_btn.click()
         else:
