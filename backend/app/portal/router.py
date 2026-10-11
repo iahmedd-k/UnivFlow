@@ -1681,31 +1681,9 @@ def _discover_portal_tab_pages(page, portal_host: str, root_url: str) -> tuple[l
     return reports, discovered_urls
 
 
-def _handle_google_oauth_if_needed(page, user_id: Optional[str] = None) -> bool:
-    """If the browser is on Google sign-in / account chooser, automatically select student account."""
-    current_url = getattr(page, "url", "") or ""
-    if "accounts.google.com" in current_url:
-        try:
-            selectors = [
-                "li:has-text('@students.au.edu.pk')",
-                "div[data-identifier*='@students.au.edu.pk']",
-                "li:has-text('@au.edu.pk')",
-                "div[data-identifier*='@au.edu.pk']",
-                "li:has-text('232530')",
-                "[data-email*='au.edu.pk']",
-            ]
-            for sel in selectors:
-                loc = page.locator(sel)
-                if hasattr(loc, "first"):
-                    loc = loc.first
-                if hasattr(loc, "is_visible") and loc.is_visible():
-                    loc.click(force=True)
-                    if hasattr(page, "wait_for_timeout"):
-                        page.wait_for_timeout(4000)
-                    return True
-        except Exception:
-            pass
-    return False
+def _handle_google_oauth_if_needed_secondary(page, user_id: Optional[str] = None, student_email: str = "") -> bool:
+    """Delegates to the primary Google OAuth handler."""
+    return _handle_google_oauth_if_needed(page, user_id=user_id, student_email=student_email)
 
 
 def _scrape_report_thread(target_urls: str | list[str], profile_dir: Path, user_id: str):

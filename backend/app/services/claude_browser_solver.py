@@ -64,15 +64,99 @@ def is_cdp_port_live(port: int, timeout: float = 0.5) -> bool:
 
 
 def get_active_cdp_port() -> Optional[int]:
-    """Check if Uniflow's dedicated port 21735 or secondary port 9222 is responding."""
+    """Check if Uniflow's dedicated port 21735 is responding."""
     if is_cdp_port_live(CLAUDE_CDP_PORT):
         return CLAUDE_CDP_PORT
-    if is_cdp_port_live(USER_CDP_PORT):
-        return USER_CDP_PORT
     return None
 
 
-def open_claude_browser_window() -> Dict[str, Any]:
+def find_and_sync_student_chrome_profile(target_email: str = "232530@students.au.edu.pk") -> Optional[str]:
+    """
+    Finds the user's existing Chrome profile containing their student account (or primary account)
+    and syncs essential cookies, sessions, credentials, and preferences into UniflowChromeProfile
+    so Chrome opens as their real logged-in student profile instead of a blank/guest profile.
+    """
+    src_user_data = Path(os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data"))
+    local_state_path = src_user_data / "Local State"
+    if not local_state_path.exists():
+        return None
+
+    try:
+        with open(local_state_path, "r", encoding="utf-8") as f:
+            local_state = json.load(f)
+    except Exception as e:
+        logger.warning(f"Could not read Chrome Local State: {e}")
+        return None
+
+    info_cache = local_state.get("profile", {}).get("info_cache", {})
+    matched_profile = None
+
+    # 1. Match exact student email or roll number prefix
+    roll_token = target_email.split("@")[0].lower() if "@" in target_email else target_email.lower()
+    for prof_key, info in info_cache.items():
+        uname = (info.get("user_name") or "").lower()
+        domain = (info.get("hosted_domain") or "").lower()
+        if target_email.lower() in uname or roll_token in uname or "students.au.edu.pk" in domain:
+            matched_profile = prof_key
+            break
+
+    # Fallback to Profile 23 if present or Default
+    if not matched_profile:
+        if "Profile 23" in info_cache:
+            matched_profile = "Profile 23"
+        elif "Default" in info_cache:
+            matched_profile = "Default"
+
+    if not matched_profile:
+        return None
+
+    src_prof_dir = src_user_data / matched_profile
+    if not src_prof_dir.exists():
+        return None
+
+    # Copy Local State to preserve DPAPI cookie decryption key
+    dst_data = CLAUDE_PROFILE_DIR
+    dst_data.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copy2(local_state_path, dst_data / "Local State")
+    except Exception as e:
+        logger.debug(f"Could not copy Local State: {e}")
+
+    # Copy essential auth & session files/folders to both matched profile and Default
+    def _copytree_safe(src: Path, dst: Path):
+        dst.mkdir(parents=True, exist_ok=True)
+        for root, dirs, files in os.walk(src):
+            rel = os.path.relpath(root, src)
+            target_dir = dst / rel
+            target_dir.mkdir(parents=True, exist_ok=True)
+            for f in files:
+                sf = os.path.join(root, f)
+                df = target_dir / f
+                try:
+                    shutil.copy2(sf, df)
+                except Exception:
+                    pass
+
+    for target in [matched_profile, "Default"]:
+        dst_prof = dst_data / target
+        dst_prof.mkdir(parents=True, exist_ok=True)
+        for fname in ["Preferences", "Secure Preferences", "Login Data", "Web Data", "History"]:
+            sf = src_prof_dir / fname
+            if sf.exists():
+                try:
+                    shutil.copy2(sf, dst_prof / fname)
+                except Exception:
+                    pass
+        for dname in ["Network", "Session Storage", "Sessions", "Local Storage", "IndexedDB"]:
+            sd = src_prof_dir / dname
+            if sd.exists():
+                _copytree_safe(sd, dst_prof / dname)
+
+    logger.info(f"Successfully synced student Chrome profile '{matched_profile}' ({target_email}) into UniflowChromeProfile.")
+    return matched_profile
+
+
+def open_claude_browser_window(student_email: str = "232530@students.au.edu.pk") -> Dict[str, Any]:
     """Launch or focus Chrome with the Claude persistent profile and remote debugging enabled."""
     global _claude_process
     active_port = get_active_cdp_port()
@@ -83,10 +167,14 @@ def open_claude_browser_window() -> Dict[str, Any]:
             "message": f"Chrome remote debugging is already active on port {active_port}."
         }
 
+    # Ensure the user's student profile is synced so they aren't presented with a guest profile
+    matched_prof = find_and_sync_student_chrome_profile(student_email)
+
     browser_bin = find_system_browser()
     cmd = [
         browser_bin,
         f"--user-data-dir={str(CLAUDE_PROFILE_DIR)}",
+        f"--profile-directory={matched_prof or 'Profile 23'}",
         f"--remote-debugging-port={CLAUDE_CDP_PORT}",
         "--remote-debugging-address=127.0.0.1",
         "--remote-allow-origins=*",
@@ -276,22 +364,38 @@ def prepare_assignment_materials(db: Session, assignment: Assignment, course: Op
     return list(dict.fromkeys(file_paths))
 
 
-def _handle_claude_login_and_oauth(page, student_email: str = "232530@students.au.edu.pk", max_retries: int = 3) -> bool:
+def _handle_claude_login_and_oauth(page, student_email: str = "232530@students.au.edu.pk", max_retries: int = 4) -> bool:
     """
     Zero-touch Claude login automation:
-    Auto-clicks 'Continue with Google', auto-selects student Google account, and redirects into Claude chat.
+    Auto-clicks 'Continue with Google', auto-selects student Google account (including in popups),
+    and redirects into Claude chat.
     """
-    for attempt in range(max_retries):
-        cur_url = (getattr(page, "url", "") or "").lower()
+    context = getattr(page, "context", None)
 
+    for attempt in range(max_retries):
+        # 1. Check if chat input is already visible
         try:
-            inp = page.locator('div[contenteditable="true"]').first
+            inp = page.locator('div[contenteditable="true"], div[contenteditable]').first
             if inp.count() > 0 and inp.is_visible():
                 return True
         except Exception:
             pass
 
-        # Auto-dismiss Claude onboarding modals
+        # 2. Check all open pages / popup windows in the browser context for Google OAuth
+        pages_to_check = context.pages if context else [page]
+        for p_item in list(pages_to_check):
+            p_url = (getattr(p_item, "url", "") or "").lower()
+            if "accounts.google.com" in p_url:
+                try:
+                    from app.portal.router import _handle_google_oauth_if_needed
+                    logger.info(f"Handling Google OAuth for Claude in popup/tab: {p_url[:80]} (email: {student_email})...")
+                    _handle_google_oauth_if_needed(p_item, student_email=student_email)
+                    if hasattr(p_item, "wait_for_timeout"):
+                        p_item.wait_for_timeout(3000)
+                except Exception as e:
+                    logger.debug(f"OAuth helper error: {e}")
+
+        # 3. Auto-dismiss Claude onboarding modals
         for dismiss_sel in (
             "button:has-text('Acknowledge')",
             "button:has-text('Got it')",
@@ -311,39 +415,43 @@ def _handle_claude_login_and_oauth(page, student_email: str = "232530@students.a
             except Exception:
                 pass
 
-        # If on Google OAuth page
-        if "accounts.google.com" in cur_url:
-            try:
-                from app.portal.router import _handle_google_oauth_if_needed
-                logger.info(f"Handling Google OAuth for Claude (email: {student_email})...")
-                _handle_google_oauth_if_needed(page, student_email=student_email)
+        # 4. Look for Continue with Google on Claude (checking text, spans, and buttons)
+        cur_url = (getattr(page, "url", "") or "").lower()
+        clicked_google = False
+
+        # Try get_by_text first (works for spans, divs, buttons)
+        try:
+            g_text = page.get_by_text("Continue with Google").first
+            if g_text.count() > 0 and g_text.is_visible():
+                logger.info("Auto-clicking Claude 'Continue with Google' via get_by_text...")
+                g_text.click(force=True)
+                clicked_google = True
                 if hasattr(page, "wait_for_timeout"):
                     page.wait_for_timeout(3000)
-            except Exception as e:
-                logger.debug(f"OAuth helper error: {e}")
-            continue
+        except Exception:
+            pass
 
-        # Look for Continue with Google on Claude
-        google_btns = (
-            "button:has-text('Continue with Google')",
-            "a:has-text('Continue with Google')",
-            "button:has-text('Log in with Google')",
-            "button:has-text('Sign in with Google')",
-            "button[data-testid*='google' i]",
-        )
-        clicked_google = False
-        for sel in google_btns:
-            try:
-                g_btn = page.locator(sel).first
-                if g_btn.count() > 0 and g_btn.is_visible():
-                    logger.info(f"Auto-clicking Claude 'Continue with Google': {sel}")
-                    g_btn.click(force=True)
-                    clicked_google = True
-                    if hasattr(page, "wait_for_timeout"):
-                        page.wait_for_timeout(3000)
-                    break
-            except Exception:
-                pass
+        if not clicked_google:
+            google_btns = (
+                "button:has-text('Continue with Google')",
+                "a:has-text('Continue with Google')",
+                "button:has-text('Log in with Google')",
+                "button:has-text('Sign in with Google')",
+                "button[data-testid*='google' i]",
+                "*:has-text('Continue with Google')",
+            )
+            for sel in google_btns:
+                try:
+                    g_btn = page.locator(sel).first
+                    if g_btn.count() > 0 and g_btn.is_visible():
+                        logger.info(f"Auto-clicking Claude 'Continue with Google': {sel}")
+                        g_btn.click(force=True)
+                        clicked_google = True
+                        if hasattr(page, "wait_for_timeout"):
+                            page.wait_for_timeout(3000)
+                        break
+                except Exception:
+                    pass
 
         if not clicked_google:
             try:
@@ -356,7 +464,7 @@ def _handle_claude_login_and_oauth(page, student_email: str = "232530@students.a
                 pass
 
     try:
-        inp = page.locator('div[contenteditable="true"]').first
+        inp = page.locator('div[contenteditable="true"], div[contenteditable]').first
         return inp.count() > 0 and inp.is_visible()
     except Exception:
         return False
@@ -401,10 +509,12 @@ def solve_assignment_via_claude_browser(
     attachment_paths = prepare_assignment_materials(db, assignment, course)
     extracted_text = extract_assignment_question_text(db, assignment)
 
+    student_email = meta.get("student_email") or "232530@students.au.edu.pk"
+
     # 1. Ensure Chrome CDP endpoint is ready
     port = get_active_cdp_port()
     if port is None:
-        launch_res = open_claude_browser_window()
+        launch_res = open_claude_browser_window(student_email=student_email)
         if launch_res.get("status") == "error":
             return launch_res
         port = get_active_cdp_port()
@@ -415,6 +525,9 @@ def solve_assignment_via_claude_browser(
             }
 
     logger.info(f"Connecting to Chrome on CDP port {port} for Assignment {assignment_id}...")
+
+    # Set Playwright bypass for context-management errors on attached Chromium instances
+    os.environ["PW_CHROMIUM_ATTACH_TO_OTHER"] = "1"
 
     # 2. Connect Playwright over CDP
     with sync_playwright() as p:
@@ -465,9 +578,19 @@ def solve_assignment_via_claude_browser(
             student_email = meta.get("student_email") or "232530@students.au.edu.pk"
             _handle_claude_login_and_oauth(page, student_email=student_email)
 
-            # Recheck URL after auto-login attempt
+            # Wait briefly for OAuth redirect / hydration
+            page.wait_for_timeout(3000)
+
+            # Recheck URL & input after auto-login attempt
             lower_url = (getattr(page, "url", "") or "").lower()
-            if any(token in lower_url for token in ("login", "logout", "signin")) or "accounts.google.com" in lower_url:
+            has_input = False
+            try:
+                inp_check = page.locator('div[contenteditable="true"], div[contenteditable]').first
+                has_input = inp_check.count() > 0 and inp_check.is_visible()
+            except Exception:
+                pass
+
+            if not has_input and (any(token in lower_url for token in ("login", "logout", "signin")) or "accounts.google.com" in lower_url):
                 return {
                     "status": "needs_login",
                     "error": "Claude is not signed in. The Chrome window is open on screen. Please click 'Continue with Google' to sign in, then click Solve again."
@@ -475,7 +598,7 @@ def solve_assignment_via_claude_browser(
 
         # Verify chat input box exists
         try:
-            page.wait_for_selector(prompt_selector, timeout=6000)
+            page.wait_for_selector('div[contenteditable="true"], div[contenteditable]', timeout=8000)
         except Exception:
             login_el = page.query_selector("button:has-text('Continue with Google'), a:has-text('Continue with Google'), button:has-text('Log in'), button:has-text('Sign in')")
             if login_el or any(token in (getattr(page, "url", "") or "").lower() for token in ("login", "logout", "signin")):

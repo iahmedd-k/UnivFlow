@@ -33,7 +33,7 @@ if "%ERRORLEVEL%"=="0" (
 set UNIFLOW_PROFILE=%LOCALAPPDATA%\UniflowChromeProfile
 if not exist "%UNIFLOW_PROFILE%" mkdir "%UNIFLOW_PROFILE%"
 
-start "" %CHROME_BIN% --user-data-dir="%UNIFLOW_PROFILE%" --remote-debugging-port=21735 --remote-allow-origins=* --no-first-run --no-default-browser-check http://localhost:3000
-echo Chrome launched on port 21735 with persistent profile!
+start "" %CHROME_BIN% --user-data-dir="%UNIFLOW_PROFILE%" --profile-directory="Profile 23" --remote-debugging-port=21735 --remote-allow-origins=* --no-first-run --no-default-browser-check http://localhost:3000
+echo Chrome launched on port 21735 with student profile (Profile 23)!
 echo You can now use Uniflow, the Portal, and Claude in this single window!
 
