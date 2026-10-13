@@ -151,4 +151,14 @@ jobs:
           printf '%s' "$GHCR_PULL_TOKEN" | ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" \
             "docker login ghcr.io --username '$GHCR_PULL_USERNAME' --password-stdin"
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" \
-            "cd '$remote_dir' && IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml pull && IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml run --rm api alembic upgrade head && IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml up -d --wait --wait-timeout 180 --remove-orphans"
+            "cd '$remote_dir' &&
+            IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml pull &&
+            IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml run --rm api alembic upgrade head &&
+            IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml up -d --wait --wait-timeout 180 --remove-orphans;
+            deploy_status=\$?;
+            if [ \"\$deploy_status\" -ne 0 ]; then
+              echo 'Deployment failed; collecting browser-host health and startup diagnostics.'
+              IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml ps
+              IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml logs --no-color --tail=100 claude-browser-host
+              exit \"\$deploy_status\"
+            fi"
