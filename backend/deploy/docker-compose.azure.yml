@@ -43,7 +43,6 @@ services:
       - claude_browser_profiles:/data/profiles
     expose:
       - "7900"
-      - "12000-12199"
     healthcheck:
       test:
         - CMD
