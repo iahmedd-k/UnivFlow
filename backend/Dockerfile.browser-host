@@ -9,7 +9,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends xvfb fluxbox x11vnc novnc \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir --ignore-installed "fastapi==0.111.0" "uvicorn[standard]==0.34.0"
+RUN python -m pip install --no-cache-dir --ignore-installed \
+    "fastapi==0.111.0" \
+    "playwright==1.63.0" \
+    "uvicorn[standard]==0.34.0" \
+    && python -c "from pathlib import Path; from playwright.sync_api import sync_playwright; p = sync_playwright().start(); assert Path(p.chromium.executable_path).is_file(); p.stop()"
 
 WORKDIR /app/backend
 COPY app/services/browser_host.py /app/backend/app/services/browser_host.py

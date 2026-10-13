@@ -8,7 +8,7 @@
 - **Redis:** external Upstash Redis REST service; no Redis container runs on the VM.
 - **GitHub Actions:** tests pull requests; on pushes to `main`, builds and publishes backend images to GHCR, runs database migrations against external PostgreSQL, then updates the Azure VM.
 
-The frontend is not deployed to Azure. Vercel deploys `frontend/` from `main`; GitHub Actions deploys only the backend. Frontend checks run in CI but do not gate the Azure deployment. Keep the API to one running instance: the scheduler currently starts inside the API process, so multiple replicas could duplicate scheduled work.
+The frontend is not deployed to Azure. Vercel deploys `frontend/` from `main`; GitHub Actions builds and deploys only the backend. Keep the API to one running instance: the scheduler currently starts inside the API process, so multiple replicas could duplicate scheduled work.
 
 ## 1. Create Supabase resources
 
@@ -28,10 +28,10 @@ The frontend is not deployed to Azure. Vercel deploys `frontend/` from `main`; G
    ```
 
    Set it for Production and Preview as appropriate. It is a public URL and is embedded during the Next.js build.
-3. Set the project’s Node.js version to **24.x** to match the CI workflow and the Firebase package engine requirements in the current lockfile.
+3. Set the project’s Node.js version to **24.x** to satisfy the Firebase package engine requirements in the current lockfile.
 4. Add the Clerk publishable key and any other frontend-only public configuration required by your authentication setup. Set frontend secrets only in Vercel environment settings.
 5. Deploy once and record the production hostname, for example `univflow.vercel.app`. Use that exact hostname as `APP_DOMAIN` on the VM and as the backend `FRONTEND_URL`.
-6. Vercel’s GitHub integration deploys previews for pull requests and production on pushes to the configured production branch. The GitHub Actions workflow in this repository separately checks the frontend build and lint.
+6. Vercel’s GitHub integration deploys previews for pull requests and production on pushes to the configured production branch.
 
 ## 3. Create the Azure VM
 
@@ -70,7 +70,7 @@ Set the backend CORS origin through `APP_DOMAIN`/`FRONTEND_URL`; if the frontend
 
 ## 5. Enable GitHub Actions deployment
 
-The workflow is [`.github/workflows/ci-deploy.yml`](../.github/workflows/ci-deploy.yml). It runs a small backend regression set (`test_assignment_scheduling.py`, `test_attendance_calculation.py`, and `test_health.py`), frontend lint/build, and API/browser container builds for pull requests targeting `main`. The rest of the backend suite and the full Claude assignment workflow are deferred to a later staging test. On a push to `main`, or a manual run dispatched from `main`, the Azure deployment job waits for the selected backend tests and backend image builds—not frontend checks—then validates the required deployment secrets, publishes versioned backend images to GHCR, copies runtime files from `backend/deploy/` to the VM, applies Alembic migrations against external PostgreSQL, and updates the backend Compose stack. Deployment is serialized, and the workflow waits for the API and browser host health checks before succeeding. It does not deploy the frontend; Vercel does that through its GitHub integration.
+The workflow is [`.github/workflows/ci-deploy.yml`](../.github/workflows/ci-deploy.yml). It runs the selected backend health test and API/browser container builds for pull requests targeting `main`. The rest of the backend suite and the full Claude assignment workflow are deferred to a later staging test. On a push to `main`, or a manual run dispatched from `main`, the Azure deployment job waits for the backend test and backend image builds, then validates the required deployment secrets, publishes versioned backend images to GHCR, copies runtime files from `backend/deploy/` to the VM, applies Alembic migrations against external PostgreSQL, and updates the backend Compose stack. Deployment is serialized, and the workflow waits for the API and browser host health checks before succeeding. It does not build or deploy the frontend; Vercel handles frontend deployment through its GitHub integration.
 
 In GitHub, open **Settings → Secrets and variables → Actions → New repository secret** and add:
 
@@ -89,13 +89,13 @@ Optionally add the repository Actions variable `API_DOMAIN` with the hostname se
 
 The workflow targets `main`; configure `main` as the production branch in Vercel as well.
 
-Backend tests and backend image builds are required for Azure deployment. Frontend lint/build remain CI checks but are independent from Azure deployment; Vercel handles frontend deployment. Fix failing checks in the corresponding app rather than bypassing them.
+Backend tests and backend image builds are the only CI prerequisites for Azure deployment. Frontend builds and deploys are handled by Vercel.
 
 ### What happens on a deploy
 
-1. A pull request runs backend tests, frontend lint/build, and both backend container builds; it does not deploy.
-2. A push to `main` or a manual **Run workflow** from `main` runs the same checks.
-3. After backend tests and backend image builds pass, GitHub builds and pushes immutable backend images tagged with the commit SHA. Frontend check failures do not block this Azure deployment.
+1. A pull request runs backend tests and both backend container builds; it does not deploy.
+2. A push to `main` or a manual **Run workflow** from `main` runs the same backend checks.
+3. After backend tests and backend image builds pass, GitHub builds and pushes immutable backend images tagged with the commit SHA.
 4. GitHub validates the required Azure/GHCR secrets and checks that the SSH known-hosts secret contains the configured VM host. It SSHes to the VM, uploads Compose/Caddy configuration, authenticates to GHCR, and runs `alembic upgrade head` against the external database before bringing up the new backend image tag. The workflow waits until Compose reports the API and browser host healthy.
 5. Compose waits for API and browser-host health checks as part of rollout. After deployment succeeds, perform the separate cloud smoke test: verify the API from a browser, start a Claude browser session in Settings, sign in, and run one test assignment. The workflow does not create a browser profile or access a Claude account.
 6. Vercel independently builds and deploys `frontend/` from the configured production branch.
