@@ -6,6 +6,7 @@ from functools import lru_cache
 class Settings(BaseSettings):
     app_name: str = "Uniflow"
     environment: str = "development"
+    debug: bool = False
     timezone: str = "Asia/Karachi"
     secret_key: str = "dev-secret-key-change-in-production"
     access_token_expire_minutes: int = 30
