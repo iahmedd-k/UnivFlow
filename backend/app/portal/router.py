@@ -137,7 +137,7 @@ def _set_portal_setting(db: Session, user_id: str, key: str, value: str, descrip
 
 
 USER_CDP_PORT = 9222
-UNIFLOW_CDP_PORT = 21735
+UNIFLOW_CDP_PORT = 9222
 UNIFLOW_SHARED_PROFILE = Path(__file__).resolve().parent.parent.parent / "tmp" / "claude_browser_profile"
 UNIFLOW_SHARED_PROFILE.mkdir(parents=True, exist_ok=True)
 
@@ -148,7 +148,7 @@ def _profile_dir(user_id: str) -> Path:
 
 
 def _cdp_port(user_id: str) -> int:
-    return UNIFLOW_CDP_PORT
+    return USER_CDP_PORT
 
 
 def _is_port_live(port: int, timeout: float = 0.4) -> bool:
@@ -162,15 +162,9 @@ def _is_port_live(port: int, timeout: float = 0.4) -> bool:
 
 
 def _find_active_browser_port(user_id: str = "") -> Optional[int]:
-    """Check if Chrome is already active on user port 9222, Uniflow port 21735, or dynamic port."""
-    ports_to_check = [USER_CDP_PORT, UNIFLOW_CDP_PORT]
-    if user_id:
-        custom_port = 10000 + int(sha256(user_id.encode("utf-8")).hexdigest()[:4], 16) % 40000
-        if custom_port not in ports_to_check:
-            ports_to_check.append(custom_port)
-    for p in ports_to_check:
-        if _is_port_live(p):
-            return p
+    """Check if Chrome is already active on port 9222."""
+    if _is_port_live(USER_CDP_PORT):
+        return USER_CDP_PORT
     return None
 
 
@@ -593,15 +587,14 @@ async def open_portal_browser(background_tasks: BackgroundTasks, db: Session = D
     _set_portal_setting(db, uid, "portal_session_status", "CONNECTING", "University portal sign-in is open")
     db.commit()
 
-    # Launch Chrome on shared UNIFLOW_CDP_PORT with UNIFLOW_SHARED_PROFILE so Claude and Portal share the same browser
+    # Use the persistent app profile; Chrome disables remote debugging for the default user profile.
     cmd = [
         browser_bin,
-        f"--user-data-dir={str(UNIFLOW_SHARED_PROFILE)}",
-        f"--remote-debugging-port={UNIFLOW_CDP_PORT}",
+        f"--user-data-dir={_profile_dir(uid)}",
+        f"--remote-debugging-port={USER_CDP_PORT}",
         "--remote-debugging-address=127.0.0.1",
         "--remote-allow-origins=*",
-        "--no-first-run",
-        "--no-default-browser-check",
+        "--restore-last-session",
         "--start-maximized",
         url,
     ]

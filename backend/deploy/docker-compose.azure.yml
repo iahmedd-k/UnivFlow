@@ -1,0 +1,79 @@
+services:
+  api:
+    image: ghcr.io/iahmedd-k/univflow-api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env.production}
+      FRONTEND_URL: https://${APP_DOMAIN:?Set APP_DOMAIN in .env.production}
+      BROWSER_SERVICE_URL: http://claude-browser-host:7900
+      BROWSER_SERVICE_TOKEN: ${BROWSER_SERVICE_TOKEN:?Set BROWSER_SERVICE_TOKEN in .env.production}
+      BROWSER_VIEWER_SECRET: ${BROWSER_VIEWER_SECRET:?Set BROWSER_VIEWER_SECRET in .env.production}
+      BROWSER_VIEWER_BASE_URL: https://${API_DOMAIN:?Set API_DOMAIN in .env.production}
+      BROWSER_CDP_HOST: claude-browser-host
+    depends_on:
+      claude-browser-host:
+        condition: service_healthy
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  claude-browser-host:
+    image: ghcr.io/iahmedd-k/univflow-browser-host:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      BROWSER_PROFILE_ROOT: /data/profiles
+      BROWSER_CDP_PORT_START: "12000"
+      BROWSER_CDP_PORT_COUNT: "200"
+      MAX_BROWSER_SESSIONS: ${MAX_BROWSER_SESSIONS:-1}
+      BROWSER_SERVICE_TOKEN: ${BROWSER_SERVICE_TOKEN:?Set BROWSER_SERVICE_TOKEN in .env.production}
+      BROWSER_VIEWER_SECRET: ${BROWSER_VIEWER_SECRET:?Set BROWSER_VIEWER_SECRET in .env.production}
+    volumes:
+      - claude_browser_profiles:/data/profiles
+    expose:
+      - "7900"
+      - "12000-12199"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7900/health', timeout=2)"
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?Set API_DOMAIN in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      claude-browser-host:
+        condition: service_healthy
+
+volumes:
+  claude_browser_profiles:
+  caddy_data:
+  caddy_config:

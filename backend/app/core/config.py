@@ -69,6 +69,12 @@ class Settings(BaseSettings):
 
     playwright_headless: bool = False
     playwright_browsers_path: str = "~/.cache/ms-playwright"
+    browser_service_url: str = "http://127.0.0.1:7900"
+    browser_service_token: str = ""
+    browser_viewer_secret: str = ""
+    browser_viewer_base_url: str = "http://localhost:7900"
+    browser_cdp_host: str = "127.0.0.1"
+    automatic_claude_solving: bool = False
 
     log_level: str = "INFO"
 

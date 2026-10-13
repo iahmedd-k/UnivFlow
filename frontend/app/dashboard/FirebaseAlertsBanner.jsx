@@ -59,37 +59,39 @@ export default function FirebaseAlertsBanner() {
     }
   };
 
+  const isAttendance = activeAlert?.type === 'attendance';
+
   return (
     <>
       {/* Real-time Floating In-App Alert Toast */}
       {activeAlert && (
-        <div className={`fixed right-6 top-6 z-[9999] w-[90%] max-w-[420px] animate-in slide-in-from-top-2 overflow-hidden rounded-xl border-2 bg-white shadow-xl duration-300 ${activeAlert.type === 'attendance' ? 'border-red-500' : 'border-indigo-500'}`}>
-          <div className={`flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-4 ${activeAlert.type === 'attendance' ? 'bg-red-50' : 'bg-indigo-50'}`}>
+        <div className={`fixed right-6 top-6 z-[9999] w-[90%] max-w-md animate-in slide-in-from-top-2 overflow-hidden rounded-xl border-2 bg-surface shadow-xl duration-300 ${isAttendance ? 'border-rose' : 'border-violet'}`}>
+          <div className={`flex items-center justify-between gap-3 border-b px-4 py-3 ${isAttendance ? 'border-rose-border bg-rose-bg' : 'border-violet/20 bg-violet-light'}`}>
             <div className="flex items-center gap-2.5">
               <span className="text-lg">
-                {activeAlert.type === 'attendance' ? '⚠️' : '🔔'}
+                {isAttendance ? '⚠️' : '🔔'}
               </span>
-              <strong className={`text-sm ${activeAlert.type === 'attendance' ? 'text-red-800' : 'text-indigo-800'}`}>
+              <strong className={`text-sm ${isAttendance ? 'text-rose' : 'text-violet-dark'}`}>
                 {activeAlert.title}
               </strong>
             </div>
             <button
               onClick={() => setActiveAlert(null)}
-              className="border-0 bg-transparent text-lg leading-none text-slate-500 hover:text-slate-800"
+              className="border-0 bg-transparent text-lg leading-none text-muted hover:text-ink"
               aria-label="Dismiss alert"
             >
               ×
             </button>
           </div>
-          <div className="p-5">
-            <p className="m-0 whitespace-pre-line text-[13px] leading-relaxed text-slate-700">
+          <div className="p-4">
+            <p className="m-0 whitespace-pre-line text-sm leading-relaxed text-body">
               {activeAlert.body}
             </p>
             <div className="mt-3 flex items-center justify-between gap-3">
-              <span className="text-xs text-slate-400">Received {activeAlert.timestamp}</span>
+              <span className="text-xs text-subtle">Received {activeAlert.timestamp}</span>
               <button
                 onClick={() => setActiveAlert(null)}
-                className="cursor-pointer rounded-md border border-slate-300 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                className="cursor-pointer rounded-md border border-border-input bg-surface-secondary px-3 py-1 text-xs font-medium text-nav hover:bg-surface-hover"
               >
                 Dismiss
               </button>
@@ -100,14 +102,14 @@ export default function FirebaseAlertsBanner() {
 
       {/* Keep notification opt-in available without displacing page content. */}
       {permission !== 'granted' && (
-        <aside className="fixed bottom-5 right-5 z-50 flex max-w-md items-start gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-indigo-50 text-indigo-600"><Icon name="bell" size={17} /></span>
+        <aside className="fixed bottom-5 right-5 z-50 flex max-w-md items-start gap-3 rounded-xl border border-border bg-surface p-4 shadow-xl">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-violet-light text-violet"><Icon name="bell" size={17} /></span>
           <div className="min-w-0 flex-1">
-            <strong className="text-sm font-semibold text-slate-900">{permission === 'denied' ? 'Desktop alerts are blocked' : 'Get class reminders'}</strong>
-            <p className="mt-1 text-xs leading-relaxed text-slate-600">{permission === 'denied' ? 'Allow notifications in your browser settings to receive attendance and class reminders.' : 'Optional reminders for attendance warnings and upcoming classes.'}</p>
+            <strong className="text-sm font-semibold text-ink">{permission === 'denied' ? 'Desktop alerts are blocked' : 'Get class reminders'}</strong>
+            <p className="mt-1 text-xs leading-relaxed text-muted">{permission === 'denied' ? 'Allow notifications in your browser settings to receive attendance and class reminders.' : 'Optional reminders for attendance warnings and upcoming classes.'}</p>
           </div>
           {permission !== 'denied' && (
-            <button className="shrink-0 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50" onClick={handleEnableAlerts} disabled={busy}>
+            <button className="shrink-0 rounded-lg bg-violet px-3 py-2 text-xs font-semibold text-white hover:bg-violet-dark disabled:opacity-50" onClick={handleEnableAlerts} disabled={busy}>
               {busy ? 'Enabling…' : 'Enable alerts'}
             </button>
           )}

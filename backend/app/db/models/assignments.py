@@ -4,9 +4,11 @@ from .enums import *
 
 class Assignment(Base):
     __tablename__ = "assignments"
+    __table_args__ = (UniqueConstraint("user_id", "external_id", name="uq_assignments_user_external_id"),)
 
     id = Column(Integer, primary_key=True, index=True)
-    external_id = Column(String(255), unique=True, nullable=False, index=True)
+    user_id = Column(String(255), nullable=False, default="legacy")
+    external_id = Column(String(255), nullable=False, index=True)
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
     title = Column(String(500), nullable=False)
     work_type = Column(String(50), nullable=True)
@@ -26,6 +28,26 @@ class Assignment(Base):
     materials = relationship("AssignmentMaterial", back_populates="assignment")
     solution = relationship("AssignmentSolution", back_populates="assignment", uselist=False)
     submission = relationship("Submission", back_populates="assignment", uselist=False)
+    automation_jobs = relationship("BrowserAutomationJob", back_populates="assignment")
+
+
+class BrowserAutomationJob(Base):
+    __tablename__ = "browser_automation_jobs"
+    __table_args__ = (
+        UniqueConstraint("user_id", "assignment_id", name="uq_browser_jobs_user_assignment"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(255), nullable=False, index=True)
+    assignment_id = Column(Integer, ForeignKey("assignments.id"), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="pending")
+    attempts = Column(Integer, nullable=False, default=0)
+    queued_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    started_at = Column(DateTime(timezone=True))
+    finished_at = Column(DateTime(timezone=True))
+    error = Column(Text)
+
+    assignment = relationship("Assignment", back_populates="automation_jobs")
 
 
 class AssignmentMaterial(Base):
@@ -48,6 +70,7 @@ class AssignmentTemplate(Base):
     __tablename__ = "assignment_templates"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(255), nullable=False, default="legacy", index=True)
     name = Column(String(255), nullable=False)
     description = Column(Text)
     google_doc_id = Column(String(255), nullable=False)

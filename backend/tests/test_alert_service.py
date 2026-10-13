@@ -341,3 +341,127 @@ def test_email_builders_clean_typography():
     assert "Data Structures" in html_gcr
     assert "View in Google Classroom" in html_gcr
     assert "[Uniflow Deadline Notice]" in text_gcr
+
+
+@patch("app.services.alert_service.send_email", return_value=True)
+def test_daily_morning_digest_generation_and_idempotency(mock_send, db_session):
+    from app.db.models import Setting
+    db_session.add(Setting(key="notification_email_default", value="ahmed9171496@gmail.com"))
+
+    # Add course & timetable entry for Monday
+    course = Course(id=1, external_id="c1", name="Deep Learning")
+    db_session.add(course)
+    db_session.commit()
+
+    att = AttendanceRecord(
+        id=1, external_id="a1", course_id=1,
+        subject="Deep Learning",
+        percentage=60.0, attended=6, total=10
+    )
+    tt = TimetableEntry(
+        id=1, external_id="tt1", subject="Deep Learning",
+        weekday=0, start_time="09:00", end_time="10:00", room="Room 101", teacher="Dr. Imran"
+    )
+    db_session.add_all([att, tt])
+    db_session.commit()
+
+    service = AlertService(db_session)
+    monday = date(2026, 10, 12)
+
+    # 1. First run: should dispatch email
+    digest = service.generate_daily_morning_digest(user_id="dev_student_user", target_date=monday, send_immediately=True)
+    assert digest is not None
+    assert digest["classes_count"] == 1
+    assert digest["urgent_warnings"] == 1
+    assert digest["recipient"] == "ahmed9171496@gmail.com"
+    assert digest["status"] == "sent"
+    mock_send.assert_called_once()
+
+    # 2. Second run on same day: idempotency enforces strictly once per day!
+    mock_send.reset_mock()
+    digest_again = service.generate_daily_morning_digest(user_id="dev_student_user", target_date=monday, send_immediately=True)
+    assert digest_again is None
+    mock_send.assert_not_called()
+
+
+@patch("app.services.alert_service.send_email", return_value=True)
+def test_timetable_20m_and_5m_reminders(mock_send, db_session):
+    tt = TimetableEntry(
+        id=1, external_id="tt1", subject="Operating Systems",
+        weekday=0, start_time="10:00", end_time="11:00", room="Lab 2", teacher="Engr. Farooq"
+    )
+    db_session.add(tt)
+    db_session.commit()
+
+    service = AlertService(db_session)
+
+    # 1. At 09:40 (20 minutes before 10:00)
+    sim_20m = datetime(2026, 10, 12, 9, 40, 0, tzinfo=ZoneInfo("Asia/Karachi"))
+    reminders_20m = service.generate_upcoming_class_reminders(user_id="dev_student_user", target_dt=sim_20m, send_immediately=True)
+    assert len(reminders_20m) == 1
+    assert reminders_20m[0]["milestone"] == "20m"
+    assert reminders_20m[0]["minutes_left"] == 20
+    assert mock_send.call_count == 1
+
+    # Idempotency check: second check within 20m window doesn't repeat
+    reminders_20m_dup = service.generate_upcoming_class_reminders(user_id="dev_student_user", target_dt=sim_20m, send_immediately=True)
+    assert len(reminders_20m_dup) == 0
+
+    # 2. At 09:55 (5 minutes before 10:00)
+    mock_send.reset_mock()
+    sim_5m = datetime(2026, 10, 12, 9, 55, 0, tzinfo=ZoneInfo("Asia/Karachi"))
+    reminders_5m = service.generate_upcoming_class_reminders(user_id="dev_student_user", target_dt=sim_5m, send_immediately=True)
+    assert len(reminders_5m) == 1
+    assert reminders_5m[0]["milestone"] == "5m"
+    assert reminders_5m[0]["minutes_left"] == 5
+    assert mock_send.call_count == 1
+
+
+@patch("app.services.alert_service.send_email", return_value=True)
+def test_timetable_active_hours_restriction(mock_send, db_session):
+    tt = TimetableEntry(
+        id=1, external_id="tt1", subject="Late Subject",
+        weekday=0, start_time="23:00", end_time="23:50", room="Lab 2"
+    )
+    db_session.add(tt)
+    db_session.commit()
+
+    service = AlertService(db_session)
+    # Late night test (22:40 = 10:40 PM): outside 7am-10pm window
+    sim_late = datetime(2026, 10, 12, 22, 40, 0, tzinfo=ZoneInfo("Asia/Karachi"))
+    reminders = service.generate_upcoming_class_reminders(user_id="dev_student_user", target_dt=sim_late, send_immediately=True)
+    assert len(reminders) == 0
+    mock_send.assert_not_called()
+
+
+@patch("app.services.alert_service.send_email", return_value=True)
+def test_new_assignment_notification_and_deduplication(mock_send, db_session):
+    course = Course(id=1, external_id="c1", name="Artificial Intelligence")
+    db_session.add(course)
+    db_session.commit()
+
+    assignment = Assignment(
+        id=42, external_id="work-42", course_id=1,
+        title="Project Proposal",
+        description="Submit 2-page project outline",
+        work_type="ASSIGNMENT",
+        state=CourseworkState.PUBLISHED,
+        submission_state=SubmissionState.CREATED,
+    )
+    db_session.add(assignment)
+    db_session.commit()
+
+    service = AlertService(db_session)
+
+    # 1. First trigger on new task: sends 1 email
+    res1 = service.notify_new_assignment(assignment, user_id="dev_student_user", send_immediately=True)
+    assert res1 is not None
+    assert res1["title"] == "Project Proposal"
+    assert mock_send.call_count == 1
+
+    # 2. Second trigger on same task: skips cleanly (strictly 1 email)
+    mock_send.reset_mock()
+    res2 = service.notify_new_assignment(assignment, user_id="dev_student_user", send_immediately=True)
+    assert res2 is None
+    mock_send.assert_not_called()
+

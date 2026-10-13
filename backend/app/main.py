@@ -10,6 +10,7 @@ if sys.platform == "win32":
 from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.logging import logger
@@ -134,5 +135,6 @@ def root():
 
 
 @app.get("/health")
-def health_check():
-    return {"status": "healthy", "service": settings.app_name}
+def health_check(db: Session = Depends(get_db)):
+    db.execute(text("SELECT 1"))
+    return {"status": "healthy", "service": settings.app_name, "database": "connected"}

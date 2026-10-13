@@ -43,11 +43,17 @@ from app.services.alert_service import (
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 
-def _get_semester_start_dt(db: Session, override: Optional[str] = None) -> Optional[datetime]:
+def _get_semester_start_dt(
+    db: Session,
+    override: Optional[str] = None,
+    user_id: str = "legacy",
+) -> Optional[datetime]:
     """Get semester start date from database settings if configured"""
     val = override
     if not val:
-        setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
+        setting = db.query(Setting).filter(
+            Setting.key == f"classroom:{user_id}:semester_start_date"
+        ).first()
         if setting and setting.value:
             val = setting.value.strip().replace('"', '')
     if val:
@@ -84,6 +90,7 @@ def get_dashboard_overview(
     db: Session = Depends(get_db),
     user: dict = Depends(require_current_user),
 ):
+    user_id = str((user or {}).get("id") or "dev_student_user")
     course_repo = CourseRepository(db)
     assignment_repo = AssignmentRepository(db)
     schedule_repo = ClassScheduleRepository(db)
@@ -92,13 +99,13 @@ def get_dashboard_overview(
     quiz_repo = QuizRepository(db)
     agent_repo = AgentRunRepository(db)
 
-    since_dt = _get_semester_start_dt(db, since)
+    since_dt = _get_semester_start_dt(db, since, user_id)
     
-    courses = course_repo.get_all()
+    courses = course_repo.get_all(user_id=user_id)
     if since_dt:
         courses = [c for c in courses if (c.created_at and _is_on_or_after(c.created_at, since_dt)) or (c.updated_at and _is_on_or_after(c.updated_at, since_dt)) or c.created_at is None]
     
-    all_assignments = assignment_repo.get_all()
+    all_assignments = assignment_repo.get_all(user_id=user_id)
     if since_dt:
         all_assignments = [a for a in all_assignments if 
             (a.due_at and _is_on_or_after(a.due_at, since_dt)) or 
@@ -106,11 +113,18 @@ def get_dashboard_overview(
             (a.due_at is None and (a.created_at and _is_on_or_after(a.created_at, since_dt) or a.updated_at and _is_on_or_after(a.updated_at, since_dt)))
         ]
     
-    upcoming_schedules = schedule_repo.get_upcoming(7)
+    owned_course_ids = {course.id for course in courses}
+    upcoming_schedules = [
+        schedule for schedule in schedule_repo.get_upcoming(7)
+        if schedule.course_id in owned_course_ids
+    ]
     if since_dt:
         upcoming_schedules = [s for s in upcoming_schedules if s.date and _is_on_or_after(s.date, since_dt)]
     
-    attendance_records = attendance_repo.get_all()
+    attendance_records = [
+        record for record in attendance_repo.get_all()
+        if record.course_id in owned_course_ids
+    ]
     if since_dt:
         attendance_records = [
             r for r in attendance_records
@@ -146,7 +160,6 @@ def get_dashboard_overview(
     active_courses = [c for c in courses if not c.course_state or c.course_state.upper() == "ACTIVE"]
     avg_attendance = sum(r.percentage for r in attendance_records) / len(attendance_records) if attendance_records else 0
 
-    user_id = str((user or {}).get("id") or "dev_student_user")
     academic_key = f"portal:{user_id}:portal_academic_summary"
     academic_setting = db.query(Setting).filter(Setting.key == academic_key).first()
     academic_summary = None
@@ -158,7 +171,10 @@ def get_dashboard_overview(
 
     # AI Agent Solver & 4-Agent Crew Activity
     course_map = {c.id: c.name for c in courses}
-    all_solutions = db.query(AssignmentSolution).all()
+    assignment_ids = [assignment.id for assignment in all_assignments]
+    all_solutions = db.query(AssignmentSolution).filter(
+        AssignmentSolution.assignment_id.in_(assignment_ids)
+    ).all() if assignment_ids else []
     solution_by_assign = {s.assignment_id: s for s in all_solutions}
 
     active_crew_runs = []
@@ -239,18 +255,25 @@ def get_upcoming_items(
     db: Session = Depends(get_db),
     user: dict = Depends(require_current_user),
 ):
+    user_id = str((user or {}).get("id") or "dev_student_user")
     schedule_repo = ClassScheduleRepository(db)
     assignment_repo = AssignmentRepository(db)
     exam_repo = ExamRepository(db)
     quiz_repo = QuizRepository(db)
 
-    since_dt = _get_semester_start_dt(db, since)
+    since_dt = _get_semester_start_dt(db, since, user_id)
     
-    schedules = schedule_repo.get_upcoming(days)
+    owned_course_ids = {
+        course.id for course in CourseRepository(db).get_all(user_id=user_id)
+    }
+    schedules = [
+        schedule for schedule in schedule_repo.get_upcoming(days)
+        if schedule.course_id in owned_course_ids
+    ]
     if since_dt:
         schedules = [s for s in schedules if s.date and _is_on_or_after(s.date, since_dt)]
     
-    all_assignments = assignment_repo.get_all()
+    all_assignments = assignment_repo.get_all(user_id=user_id)
     if since_dt:
         all_assignments = [a for a in all_assignments if 
             (a.due_at and _is_on_or_after(a.due_at, since_dt)) or 
@@ -340,13 +363,22 @@ def get_attendance_summary(
 
     # This endpoint serves the portal's current cumulative snapshot. Filtering
     # it by record sync timestamps would incorrectly drop courses registered earlier.
-    records = attendance_repo.get_all()
-    courses = course_repo.get_all()
+    courses = course_repo.get_all(user_id=user_id)
     course_by_id = {course.id: course for course in courses}
+    owned_course_ids = set(course_by_id)
+    records = [
+        record for record in attendance_repo.get_all()
+        if record.course_id in owned_course_ids
+    ]
+    owned_subjects = {
+        normalize_subject_name(course.name)
+        for course in courses
+        if course.name
+    }
     weekly_classes = {}
     for entry in db.query(TimetableEntry).all():
         subject_key = normalize_subject_name(entry.subject)
-        if subject_key:
+        if subject_key and subject_key in owned_subjects:
             weekly_classes.setdefault(subject_key, set()).add(
                 (entry.weekday, entry.start_time, entry.end_time)
             )
@@ -426,10 +458,11 @@ def get_assignments_by_status(
     db: Session = Depends(get_db),
     user: dict = Depends(require_current_user),
 ):
+    user_id = str((user or {}).get("id") or "dev_student_user")
     assignment_repo = AssignmentRepository(db)
-    all_assignments = assignment_repo.get_all()
+    all_assignments = assignment_repo.get_all(user_id=user_id)
     
-    since_dt = _get_semester_start_dt(db, since)
+    since_dt = _get_semester_start_dt(db, since, user_id)
     if since_dt:
         all_assignments = [a for a in all_assignments if (a.due_at and a.due_at >= since_dt) or (a.created_at and a.created_at >= since_dt) or (a.updated_at and a.updated_at >= since_dt) or a.due_at is None]
 

@@ -1,0 +1,18 @@
+FROM mcr.microsoft.com/playwright/python:v1.63.0-noble
+
+ENV PYTHONUNBUFFERED=1 \
+    BROWSER_PROFILE_ROOT=/data/profiles \
+    NOVNC_ROOT=/usr/share/novnc \
+    PYTHONPATH=/app/backend
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends xvfb fluxbox x11vnc novnc \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir "fastapi==0.111.0" "uvicorn[standard]==0.30.1"
+
+WORKDIR /app/backend
+COPY app/services/browser_host.py /app/backend/app/services/browser_host.py
+
+EXPOSE 7900 12000-21999
+CMD ["python", "/app/backend/app/services/browser_host.py"]

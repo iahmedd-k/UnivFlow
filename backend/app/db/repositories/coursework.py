@@ -13,11 +13,11 @@ class CourseRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_by_external_id(self, external_id: str) -> Optional[Course]:
-        return self.db.query(Course).filter(Course.external_id == external_id).first()
+    def get_by_external_id(self, external_id: str, user_id: str = "legacy") -> Optional[Course]:
+        return self.db.query(Course).filter(Course.external_id == external_id, Course.user_id == user_id).first()
 
     def create_or_update(self, course_data: dict) -> Course:
-        course = self.get_by_external_id(course_data["external_id"])
+        course = self.get_by_external_id(course_data["external_id"], course_data.get("user_id", "legacy"))
         if course:
             for key, value in course_data.items():
                 setattr(course, key, value)
@@ -35,19 +35,19 @@ class CourseRepository:
         self.db.refresh(course)
         return course
 
-    def get_all(self) -> List[Course]:
-        return self.db.query(Course).all()
+    def get_all(self, user_id: str = "legacy") -> List[Course]:
+        return self.db.query(Course).filter(Course.user_id == user_id).all()
 
 
 class AssignmentRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_by_external_id(self, external_id: str) -> Optional[Assignment]:
-        return self.db.query(Assignment).filter(Assignment.external_id == external_id).first()
+    def get_by_external_id(self, external_id: str, user_id: str = "legacy") -> Optional[Assignment]:
+        return self.db.query(Assignment).filter(Assignment.external_id == external_id, Assignment.user_id == user_id).first()
 
-    def get_by_id(self, assignment_id: int) -> Optional[Assignment]:
-        return self.db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    def get_by_id(self, assignment_id: int, user_id: str = "legacy") -> Optional[Assignment]:
+        return self.db.query(Assignment).filter(Assignment.id == assignment_id, Assignment.user_id == user_id).first()
 
     def create(self, assignment_data: dict) -> Assignment:
         assignment = Assignment(**assignment_data)
@@ -57,7 +57,7 @@ class AssignmentRepository:
         return assignment
 
     def create_or_update(self, assignment_data: dict) -> Assignment:
-        assignment = self.get_by_external_id(assignment_data["external_id"])
+        assignment = self.get_by_external_id(assignment_data["external_id"], assignment_data.get("user_id", "legacy"))
         if assignment:
             for key, value in assignment_data.items():
                 setattr(assignment, key, value)
@@ -74,8 +74,8 @@ class AssignmentRepository:
     def get_by_status(self, status: str) -> List[Assignment]:
         return self.db.query(Assignment).filter(Assignment.status == status).all()
 
-    def get_all(self) -> List[Assignment]:
-        return self.db.query(Assignment).order_by(Assignment.due_at.asc().nullslast()).all()
+    def get_all(self, user_id: str = "legacy") -> List[Assignment]:
+        return self.db.query(Assignment).filter(Assignment.user_id == user_id).order_by(Assignment.due_at.asc().nullslast()).all()
 
 
 class AssignmentMaterialRepository:
@@ -98,24 +98,33 @@ class AssignmentMaterialRepository:
 
 
 class AssignmentTemplateRepository:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, user_id: str = "legacy"):
         self.db = db
+        self.user_id = user_id
 
     def get_all(self) -> List:
         from app.db.models import AssignmentTemplate
-        return self.db.query(AssignmentTemplate).all()
+        return self.db.query(AssignmentTemplate).filter(
+            AssignmentTemplate.user_id == self.user_id,
+        ).all()
 
     def get_default(self):
         from app.db.models import AssignmentTemplate
-        return self.db.query(AssignmentTemplate).filter(AssignmentTemplate.is_default == True).first()
+        return self.db.query(AssignmentTemplate).filter(
+            AssignmentTemplate.user_id == self.user_id,
+            AssignmentTemplate.is_default == True,
+        ).first()
 
     def get_by_id(self, template_id: int):
         from app.db.models import AssignmentTemplate
-        return self.db.query(AssignmentTemplate).filter(AssignmentTemplate.id == template_id).first()
+        return self.db.query(AssignmentTemplate).filter(
+            AssignmentTemplate.id == template_id,
+            AssignmentTemplate.user_id == self.user_id,
+        ).first()
 
     def create(self, template_data: dict):
         from app.db.models import AssignmentTemplate
-        template = AssignmentTemplate(**template_data)
+        template = AssignmentTemplate(user_id=self.user_id, **template_data)
         self.db.add(template)
         self.db.commit()
         self.db.refresh(template)
@@ -141,7 +150,9 @@ class AssignmentTemplateRepository:
 
     def set_default(self, template_id: int):
         from app.db.models import AssignmentTemplate
-        self.db.query(AssignmentTemplate).update({AssignmentTemplate.is_default: False})
+        self.db.query(AssignmentTemplate).filter(
+            AssignmentTemplate.user_id == self.user_id,
+        ).update({AssignmentTemplate.is_default: False})
         template = self.get_by_id(template_id)
         if template:
             template.is_default = True

@@ -13,16 +13,16 @@ class GoogleCredentialRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def get(self) -> Optional[GoogleCredential]:
-        return self.db.query(GoogleCredential).first()
+    def get(self, user_id: str = "legacy") -> Optional[GoogleCredential]:
+        return self.db.query(GoogleCredential).filter(GoogleCredential.user_id == user_id).first()
 
-    def create_or_update(self, credential_data: dict) -> GoogleCredential:
-        cred = self.get()
+    def create_or_update(self, user_id: str, credential_data: dict) -> GoogleCredential:
+        cred = self.get(user_id)
         if cred:
             for key, value in credential_data.items():
                 setattr(cred, key, value)
         else:
-            cred = GoogleCredential(**credential_data)
+            cred = GoogleCredential(user_id=user_id, **credential_data)
             self.db.add(cred)
         self.db.commit()
         self.db.refresh(cred)

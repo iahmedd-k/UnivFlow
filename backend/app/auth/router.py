@@ -54,6 +54,15 @@ _cached_google_emails: Dict[str, str] = {}
 _rate_limit_records: Dict[str, list] = {}
 
 
+def _google_owner_id(clerk_user: Optional[dict], *, required: bool = False) -> Optional[str]:
+    user_id = str((clerk_user or {}).get("id") or "")
+    if user_id:
+        return user_id
+    if required:
+        raise HTTPException(status_code=401, detail="Sign in before connecting Google Classroom.")
+    return None
+
+
 def _check_rate_limit(key: str, limit: int = 20, window_sec: int = 60) -> None:
     now = time.time()
     records = _rate_limit_records.get(key, [])
@@ -92,19 +101,15 @@ def get_auth_status(
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """Check overall auth status (Clerk user & Google Classroom connection) - Fast Per-User Cached"""
-    user_id = clerk_user.get("id") if clerk_user else "default"
+    user_id = _google_owner_id(clerk_user)
     repo = GoogleCredentialRepository(db)
-    cred = repo.get()
+    cred = repo.get(user_id) if user_id else None
     google_connected = cred is not None and bool(cred.access_token)
-    google_email = _cached_google_emails.get(user_id)
+    google_email = _cached_google_emails.get(user_id) if user_id else None
 
     if google_connected and not google_email:
-        # 1. Fast check in Setting table
-        setting_key = f"google_connected_email_{user_id}" if user_id != "default" else "google_connected_email"
+        setting_key = f"google_connected_email_{user_id}"
         email_setting = db.query(Setting).filter(Setting.key == setting_key).first()
-        if not email_setting and user_id != "default":
-            # fallback to legacy key if user-specific key not yet set
-            email_setting = db.query(Setting).filter(Setting.key == "google_connected_email").first()
 
         if email_setting and email_setting.value:
             google_email = email_setting.value
@@ -187,11 +192,13 @@ def sync_user(
 def google_auth(
     request: Request,
     redirect_to: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Generate Google OAuth authorization URL with CSRF state protection"""
     client_ip = request.client.host if request.client else "unknown"
     _check_rate_limit(f"google-auth:{client_ip}", limit=20, window_sec=60)
+    user_id = _google_owner_id(clerk_user, required=True)
 
     # If Google redirected directly back to /auth/google with code or error
     if request.query_params.get("code") or request.query_params.get("error"):
@@ -205,6 +212,7 @@ def google_auth(
         value=json.dumps({
             "created_at": time.time(),
             "redirect_to": _safe_oauth_redirect_to(redirect_to),
+            "user_id": user_id,
         }),
         description="OAuth CSRF State Token"
     )
@@ -240,6 +248,7 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
     error = request.query_params.get("error")
     state = request.query_params.get("state")
     redirect_to = None
+    user_id = None
 
     if error:
         logger.error(f"Google OAuth error received: {error}")
@@ -248,37 +257,53 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
             state_record = db.query(Setting).filter(Setting.key == state_key).first()
             if state_record:
                 try:
-                    redirect_to = _safe_oauth_redirect_to(json.loads(state_record.value).get("redirect_to"))
+                    oauth_state = json.loads(state_record.value)
+                    redirect_to = _safe_oauth_redirect_to(oauth_state.get("redirect_to"))
+                    user_id = oauth_state.get("user_id")
                 except (TypeError, json.JSONDecodeError):
                     pass
                 db.delete(state_record)
                 db.commit()
         return RedirectResponse(
-            url=_oauth_frontend_redirect(redirect_to, google_error=error),
+            url=_oauth_frontend_redirect(
+                redirect_to,
+                google_error=error if user_id else "invalid_oauth_state",
+            ),
             status_code=302
         )
 
     if not code:
         raise HTTPException(status_code=400, detail="Missing authorization code")
 
-    # Validate CSRF State Token if present
-    if state:
-        state_key = f"oauth_csrf_state_{state}"
-        state_record = db.query(Setting).filter(Setting.key == state_key).first()
-        if state_record:
-            try:
-                redirect_to = _safe_oauth_redirect_to(json.loads(state_record.value).get("redirect_to"))
-            except (TypeError, json.JSONDecodeError):
-                redirect_to = None
-            # Clean up used state token
-            db.delete(state_record)
-            db.commit()
-        elif not (settings.environment == "development" or settings.debug):
-            logger.warning(f"OAuth state mismatch or expired: {state}")
-            return RedirectResponse(
-                url=_oauth_frontend_redirect(google_error="invalid_oauth_state"),
-                status_code=302
-            )
+    if not state:
+        return RedirectResponse(
+            url=_oauth_frontend_redirect(google_error="invalid_oauth_state"),
+            status_code=302,
+        )
+    state_key = f"oauth_csrf_state_{state}"
+    state_record = db.query(Setting).filter(Setting.key == state_key).first()
+    if not state_record:
+        logger.warning("Google OAuth state was missing or expired.")
+        return RedirectResponse(
+            url=_oauth_frontend_redirect(google_error="invalid_oauth_state"),
+            status_code=302,
+        )
+    try:
+        oauth_state = json.loads(state_record.value)
+        redirect_to = _safe_oauth_redirect_to(oauth_state.get("redirect_to"))
+        user_id = str(oauth_state.get("user_id") or "")
+        created_at = float(oauth_state.get("created_at") or 0)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        user_id = ""
+        created_at = 0
+    db.delete(state_record)
+    db.commit()
+    if not user_id or time.time() - created_at > 900:
+        logger.warning("Google OAuth state was invalid or expired.")
+        return RedirectResponse(
+            url=_oauth_frontend_redirect(redirect_to, google_error="invalid_oauth_state"),
+            status_code=302,
+        )
 
     try:
         # Direct, resilient token exchange with Google
@@ -310,7 +335,7 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
 
         # Get existing credential if any to retain refresh token if not in response
         repo = GoogleCredentialRepository(db)
-        existing_cred = repo.get()
+        existing_cred = repo.get(user_id)
         if not refresh_token and existing_cred:
             refresh_token = existing_cred.refresh_token
 
@@ -338,7 +363,12 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
             "scopes": json.dumps(scopes.split()) if isinstance(scopes, str) else json.dumps(scopes),
             "expiry": expiry,
         }
-        repo.create_or_update(cred_data)
+        repo.create_or_update(user_id, cred_data)
+        if user_email:
+            email_key = f"google_connected_email_{user_id}"
+            db.merge(Setting(key=email_key, value=user_email, description="Google OAuth Account Email"))
+            db.commit()
+            _cached_google_emails[user_id] = user_email
 
         logger.info(f"Google OAuth connected successfully for {user_email or 'User'}")
 
@@ -362,13 +392,18 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
 
 @router.post("/google/disconnect")
 @router.post("/logout")
-def logout(db: Session = Depends(get_db)):
+def logout(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Disconnect Google account"""
+    user_id = _google_owner_id(clerk_user, required=True)
     repo = GoogleCredentialRepository(db)
-    cred = repo.get()
+    cred = repo.get(user_id)
     if cred:
         db.delete(cred)
         db.commit()
+    _cached_google_emails.pop(user_id, None)
     return {"message": "Google account disconnected successfully"}
 
 
@@ -379,7 +414,8 @@ def get_current_user(
 ):
     """Get current user info combining Clerk profile and Google Classroom state"""
     repo = GoogleCredentialRepository(db)
-    cred = repo.get()
+    user_id = _google_owner_id(clerk_user)
+    cred = repo.get(user_id) if user_id else None
     google_data = None
     if cred:
         try:
@@ -444,6 +480,14 @@ def set_notification_email(
     else:
         setting = Setting(key=key, value=payload.email, description="User notification email for alerts")
         db.add(setting)
+
+    # Also sync default key so background scheduler jobs and alerts always reach the user's configured address
+    default_setting = db.query(Setting).filter(Setting.key == "notification_email_default").first()
+    if default_setting:
+        default_setting.value = payload.email
+    else:
+        db.add(Setting(key="notification_email_default", value=payload.email, description="Default notification email for alerts"))
+
     db.commit()
     return NotificationEmailResponse(email=payload.email, message="Notification email updated successfully")
 
@@ -459,5 +503,8 @@ def delete_notification_email(
     setting = db.query(Setting).filter(Setting.key == key).first()
     if setting:
         db.delete(setting)
-        db.commit()
+    default_setting = db.query(Setting).filter(Setting.key == "notification_email_default").first()
+    if default_setting:
+        db.delete(default_setting)
+    db.commit()
     return NotificationEmailResponse(email=None, message="Notification email removed")

@@ -16,12 +16,14 @@ from app.db.repositories import CourseRepository, ClassScheduleRepository, Assig
 from app.db.models import (
     Course, Assignment, AssignmentSolution, AssignmentStatus,
     Submission, SubmissionState, ClassSchedule, Announcement,
-    Setting, AssignmentTemplate
+    Setting, AssignmentTemplate, BrowserAutomationJob
 )
 from app.core.logging import logger
+from app.core.config import settings
 from app.services.classroom_sync import get_classroom_service
 from app.services.google_docs import get_google_docs_service
 from app.auth.clerk_auth import get_current_user_optional
+from app.services.browser_sessions import BrowserSessionClient
 import time
 import threading
 
@@ -41,6 +43,25 @@ _sync_lock_mutex = threading.Lock()
 _students_cache: Dict[str, Tuple[float, list]] = {}  # key -> (timestamp, data)
 
 
+def _classroom_user_id(clerk_user: Optional[dict]) -> str:
+    user_id = str((clerk_user or {}).get("id") or "")
+    if user_id:
+        return user_id
+    if settings.environment == "development":
+        return "dev_student_user"
+    raise HTTPException(status_code=401, detail="Sign in to access your Google Classroom data.")
+
+
+def _get_owned_assignment(db: Session, assignment_id: int, user_id: str) -> Assignment:
+    assignment = db.query(Assignment).filter(
+        Assignment.id == assignment_id,
+        Assignment.user_id == user_id,
+    ).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    return assignment
+
+
 def _get_user_lock(user_id: str) -> threading.Lock:
     with _sync_lock_mutex:
         if user_id not in _classroom_sync_locks:
@@ -51,12 +72,12 @@ def _get_user_lock(user_id: str) -> threading.Lock:
 def _get_semester_start_dt(db: Session, override: Optional[str] = None, user_id: str = "default") -> datetime:
     val = override
     if not val:
-        # Check user specific first, then global fallback
-        setting = None
-        if user_id != "default":
-            setting = db.query(Setting).filter(Setting.key == f"classroom:{user_id}:semester_start_date").first()
-        if not setting:
-            setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
+        setting_key = (
+            f"classroom:{user_id}:semester_start_date"
+            if user_id != "default"
+            else "semester_start_date"
+        )
+        setting = db.query(Setting).filter(Setting.key == setting_key).first()
         if setting and setting.value:
             val = setting.value.strip().replace('"', '')
     if val:
@@ -80,12 +101,10 @@ def get_classroom_settings(
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """Get Classroom synchronization and semester settings (isolated per-user)"""
-    user_id = clerk_user.get("id") if clerk_user else "default"
-    setting = None
-    if user_id != "default":
-        setting = db.query(Setting).filter(Setting.key == f"classroom:{user_id}:semester_start_date").first()
-    if not setting:
-        setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
+    user_id = _classroom_user_id(clerk_user)
+    setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:semester_start_date"
+    ).first()
     return {
         "semester_start_date": setting.value.strip().replace('"', '') if setting and setting.value else "2026-09-01T00:00:00+00:00"
     }
@@ -99,9 +118,9 @@ def save_classroom_settings(
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """Save semester start date setting per user"""
-    user_id = clerk_user.get("id") if clerk_user else "default"
+    user_id = _classroom_user_id(clerk_user)
     start_date = payload.get("semester_start_date")
-    setting_key = f"classroom:{user_id}:semester_start_date" if user_id != "default" else "semester_start_date"
+    setting_key = f"classroom:{user_id}:semester_start_date"
     setting = db.query(Setting).filter(Setting.key == setting_key).first()
     if not setting:
         setting = Setting(key=setting_key, description=f"Semester start date filter for user {user_id}")
@@ -124,13 +143,16 @@ def get_classroom_announcements(
     search: Optional[str] = Query(None, max_length=200),
     since: Optional[str] = Query(None),
     db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
+    user_id = _classroom_user_id(clerk_user)
     # Only return announcements from active current-semester courses
     query = (
         db.query(Announcement)
         .join(Course, Announcement.course_id == Course.id)
         .filter(
             Announcement.source.like("Google Classroom%"),
+            Course.user_id == user_id,
             Course.course_state.in_(["ACTIVE", "active", ""]) | Course.course_state.is_(None)
         )
     )
@@ -140,13 +162,19 @@ def get_classroom_announcements(
         match = f"%{search}%"
         query = query.filter((Announcement.title.ilike(match)) | (Announcement.content.ilike(match)))
 
-    since_dt = _get_semester_start_dt(db, since)
+    since_dt = _get_semester_start_dt(db, since, user_id=user_id)
     if since_dt:
         query = query.filter(Announcement.published_at >= since_dt)
 
     posts = query.order_by(Announcement.published_at.desc().nullslast()).all()
     course_ids = {post.course_id for post in posts if post.course_id is not None}
-    courses = {course.id: course.name for course in db.query(Course).filter(Course.id.in_(course_ids)).all()} if course_ids else {}
+    courses = {
+        course.id: course.name
+        for course in db.query(Course).filter(
+            Course.id.in_(course_ids),
+            Course.user_id == user_id,
+        ).all()
+    } if course_ids else {}
     return [
         {
             "id": post.id,
@@ -166,12 +194,14 @@ def get_classroom_announcements(
 def get_courses(
     active_only: bool = Query(True),
     since: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
-    query = db.query(Course)
+    user_id = _classroom_user_id(clerk_user)
+    query = db.query(Course).filter(Course.user_id == user_id)
     if active_only:
         query = query.filter(Course.course_state.in_(["ACTIVE", "active", ""]) | Course.course_state.is_(None))
-    since_dt = _get_semester_start_dt(db, since)
+    since_dt = _get_semester_start_dt(db, since, user_id=user_id)
     if since_dt:
         query = query.filter((Course.created_at >= since_dt) | (Course.updated_at >= since_dt) | Course.created_at.is_(None))
     courses = query.order_by(Course.name.asc()).all()
@@ -197,14 +227,16 @@ def get_courses(
 def get_course(
     course_id: int,
     since: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     repo = CourseRepository(db)
-    course = db.query(Course).filter(Course.id == course_id).first()
+    user_id = _classroom_user_id(clerk_user)
+    course = db.query(Course).filter(Course.id == course_id, Course.user_id == user_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
-    since_dt = _get_semester_start_dt(db, since)
+    since_dt = _get_semester_start_dt(db, since, user_id=user_id)
     if since_dt:
         if not (course.created_at and course.created_at >= since_dt) and \
            not (course.updated_at and course.updated_at >= since_dt) and \
@@ -319,13 +351,13 @@ def sync_classroom(
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """Trigger full Google Classroom sync from semester start date onwards with concurrency control"""
-    user_id = clerk_user.get("id") if clerk_user else "default"
+    user_id = _classroom_user_id(clerk_user)
     lock = _get_user_lock(user_id)
 
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="A synchronization is already running for your account.")
 
-    service = get_classroom_service(db)
+    service = get_classroom_service(db, user_id=user_id)
     if not service:
         lock.release()
         raise HTTPException(status_code=503, detail="Google Classroom not configured. Complete OAuth first.")
@@ -336,7 +368,7 @@ def sync_classroom(
     elif semester_start_date:
         start_date = semester_start_date
 
-    semester_key = f"classroom:{user_id}:semester_start_date" if user_id != "default" else "semester_start_date"
+    semester_key = f"classroom:{user_id}:semester_start_date"
     if start_date:
         setting = db.query(Setting).filter(Setting.key == semester_key).first()
         if not setting:
@@ -345,7 +377,7 @@ def sync_classroom(
         setting.value = str(start_date).strip().replace('"', '')
         db.commit()
 
-    status_key = f"classroom:{user_id}:sync_status" if user_id != "default" else "classroom_sync_status"
+    status_key = f"classroom:{user_id}:sync_status"
     run_status = db.query(Setting).filter(Setting.key == status_key).first()
     if not run_status:
         run_status = Setting(key=status_key, description="Most recent Google Classroom sync run")
@@ -358,7 +390,7 @@ def sync_classroom(
         sync_db = SessionLocal()
         u_lock = _get_user_lock(uid)
         try:
-            svc = get_classroom_service(sync_db)
+            svc = get_classroom_service(sync_db, user_id=uid)
             if svc:
                 result = svc.sync_all()
                 logger.info(f"Classroom sync result for {uid}: {result}")
@@ -387,13 +419,22 @@ def sync_classroom(
 
 
 @router.post("/sync/course/{course_external_id}", response_model=dict)
-def sync_single_course(course_external_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def sync_single_course(
+    course_external_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Sync a specific course by external ID"""
-    service = get_classroom_service(db)
+    user_id = _classroom_user_id(clerk_user)
+    service = get_classroom_service(db, user_id=user_id)
     if not service:
         raise HTTPException(status_code=503, detail="Google Classroom not configured")
 
-    course = db.query(Course).filter(Course.external_id == course_external_id).first()
+    course = db.query(Course).filter(
+        Course.external_id == course_external_id,
+        Course.user_id == user_id,
+    ).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found in local DB")
 
@@ -401,7 +442,7 @@ def sync_single_course(course_external_id: str, background_tasks: BackgroundTask
         from app.db.database import SessionLocal
         sync_db = SessionLocal()
         try:
-            svc = get_classroom_service(sync_db)
+            svc = get_classroom_service(sync_db, user_id=user_id)
             if svc:
                 api_course = svc.service.courses().get(id=course_external_id).execute()
                 svc._sync_course(api_course)
@@ -422,24 +463,20 @@ def sync_status(
     """Get sync status and stats isolated per user"""
     from sqlalchemy import func
     from app.db.models import Assignment, GoogleCredential
-    user_id = clerk_user.get("id") if clerk_user else "default"
+    user_id = _classroom_user_id(clerk_user)
 
-    course_count = db.query(func.count(Course.id)).scalar() or 0
-    assignment_count = db.query(func.count(Assignment.id)).scalar() or 0
+    course_count = db.query(func.count(Course.id)).filter(Course.user_id == user_id).scalar() or 0
+    assignment_count = db.query(func.count(Assignment.id)).filter(Assignment.user_id == user_id).scalar() or 0
 
-    cred = db.query(GoogleCredential).first()
+    cred = db.query(GoogleCredential).filter(GoogleCredential.user_id == user_id).first()
     has_creds = cred is not None
 
-    status_key = f"classroom:{user_id}:sync_status" if user_id != "default" else "classroom_sync_status"
+    status_key = f"classroom:{user_id}:sync_status"
     run = db.query(Setting).filter(Setting.key == status_key).first()
-    if not run and user_id != "default":
-        run = db.query(Setting).filter(Setting.key == "classroom_sync_status").first()
     sync_run = json.loads(run.value) if run and run.value else None
 
-    sem_key = f"classroom:{user_id}:semester_start_date" if user_id != "default" else "semester_start_date"
+    sem_key = f"classroom:{user_id}:semester_start_date"
     setting = db.query(Setting).filter(Setting.key == sem_key).first()
-    if not setting and user_id != "default":
-        setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
     semester_start = setting.value.strip().replace('"', '') if setting and setting.value else None
 
     return {
@@ -461,8 +498,17 @@ def get_course_assignments(
 ):
     """Get assignments for a specific course (from local DB)"""
     from app.db.models import Assignment
-    user_id = clerk_user.get("id") if clerk_user else "default"
-    query = db.query(Assignment).filter(Assignment.course_id == course_id)
+    user_id = _classroom_user_id(clerk_user)
+    owned_course = db.query(Course.id).filter(
+        Course.id == course_id,
+        Course.user_id == user_id,
+    ).first()
+    if not owned_course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    query = db.query(Assignment).filter(
+        Assignment.course_id == course_id,
+        Assignment.user_id == user_id,
+    )
     
     since_dt = _get_semester_start_dt(db, since, user_id=user_id)
     if since_dt:
@@ -492,19 +538,24 @@ def get_course_assignments(
 
 
 @router.get("/courses/{course_id}/students", response_model=List[dict])
-def get_course_students(course_id: int, db: Session = Depends(get_db)):
+def get_course_students(
+    course_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Get students for a course from Google Classroom API with in-memory TTL caching"""
-    cache_key = f"roster_{course_id}"
+    user_id = _classroom_user_id(clerk_user)
+    cache_key = f"roster_{user_id}_{course_id}"
     cached = _students_cache.get(cache_key)
     now = time.time()
     if cached and (now - cached[0] < 300):  # 5 minutes TTL
         return cached[1]
 
-    service = get_classroom_service(db)
+    service = get_classroom_service(db, user_id=user_id)
     if not service:
         raise HTTPException(status_code=503, detail="Google Classroom not configured")
 
-    course = db.query(Course).filter(Course.id == course_id).first()
+    course = db.query(Course).filter(Course.id == course_id, Course.user_id == user_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
@@ -536,9 +587,12 @@ def get_course_students(course_id: int, db: Session = Depends(get_db)):
 # ===== Assignment Templates =====
 
 @router.get("/templates", response_model=List[dict])
-def get_assignment_templates(db: Session = Depends(get_db)):
+def get_assignment_templates(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """List all assignment templates"""
-    repo = AssignmentTemplateRepository(db)
+    repo = AssignmentTemplateRepository(db, user_id=_classroom_user_id(clerk_user))
     templates = repo.get_all()
     return [
         {
@@ -557,15 +611,19 @@ def get_assignment_templates(db: Session = Depends(get_db)):
 
 
 @router.post("/templates/starter", response_model=dict)
-def create_starter_assignment_template(db: Session = Depends(get_db)):
+def create_starter_assignment_template(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Create a real editable report template in the connected user's Google Drive."""
-    repo = AssignmentTemplateRepository(db)
+    user_id = _classroom_user_id(clerk_user)
+    repo = AssignmentTemplateRepository(db, user_id=user_id)
     current = repo.get_default()
     if current:
         return {"id": current.id, "name": current.name, "description": current.description,
                 "google_doc_id": current.google_doc_id, "google_drive_file_id": current.google_drive_file_id,
                 "mime_type": current.mime_type, "is_default": True, "already_exists": True}
-    docs_service = get_google_docs_service(db)
+    docs_service = get_google_docs_service(db, user_id=user_id)
     if not docs_service:
         raise HTTPException(status_code=503, detail="Connect Google Drive before creating a report template.")
     content = (
@@ -616,11 +674,13 @@ def create_assignment_template(
     google_drive_file_id: Optional[str] = Body(None),
     mime_type: Optional[str] = Body(None),
     is_default: bool = Body(False),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Create a new assignment template from a Google Doc"""
-    repo = AssignmentTemplateRepository(db)
-    docs_service = get_google_docs_service(db)
+    user_id = _classroom_user_id(clerk_user)
+    repo = AssignmentTemplateRepository(db, user_id=user_id)
+    docs_service = get_google_docs_service(db, user_id=user_id)
     
     doc_mime = mime_type or "application/vnd.google-apps.document"
     if docs_service:
@@ -657,9 +717,13 @@ def create_assignment_template(
 
 
 @router.put("/templates/{template_id}/default", response_model=dict)
-def set_default_template(template_id: int, db: Session = Depends(get_db)):
+def set_default_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Set a template as default"""
-    repo = AssignmentTemplateRepository(db)
+    repo = AssignmentTemplateRepository(db, user_id=_classroom_user_id(clerk_user))
     template = repo.set_default(template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -671,9 +735,13 @@ def set_default_template(template_id: int, db: Session = Depends(get_db)):
 
 
 @router.delete("/templates/{template_id}", response_model=dict)
-def delete_assignment_template(template_id: int, db: Session = Depends(get_db)):
+def delete_assignment_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Delete an assignment template"""
-    repo = AssignmentTemplateRepository(db)
+    repo = AssignmentTemplateRepository(db, user_id=_classroom_user_id(clerk_user))
     template = repo.delete(template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -683,10 +751,11 @@ def delete_assignment_template(template_id: int, db: Session = Depends(get_db)):
 @router.get("/templates/drive-files", response_model=List[dict])
 def list_drive_docs_for_templates(
     query: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """List Google Docs from Drive for template selection"""
-    docs_service = get_google_docs_service(db)
+    docs_service = get_google_docs_service(db, user_id=_classroom_user_id(clerk_user))
     if not docs_service:
         raise HTTPException(status_code=503, detail="Google Docs not configured")
     
@@ -722,7 +791,8 @@ async def turn_in_assignment(
     assignment_id: int,
     request: Request,
     template_id: Optional[int] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Student turn-in: copy template (or create blank doc), attach files, submit to Classroom"""
     from app.db.models import Assignment, Submission, SubmissionState
@@ -750,19 +820,21 @@ async def turn_in_assignment(
                 detail="File names are not uploadable files. Upload the files or provide Google Drive file IDs.",
             )
 
-    service = get_classroom_service(db)
+    user_id = _classroom_user_id(clerk_user)
+    service = get_classroom_service(db, user_id=user_id)
     if not service:
         raise HTTPException(status_code=503, detail="Google Classroom not configured")
     
-    docs_service = get_google_docs_service(db)
+    docs_service = get_google_docs_service(db, user_id=user_id)
     if not docs_service:
         raise HTTPException(status_code=503, detail="Google Docs not configured")
     
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found")
+    assignment = _get_owned_assignment(db, assignment_id, user_id)
     
-    course = db.query(Course).filter(Course.id == assignment.course_id).first()
+    course = db.query(Course).filter(
+        Course.id == assignment.course_id,
+        Course.user_id == user_id,
+    ).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
     
@@ -775,10 +847,10 @@ async def turn_in_assignment(
     drive_file_ids.extend(await _upload_submission_files(docs_service, uploaded_files))
 
     if chosen_template_id:
-        repo = AssignmentTemplateRepository(db)
+        repo = AssignmentTemplateRepository(db, user_id=user_id)
         template = repo.get_by_id(chosen_template_id)
     else:
-        repo = AssignmentTemplateRepository(db)
+        repo = AssignmentTemplateRepository(db, user_id=user_id)
         template = repo.get_default()
     
     student_doc_id = None
@@ -806,7 +878,7 @@ async def turn_in_assignment(
 
     # Fill report cover placeholders in the copied student submission document.
     if template:
-        profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).order_by(Setting.updated_at.desc()).first()
+        profile_row = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
         profile = {}
         if profile_row and profile_row.value:
             try:
@@ -892,19 +964,25 @@ async def turn_in_assignment(
 
 
 @router.post("/assignments/{assignment_id}/unsubmit", response_model=dict)
-def unsubmit_assignment(assignment_id: int, db: Session = Depends(get_db)):
+def unsubmit_assignment(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Unsubmit an assignment on Google Classroom to allow modifications and revisions."""
     from app.db.models import Assignment, Submission, SubmissionState, Course
 
-    service = get_classroom_service(db)
+    user_id = _classroom_user_id(clerk_user)
+    service = get_classroom_service(db, user_id=user_id)
     if not service:
         raise HTTPException(status_code=503, detail="Google Classroom not configured")
 
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found")
+    assignment = _get_owned_assignment(db, assignment_id, user_id)
 
-    course = db.query(Course).filter(Course.id == assignment.course_id).first()
+    course = db.query(Course).filter(
+        Course.id == assignment.course_id,
+        Course.user_id == user_id,
+    ).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
@@ -1002,16 +1080,16 @@ def _attach_submission_files(classroom_service, course_id: str, coursework_id: s
 async def upload_assignment_material(
     assignment_id: int,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Upload a local assignment problem sheet / PDF / document directly into assignment materials."""
     from app.db.models import Assignment, AssignmentMaterial
     from pathlib import Path
     import re
 
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found")
+    user_id = _classroom_user_id(clerk_user)
+    _get_owned_assignment(db, assignment_id, user_id)
 
     materials_dir = Path(__file__).resolve().parent.parent.parent / "tmp" / "materials"
     materials_dir.mkdir(parents=True, exist_ok=True)
@@ -1069,7 +1147,8 @@ def generate_assignment_solution(
     assignment_id: int,
     payload: Optional[GenerateSolutionRequest] = None,
     background_tasks: BackgroundTasks = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Trigger the multi-agent assignment solver flow (async with background tasks)."""
     from app.db.models import AssignmentSolution, AssignmentStatus
@@ -1079,7 +1158,11 @@ def generate_assignment_solution(
     model = req.model or "openai/gpt-oss-120b"
     create_google_doc = req.create_google_doc if req.create_google_doc is not None else True
 
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    user_id = _classroom_user_id(clerk_user)
+    assignment = db.query(Assignment).filter(
+        Assignment.id == assignment_id,
+        Assignment.user_id == user_id,
+    ).first()
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
     # Get or create solution record
@@ -1113,13 +1196,31 @@ def generate_assignment_solution(
                 from app.services.claude_browser_solver import solve_assignment_via_claude_browser
                 result = solve_assignment_via_claude_browser(
                     db=sync_db,
-                    assignment_id=assignment_id
+                    assignment_id=assignment_id,
+                    user_id=user_id,
                 )
                 logger.info(f"Claude Browser solution generated for assignment {assignment_id}: status={result.get('status')}")
-                if result.get("status") in ("needs_login", "error"):
+                if result.get("status") == "already_running":
+                    logger.info(f"Claude Browser solve for assignment {assignment_id} skipped because another solve is already running.")
+                elif result.get("status") == "draft":
                     from app.db.models import Assignment, AssignmentSolution, AssignmentStatus
                     sol = sync_db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
-                    asg = sync_db.query(Assignment).filter(Assignment.id == assignment_id).first()
+                    asg = sync_db.query(Assignment).filter(
+                        Assignment.id == assignment_id,
+                        Assignment.user_id == user_id,
+                    ).first()
+                    if sol:
+                        sol.validation_errors = result.get("error")
+                    if asg:
+                        asg.status = AssignmentStatus.DRAFT
+                    sync_db.commit()
+                elif result.get("status") in ("needs_login", "error"):
+                    from app.db.models import Assignment, AssignmentSolution, AssignmentStatus
+                    sol = sync_db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+                    asg = sync_db.query(Assignment).filter(
+                        Assignment.id == assignment_id,
+                        Assignment.user_id == user_id,
+                    ).first()
                     if sol:
                         sol.validation_errors = result.get("error")
                     if asg:
@@ -1132,14 +1233,18 @@ def generate_assignment_solution(
                     assignment_id=assignment_id,
                     provider=provider,
                     model=model,
-                    create_google_doc=create_google_doc
+                    create_google_doc=create_google_doc,
+                    user_id=user_id,
                 )
                 logger.info(f"Multi-Agent solution generated for assignment {assignment_id}: status={result.get('status')}")
         except Exception as e:
             logger.error(f"Multi-Agent solution generation failed for assignment {assignment_id}: {e}")
             try:
                 from app.db.models import Assignment, AssignmentSolution, AssignmentStatus
-                failed_assignment = sync_db.query(Assignment).filter(Assignment.id == assignment_id).first()
+                failed_assignment = sync_db.query(Assignment).filter(
+                    Assignment.id == assignment_id,
+                    Assignment.user_id == user_id,
+                ).first()
                 failed_solution = sync_db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
                 if failed_solution:
                     failed_solution.validation_errors = str(e)
@@ -1165,39 +1270,154 @@ def generate_assignment_solution(
 
 
 @router.post("/claude-browser/open", response_model=dict)
-def open_claude_browser():
-    """Launch or focus the Chrome window with the Claude automation profile and remote debugging enabled."""
-    from app.services.claude_browser_solver import open_claude_browser_window
-    return open_claude_browser_window()
+def open_claude_browser(clerk_user: Optional[dict] = Depends(get_current_user_optional)):
+    """Start this user's private hosted Claude browser and return a short-lived viewer link."""
+    return BrowserSessionClient().open(_classroom_user_id(clerk_user))
+
+
+@router.delete("/claude-browser/profile", response_model=dict)
+def delete_claude_browser_profile(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    user_id = _classroom_user_id(clerk_user)
+    running_job = db.query(BrowserAutomationJob.id).filter(
+        BrowserAutomationJob.user_id == user_id,
+        BrowserAutomationJob.status == "running",
+    ).first()
+    if running_job:
+        raise HTTPException(status_code=409, detail="Wait for the running assignment job to finish before deleting your Claude profile.")
+
+    BrowserSessionClient().delete_profile(user_id)
+    setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:auto_solve_enabled"
+    ).first()
+    if setting:
+        setting.value = "false"
+    waiting_jobs = db.query(BrowserAutomationJob).filter(
+        BrowserAutomationJob.user_id == user_id,
+        BrowserAutomationJob.status.in_(["pending", "needs_login"]),
+    ).all()
+    for job in waiting_jobs:
+        job.status = "needs_login"
+        job.error = "Claude profile was deleted. Reconnect and resume this job after signing in."
+        job.finished_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"profile_deleted": True, "automatic_solving_enabled": False}
 
 
 @router.get("/claude-browser/status", response_model=dict)
-def get_claude_browser_status():
-    """Check if Chrome is running with remote debugging enabled on port 9222 or 21735."""
-    from app.services.claude_browser_solver import get_active_cdp_port
-    port = get_active_cdp_port()
+def get_claude_browser_status(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    user_id = _classroom_user_id(clerk_user)
+    result = BrowserSessionClient().status(user_id)
+    setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:auto_solve_enabled"
+    ).first()
+    jobs = db.query(BrowserAutomationJob).filter(
+        BrowserAutomationJob.user_id == user_id,
+    ).order_by(BrowserAutomationJob.queued_at.desc()).limit(10).all()
     return {
-        "is_open": port is not None,
-        "port": port
+        **result,
+        "is_open": bool(result.get("active")),
+        "automatic_solving_enabled": bool(setting and setting.value == "true"),
+        "jobs": [
+            {
+                "id": job.id,
+                "assignment_id": job.assignment_id,
+                "assignment_title": job.assignment.title if job.assignment else None,
+                "status": job.status,
+                "attempts": job.attempts,
+                "error": job.error,
+                "queued_at": job.queued_at,
+                "finished_at": job.finished_at,
+            }
+            for job in jobs
+        ],
     }
 
 
+@router.put("/claude-browser/automatic-solving", response_model=dict)
+def set_automatic_claude_solving(
+    enabled: bool = Body(..., embed=True),
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    user_id = _classroom_user_id(clerk_user)
+    if enabled and not BrowserSessionClient().status(user_id).get("active"):
+        raise HTTPException(
+            status_code=409,
+            detail="Start your private Claude browser before enabling automatic solving.",
+        )
+    key = f"classroom:{user_id}:auto_solve_enabled"
+    setting = db.query(Setting).filter(Setting.key == key).first()
+    if not setting:
+        setting = Setting(key=key, description="User opt-in for automatic Claude browser solving.")
+        db.add(setting)
+    setting.value = "true" if enabled else "false"
+    if not enabled:
+        now = datetime.now(timezone.utc)
+        waiting_jobs = db.query(BrowserAutomationJob).filter(
+            BrowserAutomationJob.user_id == user_id,
+            BrowserAutomationJob.status.in_(["pending", "needs_login"]),
+        ).all()
+        for job in waiting_jobs:
+            job.status = "cancelled"
+            job.finished_at = now
+            job.error = "Automatic solving was disabled before this job started."
+    db.commit()
+    return {"automatic_solving_enabled": enabled}
+
+
+@router.post("/claude-browser/jobs/resume", response_model=dict)
+def resume_claude_jobs(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    user_id = _classroom_user_id(clerk_user)
+    enabled = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:auto_solve_enabled",
+        Setting.value == "true",
+    ).first()
+    if not enabled:
+        raise HTTPException(status_code=409, detail="Enable automatic solving before resuming assignment jobs.")
+    if not BrowserSessionClient().status(user_id).get("active"):
+        raise HTTPException(status_code=409, detail="Start your private Claude browser before resuming assignment jobs.")
+    jobs = db.query(BrowserAutomationJob).filter(
+        BrowserAutomationJob.user_id == user_id,
+        BrowserAutomationJob.status.in_(["needs_login", "failed"]),
+    ).all()
+    for job in jobs:
+        job.status = "pending"
+        job.queued_at = datetime.now(timezone.utc)
+        job.finished_at = None
+        job.error = None
+        job.attempts = 0
+    db.commit()
+    return {"resumed": len(jobs)}
+
+
 @router.post("/assignments/{assignment_id}/export-doc", response_model=dict)
-def export_assignment_doc(assignment_id: int, db: Session = Depends(get_db)):
+def export_assignment_doc(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Export the validated assignment solution directly to a new Google Doc in Google Drive."""
     from app.db.models import AssignmentSolution
     from app.services.ai_solution import export_solution_to_google_doc
 
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found")
+    user_id = _classroom_user_id(clerk_user)
+    assignment = _get_owned_assignment(db, assignment_id, user_id)
 
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
     if not solution or not (solution.validated_content or solution.draft_content):
         raise HTTPException(status_code=400, detail="No solution content found to export. Generate a solution first.")
 
     content = solution.validated_content or solution.draft_content
-    doc_info = export_solution_to_google_doc(db, assignment, content)
+    doc_info = export_solution_to_google_doc(db, assignment, content, user_id=user_id)
     if not doc_info:
         raise HTTPException(status_code=502, detail="Failed to create Google Doc. Please ensure Google account is connected with Drive permissions.")
 
@@ -1209,18 +1429,25 @@ def export_assignment_doc(assignment_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/assignments/{assignment_id}/solution/status", response_model=dict)
-def get_solution_status(assignment_id: int, db: Session = Depends(get_db)):
+def get_solution_status(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Get AI solution generation status, content, and linked Google Doc."""
     from app.db.models import AssignmentSolution, Submission
+    _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
     if not solution:
         return {"status": "not_started"}
 
     from app.services.ai_solution import (
-        extract_code_deliverables, extract_execution_metadata, strip_execution_metadata,
+        extract_assignment_deliverables,
+        extract_execution_metadata,
+        strip_execution_metadata,
     )
     content = solution.validated_content or solution.draft_content or ""
-    deliverables = extract_code_deliverables(strip_execution_metadata(content))
+    deliverables = extract_assignment_deliverables(strip_execution_metadata(content))
     execution_results = extract_execution_metadata(content)
     result_by_name = {item.get("filename"): item for item in execution_results}
     code_files = []
@@ -1259,9 +1486,9 @@ def get_solution_status(assignment_id: int, db: Session = Depends(get_db)):
     except (TypeError, json.JSONDecodeError):
         crew_progress = None
 
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
-    is_completed = bool(solution.validated_content)
-    is_failed = bool(solution.validation_errors) and not is_completed
+    assignment = _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
+    is_failed = bool(solution.validation_errors)
+    is_completed = bool(solution.validated_content) and not is_failed
     is_generating = bool(assignment and assignment.status == AssignmentStatus.GENERATING) and not is_completed and not is_failed
 
     return {
@@ -1285,14 +1512,19 @@ def get_solution_status(assignment_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/assignments/{assignment_id}/solution/files")
-def download_solution_files(assignment_id: int, db: Session = Depends(get_db)):
+def download_solution_files(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Download one source file per generated task in a ZIP archive."""
-    from app.services.ai_solution import extract_code_deliverables, extract_execution_metadata, strip_execution_metadata
+    from app.services.ai_solution import extract_assignment_deliverables, extract_execution_metadata, strip_execution_metadata
 
+    _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
     if not solution or not (solution.validated_content or solution.draft_content):
         raise HTTPException(status_code=404, detail="No generated solution is available.")
-    deliverables = extract_code_deliverables(strip_execution_metadata(solution.validated_content or solution.draft_content or ""))
+    deliverables = extract_assignment_deliverables(strip_execution_metadata(solution.validated_content or solution.draft_content or ""))
     files = deliverables["files"]
     if not files:
         raise HTTPException(status_code=404, detail="No task source code files were found in this solution.")
@@ -1314,15 +1546,21 @@ def download_solution_files(assignment_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/assignments/{assignment_id}/solution/files/{file_index}")
-def download_solution_file(assignment_id: int, file_index: int, db: Session = Depends(get_db)):
+def download_solution_file(
+    assignment_id: int,
+    file_index: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Download one generated source file by its stable list position."""
-    from app.services.ai_solution import extract_code_deliverables, strip_execution_metadata
+    from app.services.ai_solution import extract_assignment_deliverables, strip_execution_metadata
 
+    _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
     if not solution or not (solution.validated_content or solution.draft_content):
         raise HTTPException(status_code=404, detail="No generated solution is available.")
     content = strip_execution_metadata(solution.validated_content or solution.draft_content or "")
-    files = extract_code_deliverables(content)["files"]
+    files = extract_assignment_deliverables(content)["files"]
     if file_index < 0 or file_index >= len(files):
         raise HTTPException(status_code=404, detail="Generated source file not found.")
     source_file = files[file_index]
@@ -1335,14 +1573,19 @@ def download_solution_file(assignment_id: int, file_index: int, db: Session = De
 
 
 @router.get("/assignments/{assignment_id}/solution/report")
-def download_solution_report(assignment_id: int, db: Session = Depends(get_db)):
+def download_solution_report(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Download a self-contained HTML report with generated code and run screenshots."""
     from app.services.ai_solution import extract_code_deliverables, extract_execution_metadata, strip_execution_metadata
     from app.services.terminal_renderer import TerminalCardRenderer
 
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    user_id = _classroom_user_id(clerk_user)
+    assignment = _get_owned_assignment(db, assignment_id, user_id)
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
-    if not assignment or not solution or not (solution.validated_content or solution.draft_content):
+    if not solution or not (solution.validated_content or solution.draft_content):
         raise HTTPException(status_code=404, detail="No generated solution report is available.")
 
     content = solution.validated_content or solution.draft_content or ""
@@ -1350,8 +1593,11 @@ def download_solution_report(assignment_id: int, db: Session = Depends(get_db)):
     deliverables = extract_code_deliverables(clean_content)
     execution_results = extract_execution_metadata(content)
     result_by_name = {item.get("filename"): item for item in execution_results}
-    course = db.query(Course).filter(Course.id == assignment.course_id).first()
-    profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).order_by(Setting.updated_at.desc()).first()
+    course = db.query(Course).filter(
+        Course.id == assignment.course_id,
+        Course.user_id == user_id,
+    ).first()
+    profile_row = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
     profile = {}
     if profile_row and profile_row.value:
         try:
@@ -1402,21 +1648,29 @@ def download_solution_report(assignment_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/assignments/{assignment_id}/solution/report/docx")
-def download_solution_report_docx(assignment_id: int, db: Session = Depends(get_db)):
+def download_solution_report_docx(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Download a Word report based on the generated Google Doc template, with run screenshots embedded."""
     from docx import Document
     from docx.shared import Inches
     from app.services.ai_solution import extract_code_deliverables, extract_execution_metadata, strip_execution_metadata
     from app.services.terminal_renderer import TerminalCardRenderer
 
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    user_id = _classroom_user_id(clerk_user)
+    assignment = _get_owned_assignment(db, assignment_id, user_id)
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
-    if not assignment or not solution or not (solution.validated_content or solution.draft_content):
+    if not solution or not (solution.validated_content or solution.draft_content):
         raise HTTPException(status_code=404, detail="No generated solution report is available.")
 
-    course = db.query(Course).filter(Course.id == assignment.course_id).first()
+    course = db.query(Course).filter(
+        Course.id == assignment.course_id,
+        Course.user_id == user_id,
+    ).first()
     submission = db.query(Submission).filter(Submission.assignment_id == assignment.id).first()
-    docs_service = get_google_docs_service(db)
+    docs_service = get_google_docs_service(db, user_id=user_id)
     docx_content = docs_service.export_doc_as_docx(submission.google_doc_id) if docs_service and submission and submission.google_doc_id else None
     document = Document(BytesIO(docx_content)) if docx_content else Document()
 
@@ -1427,7 +1681,7 @@ def download_solution_report_docx(assignment_id: int, db: Session = Depends(get_
     results_by_name = {item.get("filename"): item for item in execution_results}
 
     if not docx_content:
-        profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).order_by(Setting.updated_at.desc()).first()
+        profile_row = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
         profile = {}
         if profile_row and profile_row.value:
             try:
@@ -1494,18 +1748,18 @@ def download_solution_report_docx(assignment_id: int, db: Session = Depends(get_
 def get_assignment_submissions(
     assignment_id: int,
     since: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Get student submissions for an assignment from Google Classroom API"""
-    service = get_classroom_service(db)
+    user_id = _classroom_user_id(clerk_user)
+    service = get_classroom_service(db, user_id=user_id)
     if not service:
         raise HTTPException(status_code=503, detail="Google Classroom not configured")
 
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found")
+    assignment = _get_owned_assignment(db, assignment_id, user_id)
 
-    since_dt = _get_semester_start_dt(db, since)
+    since_dt = _get_semester_start_dt(db, since, user_id=user_id)
     if since_dt:
         # Check if assignment is within semester range
         assignment_due = assignment.due_at or assignment.due_date
@@ -1514,7 +1768,10 @@ def get_assignment_submissions(
             if not (assignment_created and assignment_created >= since_dt):
                 return []
     
-    course = db.query(Course).filter(Course.id == assignment.course_id).first()
+    course = db.query(Course).filter(
+        Course.id == assignment.course_id,
+        Course.user_id == user_id,
+    ).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 

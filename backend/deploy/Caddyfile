@@ -1,0 +1,10 @@
+{$API_DOMAIN} {
+	@browser path /viewer/* /novnc/*
+	handle @browser {
+		reverse_proxy claude-browser-host:7900
+	}
+
+	handle {
+		reverse_proxy api:8000
+	}
+}

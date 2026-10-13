@@ -349,7 +349,20 @@ export const api = {
     method: 'POST',
   }),
 
-  getClaudeBrowserStatus: async (token = null) => fetchFromApi('/classroom/claude-browser/status', token),
+  getClaudeBrowserStatus: async (token = null) => fetchFromApi('/classroom/claude-browser/status', token, { noCache: true }),
+
+  setAutomaticClaudeSolving: async (enabled, token = null) => fetchFromApi('/classroom/claude-browser/automatic-solving', token, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  }),
+
+  resumeClaudeJobs: async (token = null) => fetchFromApi('/classroom/claude-browser/jobs/resume', token, {
+    method: 'POST',
+  }),
+
+  deleteClaudeBrowserProfile: async (token = null) => fetchFromApi('/classroom/claude-browser/profile', token, {
+    method: 'DELETE',
+  }),
 
   // Notifications & sync activity
   getNotifications: async (status = null, limit = 50, token = null) => {
@@ -366,6 +379,11 @@ export const api = {
     body: JSON.stringify(data),
   }),
   checkAlerts: async (token = null) => fetchFromApi('/notifications/check-alerts', token, { method: 'POST' }),
+  sendTestEmail: async (recipient = null, token = null) => {
+    const params = recipient ? `?recipient=${encodeURIComponent(recipient)}` : '';
+    return fetchFromApi(`/notifications/test-email${params}`, token, { method: 'POST' });
+  },
+  triggerDailyDigest: async (token = null) => fetchFromApi('/notifications/daily-digest', token, { method: 'POST' }),
   previewAlerts: async (targetDate = null, token = null) => {
     const params = targetDate ? `?target_date=${encodeURIComponent(targetDate)}` : '';
     return fetchFromApi(`/notifications/preview-alerts${params}`, token);

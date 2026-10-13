@@ -19,7 +19,7 @@ langchain-core==0.2.39
 langchain-groq==0.1.10
 groq==0.13.0
 crewai[google-genai,litellm]>=1.15.0,<2.0.0
-playwright==1.44.0
+playwright==1.63.0
 google-api-python-client==2.126.0
 google-auth-httplib2==0.2.0
 google-auth-oauthlib==1.2.0

@@ -12,6 +12,7 @@ from .agents import AgentRun
 from .agents import AgentEvent
 from .courses import Course
 from .assignments import Assignment
+from .assignments import BrowserAutomationJob
 from .assignments import AssignmentMaterial
 from .assignments import AssignmentTemplate
 from .assignments import AssignmentSolution
@@ -41,6 +42,7 @@ __all__ = [
     "AgentEvent",
     "Course",
     "Assignment",
+    "BrowserAutomationJob",
     "AssignmentMaterial",
     "AssignmentTemplate",
     "AssignmentSolution",

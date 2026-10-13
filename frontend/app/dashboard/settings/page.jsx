@@ -13,6 +13,10 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [browserStatus, setBrowserStatus] = useState(null);
+  const [browserBusy, setBrowserBusy] = useState(false);
+  const [browserError, setBrowserError] = useState('');
+  const [browserNotice, setBrowserNotice] = useState('');
 
   const loadEmail = useCallback(async () => {
     try {
@@ -29,6 +33,105 @@ export default function SettingsPage() {
   useEffect(() => {
     loadEmail();
   }, [loadEmail]);
+
+  const loadBrowserStatus = useCallback(async () => {
+    try {
+      const token = await getToken();
+      const result = await api.getClaudeBrowserStatus(token);
+      setBrowserStatus(result);
+      setBrowserError('');
+    } catch (err) {
+      setBrowserError(err.message || 'Could not load your private Claude browser status.');
+    }
+  }, [getToken]);
+
+  useEffect(() => {
+    loadBrowserStatus();
+  }, [loadBrowserStatus]);
+
+  const startClaudeBrowser = async () => {
+    setBrowserBusy(true);
+    setBrowserError('');
+    setBrowserNotice('');
+    try {
+      const token = await getToken();
+      const result = await api.openClaudeBrowser(token);
+      setBrowserStatus((current) => ({ ...current, ...result, is_open: result.active }));
+      setBrowserNotice(result.message || 'Your private Claude browser is ready.');
+    } catch (err) {
+      setBrowserError(err.message || 'Could not start your private Claude browser.');
+    } finally {
+      setBrowserBusy(false);
+    }
+  };
+
+  const setAutomaticSolving = async (enabled) => {
+    setBrowserBusy(true);
+    setBrowserError('');
+    setBrowserNotice('');
+    try {
+      const token = await getToken();
+      await api.setAutomaticClaudeSolving(enabled, token);
+      setBrowserStatus((current) => ({
+        ...current,
+        automatic_solving_enabled: enabled,
+        jobs: enabled
+          ? current?.jobs
+          : (current?.jobs || []).map((job) => (
+            ['pending', 'needs_login'].includes(job.status) ? { ...job, status: 'cancelled' } : job
+          )),
+      }));
+      setBrowserNotice(enabled
+        ? 'Automatic solving is enabled for newly detected eligible assignments.'
+        : 'Automatic solving is disabled. Waiting jobs were cancelled; jobs already running will finish.');
+    } catch (err) {
+      setBrowserError(err.message || 'Could not update automatic solving.');
+    } finally {
+      setBrowserBusy(false);
+    }
+  };
+
+  const resumeClaudeJobs = async () => {
+    setBrowserBusy(true);
+    setBrowserError('');
+    setBrowserNotice('');
+    try {
+      const token = await getToken();
+      const result = await api.resumeClaudeJobs(token);
+      setBrowserNotice(`${result.resumed || 0} assignment job(s) resumed.`);
+      await loadBrowserStatus();
+    } catch (err) {
+      setBrowserError(err.message || 'Could not resume Claude jobs.');
+    } finally {
+      setBrowserBusy(false);
+    }
+  };
+
+  const deleteClaudeProfile = async () => {
+    if (!window.confirm('Delete your saved Claude browser profile and sign-in session? Automatic solving will also be disabled.')) {
+      return;
+    }
+    setBrowserBusy(true);
+    setBrowserError('');
+    setBrowserNotice('');
+    try {
+      const token = await getToken();
+      await api.deleteClaudeBrowserProfile(token);
+      setBrowserStatus((current) => ({
+        ...current,
+        active: false,
+        is_open: false,
+        profile_exists: false,
+        automatic_solving_enabled: false,
+        viewer_url: null,
+      }));
+      setBrowserNotice('Your private Claude profile was deleted and automatic solving was disabled.');
+    } catch (err) {
+      setBrowserError(err.message || 'Could not delete your Claude browser profile.');
+    } finally {
+      setBrowserBusy(false);
+    }
+  };
 
   const handleSave = async (e) => {
     e.preventDefault();
@@ -91,12 +194,8 @@ export default function SettingsPage() {
 
     try {
       const token = await getToken();
-      await api.createNotificationForMe({
-        notification_type: 'test',
-        subject: 'Test Notification from Uniflow',
-        payload: 'This is a test email to verify your notification settings are working correctly.',
-      }, token);
-      setSuccess('Test email queued! Check your inbox (and spam folder).');
+      const res = await api.sendTestEmail(notificationEmail.trim(), token);
+      setSuccess(res?.message || `Test alert successfully delivered to ${notificationEmail.trim()} via SendGrid! Check your inbox.`);
     } catch (err) {
       setError(err.message || 'Could not send test email');
     } finally {
@@ -118,6 +217,99 @@ export default function SettingsPage() {
 
       {error && <div className="rounded-lg border border-[#f1dede] bg-[#fff8f8] px-3 py-2.5 text-xs text-[#a04a4a]" role="alert">{error}</div>}
       {success && <div className="rounded-lg border border-[#d8eee4] bg-[#f3fbf7] px-3 py-2.5 text-xs text-[#43816b]" role="status">{success}</div>}
+      {browserError && <div className="rounded-lg border border-[#f1dede] bg-[#fff8f8] px-3 py-2.5 text-xs text-[#a04a4a]" role="alert">{browserError}</div>}
+      {browserNotice && <div className="rounded-lg border border-[#d8eee4] bg-[#f3fbf7] px-3 py-2.5 text-xs text-[#43816b]" role="status">{browserNotice}</div>}
+
+      <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm">
+        <header className="border-b border-[#f0f0f3] px-5 py-4">
+          <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">PRIVATE CLAUDE BROWSER</p>
+          <h2 className="text-[13px] font-semibold text-[#343746]">Connect once, solve new assignments automatically</h2>
+        </header>
+        <div className="flex flex-col gap-4 p-5">
+          <p className="max-w-3xl text-xs leading-relaxed text-[#747887]">
+            Uniflow keeps a separate hosted browser profile for your account. Start it, sign in to Claude yourself,
+            then enable automatic solving. Claude login cookies stay in your private browser profile; they are not
+            shared with other students.
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              className="inline-flex min-h-9 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-3 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:cursor-wait disabled:opacity-55"
+              onClick={startClaudeBrowser}
+              disabled={browserBusy}
+            >
+              {browserBusy ? 'Starting…' : browserStatus?.is_open ? 'Open Claude sign-in window' : 'Start private Claude browser'}
+            </button>
+            <button
+              type="button"
+              className="inline-flex min-h-9 items-center justify-center rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb] disabled:opacity-55"
+              onClick={loadBrowserStatus}
+              disabled={browserBusy}
+            >
+              Refresh status
+            </button>
+            {browserStatus?.viewer_url && (
+              <a
+                className="text-xs font-semibold text-[#5142c1] underline"
+                href={browserStatus.viewer_url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Open streamed browser
+              </a>
+            )}
+            {browserStatus?.profile_exists && (
+              <button
+                type="button"
+                className="text-xs font-semibold text-[#a04a4a] underline disabled:opacity-55"
+                onClick={deleteClaudeProfile}
+                disabled={browserBusy}
+              >
+                Delete saved Claude profile
+              </button>
+            )}
+            <span className="text-xs text-[#747887]">
+              {browserStatus?.is_open ? 'Browser running' : 'Browser stopped'}
+            </span>
+          </div>
+          <label className="flex max-w-3xl items-start gap-2 text-xs leading-relaxed text-[#5d6170]">
+            <input
+              type="checkbox"
+              className="mt-0.5 accent-[#6657d9]"
+              checked={Boolean(browserStatus?.automatic_solving_enabled)}
+              onChange={(event) => setAutomaticSolving(event.target.checked)}
+              disabled={browserBusy || !browserStatus?.is_open}
+            />
+            <span>
+              Automatically solve newly detected, published, unsubmitted, non-quiz assignments. This does not
+              submit work to Google Classroom. Sign into Claude in the streamed browser before enabling.
+            </span>
+          </label>
+          {browserStatus?.automatic_solving_enabled
+            && (browserStatus?.jobs || []).some((job) => ['needs_login', 'failed'].includes(job.status)) && (
+            <button
+              type="button"
+              className="self-start text-xs font-semibold text-[#5142c1] underline disabled:opacity-55"
+              onClick={resumeClaudeJobs}
+              disabled={browserBusy || !browserStatus?.is_open}
+            >
+              Resume waiting or failed assignments
+            </button>
+          )}
+          {browserStatus?.jobs?.length > 0 && (
+            <ul className="flex max-w-3xl flex-col gap-2 border-t border-[#f0f0f3] pt-3">
+              {browserStatus.jobs.map((job) => (
+                <li key={job.id} className="flex flex-wrap justify-between gap-2 text-xs text-[#747887]">
+                  <span>{job.assignment_title || `Assignment ${job.assignment_id}`}</span>
+                  <span className="font-medium text-[#5d6170]">
+                    {job.status.replaceAll('_', ' ')}{job.error ? ` · ${job.error}` : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
 
       <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm">
         <header className="flex items-center justify-between gap-3.5 border-b border-[#f0f0f3] px-5 py-4">

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional
@@ -15,10 +16,44 @@ from app.auth.clerk_auth import get_current_user_optional
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
 
-def _get_user_notification_email(db: Session, user_id: str) -> Optional[str]:
-    """Get the user's configured notification email from settings"""
-    setting = db.query(Setting).filter(Setting.key == f"notification_email_{user_id}").first()
-    return setting.value if setting and setting.value else None
+class CreateNotificationForMeRequest(BaseModel):
+    notification_type: str
+    subject: str = "Uniflow Notification"
+    payload: Optional[str] = None
+    external_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+
+
+def _get_user_notification_email(db: Session, user_id: str = "") -> Optional[str]:
+    """Get the user's configured notification email from settings, prioritizing dashboard email"""
+    if user_id:
+        setting = db.query(Setting).filter(Setting.key == f"notification_email_{user_id}").first()
+        if setting and setting.value and setting.value.strip() and "@" in setting.value:
+            return setting.value.strip()
+
+    # Fallback to default notification email
+    default_s = db.query(Setting).filter(Setting.key == "notification_email_default").first()
+    if default_s and default_s.value and default_s.value.strip() and "@" in default_s.value:
+        return default_s.value.strip()
+
+    # Fallback to any configured notification_email_* in settings (from Dashboard Settings page)
+    custom = db.query(Setting).filter(Setting.key.like("notification_email_%")).order_by(Setting.updated_at.desc()).first()
+    if custom and custom.value and custom.value.strip() and "@" in custom.value:
+        return custom.value.strip()
+
+    # Fallback to Clerk account email
+    clerk_s = db.query(Setting).filter(Setting.key.like("clerk_user_%")).order_by(Setting.updated_at.desc()).first()
+    if clerk_s and clerk_s.value:
+        try:
+            import json
+            data = json.loads(clerk_s.value)
+            email = data.get("email") or data.get("emailAddress") or ""
+            if email and "@" in email:
+                return email.strip()
+        except Exception:
+            pass
+
+    return None
 
 
 @router.get("/my-email", response_model=dict)
@@ -243,6 +278,7 @@ def send_pending_notifications(background_tasks: BackgroundTasks, limit: int = 5
 @router.post("/create", response_model=dict)
 def create_notification(
     notification_type: str,
+    background_tasks: BackgroundTasks,
     recipient: str = None,
     subject: str = "Uniflow Notification",
     payload: str = None,
@@ -251,7 +287,7 @@ def create_notification(
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
-    """Create a new notification (queued as PENDING). If recipient not provided, uses current user's notification email."""
+    """Create a new notification and immediately dispatch it via SendGrid to the recipient."""
     # Determine recipient
     if not recipient:
         user_id = clerk_user.get("id") if clerk_user else None
@@ -280,24 +316,26 @@ def create_notification(
     db.commit()
     db.refresh(notification)
 
+    # Dispatch email immediately in background via SendGrid
+    if background_tasks:
+        background_tasks.add_task(_send_notification_email, notification.id)
+
     return {
-        "message": "Notification created",
+        "message": "Notification created and queued for email delivery",
         "notification_id": notification.id,
+        "recipient": recipient,
         "status": notification.status.value,
     }
 
 
 @router.post("/create-for-me", response_model=dict)
 def create_notification_for_me(
-    notification_type: str,
-    subject: str = "Uniflow Notification",
-    payload: str = None,
-    external_id: str = None,
-    idempotency_key: str = None,
+    request: CreateNotificationForMeRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
-    """Create a notification for the current user using their configured notification email"""
+    """Create and immediately dispatch a notification for current user using their configured alert email"""
     user_id = clerk_user.get("id") if clerk_user else None
     if not user_id:
         raise HTTPException(status_code=401, detail="User not authenticated")
@@ -307,15 +345,89 @@ def create_notification_for_me(
         raise HTTPException(status_code=400, detail="No notification email configured. Please set one in Settings.")
 
     return create_notification(
-        notification_type=notification_type,
+        notification_type=request.notification_type,
+        background_tasks=background_tasks,
         recipient=recipient,
-        subject=subject,
-        payload=payload,
-        external_id=external_id,
-        idempotency_key=idempotency_key,
+        subject=request.subject,
+        payload=request.payload,
+        external_id=request.external_id,
+        idempotency_key=request.idempotency_key,
         db=db,
         clerk_user=clerk_user
     )
+
+
+@router.post("/test-email", response_model=dict)
+def send_test_email(
+    recipient: Optional[str] = None,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Directly dispatch an immediate test alert via SendGrid to verify delivery to the user's dashboard email"""
+    user_id = clerk_user.get("id") if clerk_user else ""
+    target_email = recipient or _get_user_notification_email(db, user_id)
+    if not target_email:
+        raise HTTPException(status_code=400, detail="No notification email found. Please configure an alert email in Settings.")
+
+    subject = "[Uniflow] Test Alert: Email Delivery Verified"
+    html = f"""<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; color: #0f172a; margin: 0; padding: 24px;">
+  <div style="max-width: 520px; margin: 0 auto; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 26px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+    <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #6366f1; margin-bottom: 6px;">Uniflow Academic Alerts · Verified</div>
+    <h2 style="color: #0f172a; font-size: 19px; margin: 0 0 14px 0;">Alert System Verification Successful</h2>
+    <p style="color: #334155; font-size: 14px; line-height: 1.5; margin: 0 0 18px 0;">
+      This email confirms that your alert settings are active and that Uniflow is delivering notifications to: <strong>{target_email}</strong>.
+    </p>
+    <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 14px; font-size: 13px; color: #166534; line-height: 1.6;">
+      ✓ <strong>Primary Delivery Channel:</strong> SendGrid Transactional API<br>
+      ✓ <strong>Configured Recipient:</strong> {target_email}<br>
+      ✓ <strong>Morning Academic Briefing:</strong> Active (Daily in morning)<br>
+      ✓ <strong>Class Timetable Reminders:</strong> Active (20m &amp; 5m advance notices)<br>
+      ✓ <strong>Google Classroom Deadlines:</strong> Active (1 notification per deadline issue)
+    </div>
+    <p style="font-size: 11px; color: #94a3b8; margin: 20px 0 0 0; text-align: center;">
+      Automated verification dispatched by Uniflow Academic Suite.
+    </p>
+  </div>
+</body>
+</html>"""
+    success = send_email(
+        to_email=target_email,
+        subject=subject,
+        html_content=html,
+        categories=["test-notification", "verification"]
+    )
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to deliver test email via SendGrid.")
+
+    return {
+        "status": "sent",
+        "recipient": target_email,
+        "message": f"Test alert email successfully delivered to {target_email} via SendGrid!"
+    }
+
+
+@router.post("/daily-digest", response_model=dict)
+def trigger_daily_digest(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Trigger the Daily Morning Schedule & Attendance Digest via SendGrid."""
+    from app.services.alert_service import AlertService
+    user_id = clerk_user.get("id") if clerk_user else "dev_student_user"
+    service = AlertService(db)
+    digest = service.generate_daily_morning_digest(user_id=user_id, send_immediately=True)
+    if not digest:
+        return {
+            "status": "already_sent_or_skipped",
+            "message": "Daily morning digest was already delivered today (idempotency enforced)."
+        }
+    return {
+        "status": "sent",
+        "digest": digest,
+        "message": f"Daily morning briefing successfully dispatched to {digest.get('recipient')} via SendGrid!"
+    }
 
 
 @router.post("/check-alerts", response_model=dict)
@@ -323,15 +435,17 @@ def check_and_send_alerts(
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
-    """Trigger on-demand check for low-attendance class-day warnings, upcoming 10-min class reminders, and GCR deadlines."""
+    """Trigger on-demand check for morning digest, low-attendance class-day warnings, 20m/5m class reminders, and GCR deadlines."""
     from app.services.alert_service import AlertService
     user_id = clerk_user.get("id") if clerk_user else "dev_student_user"
     service = AlertService(db)
+    digest = service.generate_daily_morning_digest(user_id=user_id, send_immediately=True)
     att_alerts = service.generate_daily_attendance_warnings(user_id=user_id, send_immediately=True)
     tt_reminders = service.generate_upcoming_class_reminders(user_id=user_id, send_immediately=True)
     gcr_alerts = service.generate_upcoming_assignment_reminders(user_id=user_id, send_immediately=True)
     return {
         "status": "success",
+        "daily_digest": digest,
         "attendance_warnings_generated": len(att_alerts),
         "attendance_warnings": att_alerts,
         "timetable_reminders_generated": len(tt_reminders),

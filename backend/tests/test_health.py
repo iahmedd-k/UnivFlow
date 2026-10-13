@@ -12,6 +12,7 @@ def test_health_check():
     data = response.json()
     assert data["status"] == "healthy"
     assert data["service"] == "Uniflow"
+    assert data["database"] == "connected"
 
 
 def test_root():

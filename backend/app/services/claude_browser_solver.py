@@ -7,7 +7,7 @@ import urllib.request
 import urllib.error
 import subprocess
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List, Tuple
 from sqlalchemy.orm import Session
 
@@ -15,6 +15,7 @@ from app.db.models import (
     Assignment,
     AssignmentSolution,
     AssignmentMaterial,
+    BrowserAutomationJob,
     Course,
     AssignmentStatus,
     Setting,
@@ -24,15 +25,62 @@ from app.core.logging import logger
 from app.services.google_docs import get_google_docs_service
 from app.services.ai_solution import export_solution_to_google_doc
 
-CLAUDE_PROFILE_DIR = Path(os.path.expandvars(r"%LOCALAPPDATA%\UniflowChromeProfile"))
+CLAUDE_BROWSER_PROFILE_DIR = Path(__file__).resolve().parent.parent.parent / "tmp" / "claude_browser_profile"
+CLAUDE_BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 CLAUDE_MATERIALS_DIR = Path(__file__).resolve().parent.parent.parent / "tmp" / "materials"
 CLAUDE_MATERIALS_DIR.mkdir(parents=True, exist_ok=True)
-CLAUDE_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
-CLAUDE_CDP_PORT = 21735
 USER_CDP_PORT = 9222
+CDP_CONNECT_TIMEOUT_MS = 20000
+CDP_CONNECT_ATTEMPTS = 2
 
 _claude_process: Optional[subprocess.Popen] = None
+
+_HEAVY_ML_PATTERN = re.compile(
+    r"\b(?:deep learning|deep neural|neural network|transformer|large language model|"
+    r"llm|computer vision|cuda|gpu|model training|train(?:ing)? models?)\b",
+    re.IGNORECASE,
+)
+_DIAGRAM_FENCE_TAGS = {
+    "mermaid", "plantuml", "puml", "graphviz", "dot", "erd", "nomnoml",
+    "drawio", "xml", "mxfile", "mxgraph",
+}
+
+
+_ALREADY_SOLVING_STALE_SECONDS = 20 * 60
+
+
+def _is_assignment_already_solving(db: Session, assignment_id: int, user_id: str) -> bool:
+    """Return True if this assignment is currently being solved by another session/job."""
+    assignment = db.query(Assignment).filter(
+        Assignment.id == assignment_id,
+        Assignment.user_id == user_id,
+    ).first()
+    if not assignment:
+        return False
+
+    if assignment.status != AssignmentStatus.GENERATING:
+        return False
+
+    solution = db.query(AssignmentSolution).filter(
+        AssignmentSolution.assignment_id == assignment_id,
+    ).first()
+    if solution and solution.generated_at:
+        generated_at = solution.generated_at
+        if generated_at.tzinfo is None:
+            generated_at = generated_at.replace(tzinfo=timezone.utc)
+        if (datetime.now(timezone.utc) - generated_at).total_seconds() < _ALREADY_SOLVING_STALE_SECONDS:
+            return True
+
+    running_job = db.query(BrowserAutomationJob).filter(
+        BrowserAutomationJob.assignment_id == assignment_id,
+        BrowserAutomationJob.user_id == user_id,
+        BrowserAutomationJob.status == "running",
+    ).first()
+    if running_job:
+        return True
+
+    return False
 
 
 def find_system_browser() -> str:
@@ -53,7 +101,7 @@ def find_system_browser() -> str:
     return "chrome.exe"
 
 
-def is_cdp_port_live(port: int, timeout: float = 0.5) -> bool:
+def is_cdp_port_live(port: int = USER_CDP_PORT, timeout: float = 0.5) -> bool:
     try:
         req = urllib.request.Request(f"http://127.0.0.1:{port}/json/version")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -64,102 +112,44 @@ def is_cdp_port_live(port: int, timeout: float = 0.5) -> bool:
 
 
 def get_active_cdp_port() -> Optional[int]:
-    """Check if Chrome remote debugging is responding on user port 9222 or dedicated port 21735."""
+    """Check if Chrome remote debugging is active on port 9222."""
     if is_cdp_port_live(USER_CDP_PORT):
         return USER_CDP_PORT
-    if is_cdp_port_live(CLAUDE_CDP_PORT):
-        return CLAUDE_CDP_PORT
     return None
 
 
-def find_and_sync_student_chrome_profile(target_email: str = "232530@students.au.edu.pk") -> Optional[str]:
+def connect_to_chrome(chromium: Any, endpoint: Any) -> Any:
+    """Attach to a user's hosted Chrome, retrying once after a slow DevTools handshake."""
+    last_error = None
+    for attempt in range(1, CDP_CONNECT_ATTEMPTS + 1):
+        try:
+            return chromium.connect_over_cdp(
+                endpoint if isinstance(endpoint, str) else f"http://127.0.0.1:{endpoint}",
+                timeout=CDP_CONNECT_TIMEOUT_MS,
+            )
+        except Exception as error:
+            last_error = error
+            if attempt < CDP_CONNECT_ATTEMPTS:
+                logger.warning(
+                    "Chrome CDP attach attempt %s/%s failed on port %s; retrying: %s",
+                    attempt,
+                    CDP_CONNECT_ATTEMPTS,
+                    endpoint,
+                    error,
+                )
+                time.sleep(1)
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"Chrome CDP attach failed on port {port} without an error detail.")
+
+
+def open_claude_browser_window() -> Dict[str, Any]:
     """
-    Finds the user's existing Chrome profile containing their student account (or primary account)
-    and syncs essential cookies, sessions, credentials, and preferences into UniflowChromeProfile
-    so Chrome opens as their real logged-in student profile instead of a blank/guest profile.
+    Launch or focus the persistent Uniflow browser profile with remote debugging enabled.
+    Using a dedicated data directory is required by current Chrome versions and avoids
+    interrupting the user's normal browser session.
     """
-    src_user_data = Path(os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data"))
-    local_state_path = src_user_data / "Local State"
-    if not local_state_path.exists():
-        return None
-
-    try:
-        with open(local_state_path, "r", encoding="utf-8") as f:
-            local_state = json.load(f)
-    except Exception as e:
-        logger.warning(f"Could not read Chrome Local State: {e}")
-        return None
-
-    info_cache = local_state.get("profile", {}).get("info_cache", {})
-    matched_profile = None
-
-    # 1. Match exact student email or roll number prefix
-    roll_token = target_email.split("@")[0].lower() if "@" in target_email else target_email.lower()
-    for prof_key, info in info_cache.items():
-        uname = (info.get("user_name") or "").lower()
-        domain = (info.get("hosted_domain") or "").lower()
-        if target_email.lower() in uname or roll_token in uname or "students.au.edu.pk" in domain:
-            matched_profile = prof_key
-            break
-
-    # Fallback to Profile 23 if present or Default
-    if not matched_profile:
-        if "Profile 23" in info_cache:
-            matched_profile = "Profile 23"
-        elif "Default" in info_cache:
-            matched_profile = "Default"
-
-    if not matched_profile:
-        return None
-
-    src_prof_dir = src_user_data / matched_profile
-    if not src_prof_dir.exists():
-        return None
-
-    # Copy Local State to preserve DPAPI cookie decryption key
-    dst_data = CLAUDE_PROFILE_DIR
-    dst_data.mkdir(parents=True, exist_ok=True)
-    try:
-        shutil.copy2(local_state_path, dst_data / "Local State")
-    except Exception as e:
-        logger.debug(f"Could not copy Local State: {e}")
-
-    # Copy essential auth & session files/folders to both matched profile and Default
-    def _copytree_safe(src: Path, dst: Path):
-        dst.mkdir(parents=True, exist_ok=True)
-        for root, dirs, files in os.walk(src):
-            rel = os.path.relpath(root, src)
-            target_dir = dst / rel
-            target_dir.mkdir(parents=True, exist_ok=True)
-            for f in files:
-                sf = os.path.join(root, f)
-                df = target_dir / f
-                try:
-                    shutil.copy2(sf, df)
-                except Exception:
-                    pass
-
-    for target in [matched_profile, "Default"]:
-        dst_prof = dst_data / target
-        dst_prof.mkdir(parents=True, exist_ok=True)
-        for fname in ["Preferences", "Secure Preferences", "Login Data", "Web Data", "History"]:
-            sf = src_prof_dir / fname
-            if sf.exists():
-                try:
-                    shutil.copy2(sf, dst_prof / fname)
-                except Exception:
-                    pass
-        for dname in ["Network", "Session Storage", "Sessions", "Local Storage", "IndexedDB"]:
-            sd = src_prof_dir / dname
-            if sd.exists():
-                _copytree_safe(sd, dst_prof / dname)
-
-    logger.info(f"Successfully synced student Chrome profile '{matched_profile}' ({target_email}) into UniflowChromeProfile.")
-    return matched_profile
-
-
-def open_claude_browser_window(student_email: str = "232530@students.au.edu.pk") -> Dict[str, Any]:
-    """Launch or focus Chrome with the Claude persistent profile and remote debugging enabled."""
     global _claude_process
     active_port = get_active_cdp_port()
     if active_port is not None:
@@ -169,32 +159,35 @@ def open_claude_browser_window(student_email: str = "232530@students.au.edu.pk")
             "message": f"Chrome remote debugging is already active on port {active_port}."
         }
 
-    # Ensure the user's student profile is synced so they aren't presented with a guest profile
-    matched_prof = find_and_sync_student_chrome_profile(student_email)
-
     browser_bin = find_system_browser()
     cmd = [
         browser_bin,
-        f"--user-data-dir={str(CLAUDE_PROFILE_DIR)}",
-        f"--profile-directory={matched_prof or 'Profile 23'}",
-        f"--remote-debugging-port={CLAUDE_CDP_PORT}",
+        f"--user-data-dir={CLAUDE_BROWSER_PROFILE_DIR}",
+        f"--remote-debugging-port={USER_CDP_PORT}",
         "--remote-debugging-address=127.0.0.1",
         "--remote-allow-origins=*",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--start-maximized",
+        "--restore-last-session",
         "https://claude.ai/new",
     ]
 
     try:
-        flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
-        _claude_process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            creationflags=flags
-        )
+        flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000200) if os.name == "nt" else 0
+        try:
+            _claude_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                creationflags=flags
+            )
+        except OSError:
+            _claude_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                creationflags=(subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
+            )
     except Exception as e:
         logger.error(f"Failed to launch Chrome for Claude: {e}")
         return {"status": "error", "error": f"Failed to launch Chrome: {str(e)}"}
@@ -202,24 +195,42 @@ def open_claude_browser_window(student_email: str = "232530@students.au.edu.pk")
     # Wait up to 10 seconds for CDP endpoint to become ready
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
-        if is_cdp_port_live(CLAUDE_CDP_PORT):
+        if is_cdp_port_live(USER_CDP_PORT):
             return {
                 "status": "launched",
-                "port": CLAUDE_CDP_PORT,
-                "message": "Chrome launched on debugging port 21735."
+                "port": USER_CDP_PORT,
+                "message": (
+                    f"Uniflow's persistent browser profile is ready on port {USER_CDP_PORT}. "
+                    "Sign in to Claude in that window the first time."
+                )
             }
         time.sleep(0.4)
 
+    error_message = (
+        f"Chrome opened with Uniflow's persistent profile, but its debugging endpoint on "
+        f"port {USER_CDP_PORT} did not become ready. Check that Chrome is installed and "
+        "that no other process is using this profile or port."
+    )
+    logger.error(error_message)
     return {
-        "status": "launched_waiting",
-        "port": CLAUDE_CDP_PORT,
-        "message": "Chrome window opened, waiting for local connection..."
+        "status": "error",
+        "port": USER_CDP_PORT,
+        "error": error_message,
     }
 
 
-def get_student_metadata(db: Session, course: Optional[Course]) -> Dict[str, str]:
+def get_student_metadata(
+    db: Session,
+    course: Optional[Course],
+    user_id: Optional[str] = None,
+) -> Dict[str, str]:
     """Extract standard student and institutional metadata for Air University submissions."""
-    profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).order_by(Setting.updated_at.desc()).first()
+    profile_query = db.query(Setting)
+    if user_id:
+        profile_query = profile_query.filter(Setting.key == f"clerk_user_{user_id}")
+    else:
+        profile_query = profile_query.filter(Setting.key.like("clerk_user_%")).order_by(Setting.updated_at.desc())
+    profile_row = profile_query.first()
     profile = {}
     if profile_row and profile_row.value:
         try:
@@ -229,7 +240,7 @@ def get_student_metadata(db: Session, course: Optional[Course]) -> Dict[str, str
 
     student_name = " ".join(
         part for part in (profile.get("first_name"), profile.get("last_name")) if part
-    ).strip() or profile.get("name") or "Ahmed Khan"
+    ).strip() or profile.get("name") or "Student"
 
     user_email = profile.get("email", "")
     roll_no = profile.get("student_id") or profile.get("roll_no") or profile.get("rollNumber") or ""
@@ -239,17 +250,14 @@ def get_student_metadata(db: Session, course: Optional[Course]) -> Dict[str, str
             roll_no = digits_match.group(1)
         else:
             roll_no = user_email.split("@")[0]
-    if not roll_no:
-        roll_no = "232530"
-
     course_name = course.name if course else "Course"
     instructor = (course.teacher_name if course and course.teacher_name else "") or "Course Instructor"
-    section = (course.section if course and course.section else "") or "BSCSev-F-23-A-925"
+    section = (course.section if course and course.section else "") or "Not provided"
 
     return {
         "student_name": student_name,
         "roll_no": roll_no,
-        "student_email": user_email or "232530@students.au.edu.pk",
+        "student_email": user_email,
         "course_name": course_name,
         "instructor": instructor,
         "section": section,
@@ -257,44 +265,6 @@ def get_student_metadata(db: Session, course: Optional[Course]) -> Dict[str, str
         "department": "Department of Computer Science & Information Technology",
         "date": datetime.now().strftime("%B %d, %Y")
     }
-
-
-def scan_local_downloads_for_assignment(assignment: Assignment, course: Optional[Course] = None) -> List[str]:
-    """Scan the user's Downloads folder for newly downloaded assignment sheets or lab manuals."""
-    downloads_dir = Path.home() / "Downloads"
-    if not downloads_dir.exists() or not downloads_dir.is_dir():
-        return []
-
-    found_files: List[str] = []
-    keywords = set()
-    for text in (assignment.title, getattr(course, "name", ""), getattr(course, "external_id", "")):
-        if text:
-            clean_words = re.findall(r'[a-zA-Z0-9]{3,}', text.lower())
-            keywords.update(clean_words)
-
-    keywords = {k for k in keywords if k not in {"the", "and", "for", "with", "from", "fall", "spring", "2026", "2025"}}
-
-    now = time.time()
-    valid_exts = {".pdf", ".docx", ".doc", ".txt", ".zip", ".py", ".cpp", ".sql", ".java", ".asm"}
-
-    try:
-        for item in downloads_dir.iterdir():
-            if item.is_file() and item.suffix.lower() in valid_exts:
-                try:
-                    mtime = item.stat().st_mtime
-                    if now - mtime < 7 * 86400:
-                        fname = item.name.lower()
-                        if any(k in fname for k in keywords) or ("assignment" in fname and str(assignment.id) in fname) or ("lab" in fname and any(k in fname for k in keywords)):
-                            dest = CLAUDE_MATERIALS_DIR / f"assignment_{assignment.id}_dl_{item.name}"
-                            if not dest.exists() or dest.stat().st_size == 0:
-                                shutil.copy2(item, dest)
-                            found_files.append(str(dest.resolve()))
-                except Exception:
-                    pass
-    except Exception as err:
-        logger.debug(f"Downloads scan error: {err}")
-
-    return found_files
 
 
 def extract_assignment_question_text(db: Session, assignment: Assignment) -> str:
@@ -313,57 +283,92 @@ def extract_assignment_question_text(db: Session, assignment: Assignment) -> str
 
 def prepare_assignment_materials(db: Session, assignment: Assignment, course: Optional[Course] = None) -> List[str]:
     """
-    Ensure all assignment files (PDFs, docs) are downloaded locally and ready for upload to Claude.
-    Returns list of absolute file paths.
+    Return only files explicitly attached to this assignment, ready for Claude upload.
     """
     materials = db.query(AssignmentMaterial).filter(AssignmentMaterial.assignment_id == assignment.id).all()
     file_paths: List[str] = []
-    docs_service = get_google_docs_service(db)
+    docs_service = get_google_docs_service(db, user_id=assignment.user_id)
 
-    # 1. Check existing cached materials in materials dir
-    cached_pattern = f"assignment_{assignment.id}_"
-    for f in CLAUDE_MATERIALS_DIR.glob(f"{cached_pattern}*"):
-        if f.is_file() and f.stat().st_size > 0 and not f.name.endswith("_questions.txt"):
-            file_paths.append(str(f.resolve()))
-
-    # 2. Check and download from Google Drive
     for m in materials:
+        title = m.title or f"assignment_{assignment.id}_material"
+        safe_title = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', title)
+
+        if m.material_type == "local_upload":
+            local_path = CLAUDE_MATERIALS_DIR / f"assignment_{assignment.id}_{safe_title}"
+            if local_path.is_file() and local_path.stat().st_size > 0:
+                file_paths.append(str(local_path.resolve()))
+            else:
+                logger.warning("Attached local material %s is missing from disk.", m.title or m.id)
+            continue
+
         if m.drive_file_id and docs_service:
             try:
-                title = m.title or f"assignment_{assignment.id}_material.pdf"
-                safe_title = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', title)
-                if not safe_title.lower().endswith(('.pdf', '.docx', '.doc', '.txt', '.zip')):
-                    safe_title += ".pdf"
-                dest_path = CLAUDE_MATERIALS_DIR / f"assignment_{assignment.id}_{safe_title}"
-
-                if not dest_path.exists() or dest_path.stat().st_size == 0:
-                    data = docs_service.download_file(m.drive_file_id)
-                    if data:
-                        dest_path.write_bytes(data)
-                        logger.info(f"Downloaded material for assignment {assignment.id}: {dest_path}")
-
-                if dest_path.exists() and dest_path.stat().st_size > 0:
-                    file_paths.append(str(dest_path.resolve()))
+                if not safe_title.lower().endswith(('.pdf', '.docx', '.doc', '.txt', '.zip', '.py', '.java', '.cpp', '.sql')):
+                    extension = {
+                        "application/pdf": ".pdf",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+                        "application/msword": ".doc",
+                        "text/plain": ".txt",
+                    }.get(m.mime_type or "", ".pdf")
+                    safe_title += extension
+                dest_path = CLAUDE_MATERIALS_DIR / f"assignment_{assignment.id}_material_{m.id}_{safe_title}"
+                data = docs_service.download_file(m.drive_file_id)
+                if not data:
+                    logger.warning("Google Drive returned no content for attached material %s.", m.title or m.id)
+                    continue
+                dest_path.write_bytes(data)
+                file_paths.append(str(dest_path.resolve()))
+                logger.info("Downloaded attached material for assignment %s: %s", assignment.id, dest_path)
             except Exception as e:
                 logger.warning(f"Could not download material {m.id} for assignment {assignment.id}: {e}")
 
-    # 3. Check local Downloads folder
-    dl_files = scan_local_downloads_for_assignment(assignment, course)
-    file_paths.extend(dl_files)
-    file_paths = list(dict.fromkeys(file_paths))
-
-    # 4. Fallback: if materials only have extracted content and no binaries, dump to question text
-    if not file_paths:
-        combined_text = []
-        for m in materials:
-            if m.content and m.content.strip():
-                combined_text.append(f"--- Material: {m.title or 'Attachment'} ---\n{m.content.strip()}")
-        if combined_text:
-            text_path = CLAUDE_MATERIALS_DIR / f"assignment_{assignment.id}_questions.txt"
-            text_path.write_text("\n\n".join(combined_text), encoding="utf-8")
-            file_paths.append(str(text_path.resolve()))
-
     return list(dict.fromkeys(file_paths))
+
+
+def _handle_google_oauth_if_needed(page, student_email: str = "232530@students.au.edu.pk") -> bool:
+    """Handle Google OAuth sign-in / account selection for Claude."""
+    try:
+        url = (getattr(page, "url", "") or "").lower()
+        if "accounts.google.com" not in url:
+            return False
+
+        # 1. Check if the student account is listed in the account chooser
+        account_token = student_email.split("@")[0].lower() if "@" in student_email else student_email.lower()
+        chooser = page.locator(f'[data-email*="{account_token}" i], [data-identifier*="{account_token}" i], div:has-text("{student_email}"), div:has-text("{account_token}")').first
+        if chooser.count() > 0 and chooser.is_visible():
+            logger.info(f"Selecting Google account {student_email} in account chooser...")
+            chooser.click()
+            page.wait_for_timeout(2000)
+            return True
+
+        # 2. Check if there's an email input field
+        email_input = page.locator('input[type="email"], #identifierId, input[name="identifier"]').first
+        if email_input.count() > 0 and email_input.is_visible():
+            logger.info(f"Filling Google login email: {student_email}")
+            email_input.fill(student_email)
+            page.wait_for_timeout(500)
+            next_btn = page.locator('#identifierNext, button:has-text("Next")').first
+            if next_btn.count() > 0 and next_btn.is_visible():
+                next_btn.click()
+                page.wait_for_timeout(2000)
+                return True
+
+        # 3. Check for Consent / Allow / Continue buttons
+        for btn_sel in (
+            'button:has-text("Continue")',
+            'button:has-text("Allow")',
+            '#submit_approve_access',
+            'button:has-text("I agree")',
+        ):
+            c_btn = page.locator(btn_sel).first
+            if c_btn.count() > 0 and c_btn.is_visible():
+                logger.info(f"Clicking Google OAuth consent: {btn_sel}")
+                c_btn.click()
+                page.wait_for_timeout(2000)
+                return True
+    except Exception as e:
+        logger.debug(f"Google OAuth helper error: {e}")
+    return False
 
 
 def _handle_claude_login_and_oauth(page, student_email: str = "232530@students.au.edu.pk", max_retries: int = 4) -> bool:
@@ -389,7 +394,6 @@ def _handle_claude_login_and_oauth(page, student_email: str = "232530@students.a
             p_url = (getattr(p_item, "url", "") or "").lower()
             if "accounts.google.com" in p_url:
                 try:
-                    from app.portal.router import _handle_google_oauth_if_needed
                     logger.info(f"Handling Google OAuth for Claude in popup/tab: {p_url[:80]} (email: {student_email})...")
                     _handle_google_oauth_if_needed(p_item, student_email=student_email)
                     if hasattr(p_item, "wait_for_timeout"):
@@ -402,7 +406,7 @@ def _handle_claude_login_and_oauth(page, student_email: str = "232530@students.a
             "button:has-text('Acknowledge')",
             "button:has-text('Got it')",
             "button:has-text('Accept')",
-            "button:has-text('Continue')",
+            "button:text-is('Continue')",
             "button:has-text('I agree')",
             "button:has-text('Skip')",
             "[aria-label*='Close' i]",
@@ -490,10 +494,29 @@ def build_academic_cover_markdown(meta: Dict[str, str], assignment_title: str) -
     )
 
 
+def is_heavy_ml_assignment(assignment_context: str) -> bool:
+    """Identify assignments that should be delivered as a Colab notebook, not locally run."""
+    return bool(_HEAVY_ML_PATTERN.search(assignment_context or ""))
+
+
+def remove_heavy_ml_code_fences(markdown: str) -> str:
+    """Keep diagrams and notebook fences while omitting local-run code for heavy ML tasks."""
+    def keep_or_remove(match: re.Match) -> str:
+        tag = (match.group(1) or "").lower()
+        return match.group(0) if tag in _DIAGRAM_FENCE_TAGS or tag == "colab-json" else ""
+
+    return re.sub(
+        r"(?ms)^```([^\s`]*)[^\n]*\n.*?^```[ \t]*$",
+        keep_or_remove,
+        markdown,
+    )
+
+
 def solve_assignment_via_claude_browser(
     db: Session,
     assignment_id: int,
-    max_wait_seconds: int = 180
+    max_wait_seconds: int = 180,
+    user_id: str = "legacy",
 ) -> Dict[str, Any]:
     """
     Autonomous pipeline that connects to the user's Chrome browser, attaches assignment PDFs/materials,
@@ -502,31 +525,54 @@ def solve_assignment_via_claude_browser(
     """
     from playwright.sync_api import sync_playwright
 
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    assignment = db.query(Assignment).filter(
+        Assignment.id == assignment_id,
+        Assignment.user_id == user_id,
+    ).first()
     if not assignment:
         return {"status": "error", "error": f"Assignment {assignment_id} not found"}
 
-    course = db.query(Course).filter(Course.id == assignment.course_id).first()
-    meta = get_student_metadata(db, course)
+    if _is_assignment_already_solving(db, assignment_id, user_id):
+        logger.warning("Claude solver called for assignment %s while another solve is in progress.", assignment_id)
+        return {
+            "status": "already_running",
+            "error": "A solution is already being generated for this assignment. Please wait for it to complete.",
+        }
+
+    course = db.query(Course).filter(
+        Course.id == assignment.course_id,
+        Course.user_id == user_id,
+    ).first()
+    meta = get_student_metadata(db, course, user_id=user_id)
     attachment_paths = prepare_assignment_materials(db, assignment, course)
     extracted_text = extract_assignment_question_text(db, assignment)
 
-    student_email = meta.get("student_email") or "232530@students.au.edu.pk"
-
-    # 1. Ensure Chrome CDP endpoint is ready
-    port = get_active_cdp_port()
-    if port is None:
-        launch_res = open_claude_browser_window(student_email=student_email)
-        if launch_res.get("status") == "error":
-            return launch_res
-        port = get_active_cdp_port()
-        if port is None:
+    # Users must sign into their own hosted browser profile in production.
+    # In development, fall back to an isolated local Chrome profile so the flow can be tested.
+    from app.services.browser_sessions import BrowserSessionClient
+    try:
+        endpoint = BrowserSessionClient().cdp_endpoint(user_id)
+    except Exception as error:
+        logger.warning("Hosted Claude browser is unavailable for user %s: %s", user_id, error)
+        if settings.environment == "development":
+            logger.info("Development mode: falling back to isolated local Chrome profile.")
+            launch_result = open_claude_browser_window()
+            if launch_result.get("status") not in ("ready", "launched"):
+                return {
+                    "status": "needs_login",
+                    "error": (
+                        "Could not start a local Claude browser and the hosted browser service is unavailable. "
+                        f"Details: {launch_result.get('error', 'unknown error')}"
+                    ),
+                }
+            endpoint = f"http://127.0.0.1:{USER_CDP_PORT}"
+        else:
             return {
-                "status": "error",
-                "error": "Chrome was launched, but its remote debugging port (21735) is not responding yet. Please ensure Chrome opened and try again."
+                "status": "needs_login",
+                "error": "Start and sign into your private Claude browser from Settings, then resume this assignment.",
             }
 
-    logger.info(f"Connecting to Chrome on CDP port {port} for Assignment {assignment_id}...")
+    logger.info("Connecting to the private Claude browser for assignment %s.", assignment_id)
 
     # Set Playwright bypass for context-management errors on attached Chromium instances
     os.environ["PW_CHROMIUM_ATTACH_TO_OTHER"] = "1"
@@ -534,11 +580,18 @@ def solve_assignment_via_claude_browser(
     # 2. Connect Playwright over CDP
     with sync_playwright() as p:
         try:
-            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}", timeout=10000)
+            browser = connect_to_chrome(p.chromium, endpoint)
         except Exception as e:
+            logger.error("Could not attach to the hosted Chrome session: %s", e)
             return {
                 "status": "error",
-                "error": f"Could not connect to Chrome on port {port}: {str(e)}"
+                "error": (
+                    "The hosted Chrome DevTools endpoint accepted the connection "
+                    f"but did not complete Playwright's browser handshake after "
+                    f"{CDP_CONNECT_ATTEMPTS} attempts ({CDP_CONNECT_TIMEOUT_MS // 1000}s each). "
+                    "Close and reopen Uniflow's Chrome window, then retry. "
+                    f"Details: {e}"
+                )
             }
 
         context = browser.contexts[0] if browser.contexts else None
@@ -571,43 +624,22 @@ def solve_assignment_via_claude_browser(
         # Allow SPA hydration
         page.wait_for_timeout(3000)
 
-        # 3. Check login status & trigger zero-touch auto-login
+        # 3. Ensure Claude is signed in and a chat input is available.
+        #     The helper auto-dismisses onboarding, clicks "Continue with Google",
+        #     and selects the student account when possible.
         prompt_selector = 'div[contenteditable="true"]'
-        lower_url = (getattr(page, "url", "") or "").lower()
+        student_email = meta.get("student_email") or ""
+        login_ok = _handle_claude_login_and_oauth(page, student_email=student_email, max_retries=4)
+        if not login_ok:
+            return {
+                "status": "needs_login",
+                "error": "Claude is not signed in. Open your private Claude browser, sign in, then resume this assignment.",
+            }
 
-        if any(token in lower_url for token in ("login", "logout", "signin")) or "accounts.google.com" in lower_url:
-            logger.info("Attempting zero-touch Claude sign-in via Google OAuth...")
-            student_email = meta.get("student_email") or "232530@students.au.edu.pk"
-            _handle_claude_login_and_oauth(page, student_email=student_email)
-
-            # Wait briefly for OAuth redirect / hydration
-            page.wait_for_timeout(3000)
-
-            # Recheck URL & input after auto-login attempt
-            lower_url = (getattr(page, "url", "") or "").lower()
-            has_input = False
-            try:
-                inp_check = page.locator('div[contenteditable="true"], div[contenteditable]').first
-                has_input = inp_check.count() > 0 and inp_check.is_visible()
-            except Exception:
-                pass
-
-            if not has_input and (any(token in lower_url for token in ("login", "logout", "signin")) or "accounts.google.com" in lower_url):
-                return {
-                    "status": "needs_login",
-                    "error": "Claude is not signed in. The Chrome window is open on screen. Please click 'Continue with Google' to sign in, then click Solve again."
-                }
-
-        # Verify chat input box exists
+        # Verify chat input box exists after login flow
         try:
             page.wait_for_selector('div[contenteditable="true"], div[contenteditable]', timeout=8000)
         except Exception:
-            login_el = page.query_selector("button:has-text('Continue with Google'), a:has-text('Continue with Google'), button:has-text('Log in'), button:has-text('Sign in')")
-            if login_el or any(token in (getattr(page, "url", "") or "").lower() for token in ("login", "logout", "signin")):
-                return {
-                    "status": "needs_login",
-                    "error": "Claude is not signed in. The Chrome window is open on screen. Please click 'Continue with Google' to sign in, then click Solve again."
-                }
             return {
                 "status": "error",
                 "error": "Could not find Claude chat input box. Please verify Claude is loaded and signed in."
@@ -660,26 +692,48 @@ def solve_assignment_via_claude_browser(
         if extracted_text and extracted_text.strip():
             questions_block += f"\nEXTRACTED REFERENCE MATERIAL CONTENT:\n{extracted_text.strip()[:10000]}\n"
 
+        heavy_ml_assignment = is_heavy_ml_assignment(
+            "\n".join((assignment.title or "", assignment.description or "", extracted_text))
+        )
+        heavy_ml_instructions = (
+            "This assignment involves computationally heavy machine-learning/deep-learning work. "
+            "Do not provide a standalone script that should be run on this local machine. "
+            "Instead, provide exactly one valid Jupyter nbformat 4 notebook as JSON in a "
+            "```colab-json fenced block, with markdown explanation cells and complete code cells "
+            "ready for Google Colab. Include setup, dependency installation, dataset instructions, "
+            "GPU/runtime guidance where appropriate, training/evaluation, and reproducible outputs. "
+            "Do not claim the notebook was executed."
+            if heavy_ml_assignment
+            else
+            "For normal programming tasks, provide complete source code in language-labelled fenced "
+            "blocks. For tasks asking for diagrams, include the complete Mermaid, PlantUML, Graphviz, "
+            "or Draw.io source in a labelled fenced block so the diagram can be rendered and its "
+            "source included in the report."
+        )
         prompt_text = (
-            f"You are an expert academic specialist and professor in {meta['course_name']} at Air University, Islamabad.\n\n"
-            f"STUDENT DETAILS:\n"
-            f"- Student Name: {meta['student_name']}\n"
-            f"- Roll No: {meta['roll_no']}\n"
-            f"- Section: {meta['section']}\n"
+            f"You are an expert academic specialist for {meta['course_name']} at Air University, Islamabad.\n\n"
+            f"ASSIGNMENT CONTEXT:\n"
+            f"- Assignment: {assignment.title}\n"
             f"- Course: {meta['course_name']}\n"
-            f"- Assignment Title: {assignment.title}\n"
-            f"- Instructor: {meta['instructor']}\n\n"
+            f"- Instructor: {meta['instructor']}\n"
+            f"- Student: {meta['student_name']} ({meta['roll_no']}, {meta['section']})\n"
+            f"- Assignment-attached files uploaded to this chat: {file_names_str or 'None'}\n\n"
             f"{questions_block}\n"
-            f"INSTRUCTIONS:\n"
-            f"1. Thoroughly review and solve EVERY question, task, problem statement, and requirement presented above and in the attached assignment material"
-            f"{f' ({file_names_str})' if file_names_str else ''}.\n"
-            f"2. For each question:\n"
-            f"   - Clearly restate the Question / Problem Statement.\n"
-            f"   - Provide comprehensive, step-by-step academic explanations, case analyses, and theory.\n"
-            f"   - Provide full, production-ready source code, SQL queries, or visual diagrams (in Mermaid ```mermaid or Draw.io XML ```xml blocks) wherever requested.\n"
-            f"   - Include thorough verification, expected outputs, or component breakdowns.\n"
-            f"3. Do not omit any part. Ensure the submission meets the highest university grading standards.\n"
-            f"4. Format your entire answer in clean, publication-ready Markdown."
+            "ANALYZE FIRST, THEN PREPARE REPORT CONTENT:\n"
+            "1. Treat only the assignment instructions and explicitly listed attached files above as "
+            "assignment materials. Do not introduce unrelated documents or tasks.\n"
+            "2. Identify every task and preserve its exact task name/title. Under each task, provide "
+            "a concise problem statement, analysis/approach, and complete result or answer.\n"
+            "3. Include the complete code or diagram source under the task that uses it. For diagrams, "
+            "also provide a clear visual diagram source; the application will render it for the report.\n"
+            "4. Do not invent terminal output, execution results, screenshots, or claim code was run. "
+            "The application will execute supported code and record its actual terminal output.\n"
+            f"5. {heavy_ml_instructions}\n"
+            "6. Return polished Markdown organized as '# Task N — Exact Task Name' headings and "
+            "separate sections for Analysis, Result, Implementation/Diagram Source where applicable, "
+            "and Conclusion. Do not attempt to create a Google Doc yourself: the application will "
+            "build the final Google Docs report with its university introduction page, task analysis, "
+            "source files, rendered diagrams, and actual execution output."
         )
 
         # 6. Fill prompt and send
@@ -786,10 +840,28 @@ def solve_assignment_via_claude_browser(
 
         # 10. Execute code deliverables & render visual diagrams
         execution_results = []
+        notebook_deliverables = []
         try:
-            from app.services.ai_solution import extract_code_deliverables, extract_diagram_deliverables, append_execution_metadata
+            from app.services.ai_solution import (
+                append_execution_metadata,
+                extract_code_deliverables,
+                extract_colab_notebooks,
+                extract_diagram_deliverables,
+            )
             from app.services.code_runner import SingleFileCodeRunner
             from app.services.browser_tool_runner import BrowserToolRunner
+
+            notebook_deliverables = extract_colab_notebooks(raw_solution_text)
+            if heavy_ml_assignment and not notebook_deliverables:
+                return {
+                    "status": "error",
+                    "error": (
+                        "This heavy machine-learning assignment requires a valid Colab notebook, "
+                        "but Claude did not return one. Retry the solver to generate the notebook."
+                    ),
+                }
+            if heavy_ml_assignment:
+                raw_solution_text = remove_heavy_ml_code_fences(raw_solution_text)
 
             code_deliverables = extract_code_deliverables(raw_solution_text)
             for source_file in code_deliverables.get("files", []):
@@ -812,7 +884,7 @@ def solve_assignment_via_claude_browser(
                         "screenshot_data_uri": diag_res.get("data_uri"),
                         "tool": diag_res.get("tool", "Mermaid / Draw.io Engine")
                     })
-                else:
+                elif not heavy_ml_assignment:
                     run = SingleFileCodeRunner.execute_code(source_file["content"], lang)
                     cmd_str = run.get("command") or f"run {source_file['name']}"
                     stdout_str = run.get("stdout") or ""
@@ -876,12 +948,48 @@ def solve_assignment_via_claude_browser(
         except Exception as exec_err:
             logger.warning(f"Code execution / diagram rendering skipped for Claude solution: {exec_err}")
 
-        # 11. Persist solution into Database
+        # 11. Build the required Google Docs report before marking the solution complete.
         solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
         if not solution:
             solution = AssignmentSolution(assignment_id=assignment_id)
             db.add(solution)
 
+        doc_result = None
+        try:
+            doc_result = export_solution_to_google_doc(
+                db,
+                assignment,
+                final_solution_content,
+                execution_results=execution_results,
+                notebook_deliverables=notebook_deliverables,
+                user_id=user_id,
+            )
+        except Exception as doc_err:
+            logger.error("Google Docs report export failed for assignment %s: %s", assignment_id, doc_err)
+
+        if not doc_result:
+            error_message = (
+                "The solution was generated, but its required Google Docs report could not be created. "
+                "Check that Google Drive and Docs are connected, then retry from the solution panel."
+            )
+            solution.draft_content = final_solution_content
+            solution.validated_content = None
+            solution.ai_provider = "claude_browser"
+            solution.validation_errors = error_message
+            solution.generated_at = datetime.now(timezone.utc)
+            solution.validated_at = None
+            assignment.status = AssignmentStatus.DRAFT
+            db.commit()
+            return {
+                "status": "draft",
+                "assignment_id": assignment_id,
+                "solution_id": solution.id,
+                "characters": len(final_solution_content),
+                "attachments_used": attachment_paths,
+                "error": error_message,
+            }
+
+        # 12. Persist the completed solution after the report is available.
         solution.draft_content = final_solution_content
         solution.validated_content = final_solution_content
         solution.ai_provider = "claude_browser"
@@ -890,13 +998,6 @@ def solve_assignment_via_claude_browser(
         solution.validated_at = datetime.now(timezone.utc)
         assignment.status = AssignmentStatus.READY_FOR_REVIEW
         db.commit()
-
-        # 12. Export to Google Doc if connected
-        doc_result = None
-        try:
-            doc_result = export_solution_to_google_doc(db, assignment, final_solution_content, execution_results=execution_results)
-        except Exception as doc_err:
-            logger.warning(f"Google Docs export skipped or failed: {doc_err}")
 
         return {
             "status": "completed",

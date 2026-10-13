@@ -1,0 +1,30 @@
+services:
+  claude-browser-host:
+    build:
+      context: .
+      dockerfile: Dockerfile.browser-host
+    environment:
+      BROWSER_PROFILE_ROOT: /data/profiles
+      BROWSER_CDP_PORT_START: "12000"
+      BROWSER_CDP_PORT_COUNT: "200"
+      MAX_BROWSER_SESSIONS: "20"
+      BROWSER_SERVICE_TOKEN: ${BROWSER_SERVICE_TOKEN:?Set BROWSER_SERVICE_TOKEN before starting the browser host}
+      BROWSER_VIEWER_SECRET: ${BROWSER_VIEWER_SECRET:?Set BROWSER_VIEWER_SECRET before starting the browser host}
+    ports:
+      - "127.0.0.1:7900:7900"
+      - "127.0.0.1:12000-12199:12000-12199"
+    volumes:
+      - claude_browser_profiles:/data/profiles
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7900/health', timeout=2)"
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  claude_browser_profiles:

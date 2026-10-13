@@ -1,0 +1,158 @@
+name: CI and Azure backend deployment
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements.txt
+      - name: Run backend tests
+        working-directory: backend
+        run: >-
+          python -m pytest -q
+          tests/test_assignment_scheduling.py
+          tests/test_attendance_calculation.py
+          tests/test_health.py
+
+  frontend-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_API_URL: https://api.example.com/api/v1
+        run: npm run build
+
+  container-build-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile.api
+          push: false
+      - name: Build Claude browser image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile.browser-host
+          push: false
+
+  publish-and-deploy:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [backend-tests, container-build-checks]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: azure-production-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Azure deployment secrets
+        env:
+          AZURE_VM_HOST: ${{ secrets.AZURE_VM_HOST }}
+          AZURE_VM_USER: ${{ secrets.AZURE_VM_USER }}
+          AZURE_VM_SSH_PRIVATE_KEY: ${{ secrets.AZURE_VM_SSH_PRIVATE_KEY }}
+          AZURE_VM_KNOWN_HOSTS: ${{ secrets.AZURE_VM_KNOWN_HOSTS }}
+          GHCR_PULL_USERNAME: ${{ secrets.GHCR_PULL_USERNAME }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: |
+          for name in AZURE_VM_HOST AZURE_VM_USER AZURE_VM_SSH_PRIVATE_KEY AZURE_VM_KNOWN_HOSTS GHCR_PULL_USERNAME GHCR_PULL_TOKEN; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error title=Missing deployment secret::$name is required"
+              exit 1
+            fi
+          done
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$AZURE_VM_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          if ! ssh-keygen -F "$AZURE_VM_HOST" -f ~/.ssh/known_hosts >/dev/null; then
+            echo "::error title=SSH host key mismatch::AZURE_VM_KNOWN_HOSTS must contain a verified key for AZURE_VM_HOST"
+            exit 1
+          fi
+      - name: Set image tag
+        run: echo "IMAGE_TAG=${GITHUB_SHA}" >> "$GITHUB_ENV"
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Publish API image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile.api
+          push: true
+          tags: ghcr.io/iahmedd-k/univflow-api:${{ env.IMAGE_TAG }}
+      - name: Publish Claude browser image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile.browser-host
+          push: true
+          tags: ghcr.io/iahmedd-k/univflow-browser-host:${{ env.IMAGE_TAG }}
+      - name: Copy deployment files to Azure VM
+        env:
+          AZURE_VM_HOST: ${{ secrets.AZURE_VM_HOST }}
+          AZURE_VM_USER: ${{ secrets.AZURE_VM_USER }}
+          AZURE_VM_SSH_PRIVATE_KEY: ${{ secrets.AZURE_VM_SSH_PRIVATE_KEY }}
+        run: |
+          printf '%s\n' "$AZURE_VM_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          target="${AZURE_VM_USER}@${AZURE_VM_HOST}"
+          remote_dir="/home/${AZURE_VM_USER}/univflow-deploy"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" "mkdir -p '$remote_dir'"
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes backend/deploy/docker-compose.azure.yml "$target:$remote_dir/docker-compose.azure.yml"
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes backend/deploy/Caddyfile "$target:$remote_dir/Caddyfile"
+      - name: Deploy to Azure VM
+        env:
+          AZURE_VM_HOST: ${{ secrets.AZURE_VM_HOST }}
+          AZURE_VM_USER: ${{ secrets.AZURE_VM_USER }}
+          GHCR_PULL_USERNAME: ${{ secrets.GHCR_PULL_USERNAME }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: |
+          target="${AZURE_VM_USER}@${AZURE_VM_HOST}"
+          remote_dir="/home/${AZURE_VM_USER}/univflow-deploy"
+          printf '%s' "$GHCR_PULL_TOKEN" | ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" \
+            "docker login ghcr.io --username '$GHCR_PULL_USERNAME' --password-stdin"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" \
+            "cd '$remote_dir' && IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml pull && IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml run --rm api alembic upgrade head && IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml up -d --wait --wait-timeout 180 --remove-orphans"

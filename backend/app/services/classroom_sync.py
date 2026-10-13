@@ -1,27 +1,43 @@
 import json
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.repositories import CourseRepository, AssignmentRepository, ClassScheduleRepository, AnnouncementRepository
-from app.db.models import Course, Assignment, ClassSchedule, GoogleCredential, SubmissionState, Setting
+from app.db.models import (
+    BrowserAutomationJob,
+    Course,
+    Assignment,
+    ClassSchedule,
+    GoogleCredential,
+    SubmissionState,
+    Setting,
+    AssignmentSolution,
+)
 from app.core.config import settings
 from app.core.logging import logger
 
 
 class ClassroomSyncService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, user_id: str = "legacy"):
         self.db = db
+        self.user_id = user_id
         self.service = None
+        self._new_assignments: Dict[int, Optional[datetime]] = {}
+        self._submission_sync_failed: set[str] = set()
         self._load_credentials()
 
     def _load_credentials(self) -> bool:
         """Load Google credentials from database"""
-        cred_row = self.db.query(GoogleCredential).first()
+        cred_row = self.db.query(GoogleCredential).filter(
+            GoogleCredential.user_id == self.user_id
+        ).first()
         if not cred_row:
             logger.warning("No Google credentials found in database")
             return False
@@ -55,9 +71,10 @@ class ClassroomSyncService:
     def _save_semester_start_date(self, dt: datetime):
         """Persist auto-detected semester start date in settings"""
         try:
-            setting = self.db.query(Setting).filter(Setting.key == "semester_start_date").first()
+            setting_key = f"classroom:{self.user_id}:semester_start_date"
+            setting = self.db.query(Setting).filter(Setting.key == setting_key).first()
             if not setting:
-                setting = Setting(key="semester_start_date", value=dt.isoformat(), description="Current semester start boundary")
+                setting = Setting(key=setting_key, value=dt.isoformat(), description="Current semester start boundary")
                 self.db.add(setting)
             else:
                 setting.value = dt.isoformat()
@@ -67,7 +84,8 @@ class ClassroomSyncService:
 
     def _get_configured_since_date(self) -> datetime:
         """Get semester start date from database settings or automatically derive from portal calendar."""
-        setting = self.db.query(Setting).filter(Setting.key == "semester_start_date").first()
+        setting_key = f"classroom:{self.user_id}:semester_start_date"
+        setting = self.db.query(Setting).filter(Setting.key == setting_key).first()
         if setting and setting.value:
             try:
                 # Value can be ISO format YYYY-MM-DD or full timestamp
@@ -124,6 +142,9 @@ class ClassroomSyncService:
             "since_date": since_date.isoformat() if since_date else None,
             "errors": []
         }
+        bootstrap_key = f"classroom:{self.user_id}:auto_solve_bootstrapped"
+        bootstrap = self.db.query(Setting).filter(Setting.key == bootstrap_key).first()
+        is_initial_sync = not (bootstrap and bootstrap.value == "true")
 
         try:
             courses = self._get_all_courses()
@@ -131,6 +152,9 @@ class ClassroomSyncService:
                 try:
                     course_id = course["id"]
                     
+                    # Create the account-owned course before upserting its coursework.
+                    db_course = self._sync_course(course, is_active=True)
+
                     # 1. Sync coursework and announcements with since_date filter
                     assignments_count = self._sync_coursework(course_id, since_date=since_date)
                     announcements_count = self._sync_announcements(course, since_date=since_date)
@@ -171,12 +195,74 @@ class ClassroomSyncService:
             if since_date:
                 self._cleanup_outdated_db_records(since_date)
 
+            self._enqueue_new_assignments(is_initial_sync)
+            if not results["errors"]:
+                if bootstrap is None:
+                    bootstrap = Setting(
+                        key=bootstrap_key,
+                        value="true",
+                        description="Initial Google Classroom import completed; older work is not auto-queued.",
+                    )
+                    self.db.add(bootstrap)
+                else:
+                    bootstrap.value = "true"
+                self.db.commit()
+
             logger.info(f"Classroom sync complete (since {since_date}): {results}")
         except Exception as e:
             logger.error(f"Sync failed: {e}")
             results["errors"].append(str(e))
 
         return results
+
+    def _enqueue_new_assignments(self, is_initial_sync: bool) -> None:
+        enabled_key = f"classroom:{self.user_id}:auto_solve_enabled"
+        enabled = self.db.query(Setting).filter(Setting.key == enabled_key).first()
+        if is_initial_sync or not enabled or enabled.value != "true":
+            return
+
+        now = datetime.now(timezone.utc)
+        oldest_eligible_creation = now - timedelta(days=7)
+        for assignment_id, created_at in self._new_assignments.items():
+            if not created_at or created_at < oldest_eligible_creation:
+                continue
+            assignment = self.db.query(Assignment).filter(
+                Assignment.id == assignment_id,
+                Assignment.user_id == self.user_id,
+            ).first()
+            if (
+                not assignment
+                or getattr(assignment.state, "value", assignment.state) != "PUBLISHED"
+                or assignment.is_quiz
+                or (assignment.work_type or "").upper() != "ASSIGNMENT"
+                or (assignment.due_at and assignment.due_at < now)
+            ):
+                continue
+
+            submission_state = getattr(assignment.submission_state, "value", assignment.submission_state)
+            if assignment.course.external_id in self._submission_sync_failed:
+                continue
+            if submission_state not in {"NEW", "CREATED"}:
+                continue
+            if self.db.query(AssignmentSolution.id).filter(
+                AssignmentSolution.assignment_id == assignment.id,
+            ).first():
+                continue
+
+            job = BrowserAutomationJob(
+                user_id=self.user_id,
+                assignment_id=assignment.id,
+                status="pending",
+                queued_at=now,
+            )
+            try:
+                with self.db.begin_nested():
+                    self.db.add(job)
+                    self.db.flush()
+            except IntegrityError:
+                continue
+
+        self.db.commit()
 
     def _cleanup_outdated_db_records(self, since_date: datetime):
         """Mark old semester courses as ARCHIVED and remove obsolete past-semester assignments"""
@@ -185,6 +271,7 @@ class ClassroomSyncService:
             
             # Find old assignments
             old_assignments = self.db.query(Assignment).filter(
+                Assignment.user_id == self.user_id,
                 (Assignment.due_at < since_date) |
                 (Assignment.due_at.is_(None) & (Assignment.created_at < since_date))
             ).all()
@@ -195,12 +282,19 @@ class ClassroomSyncService:
                 self.db.query(AssignmentMaterial).filter(AssignmentMaterial.assignment_id.in_(old_ids)).delete(synchronize_session=False)
                 self.db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id.in_(old_ids)).delete(synchronize_session=False)
                 self.db.query(Submission).filter(Submission.assignment_id.in_(old_ids)).delete(synchronize_session=False)
+                self.db.query(BrowserAutomationJob).filter(
+                    BrowserAutomationJob.user_id == self.user_id,
+                    BrowserAutomationJob.assignment_id.in_(old_ids),
+                ).delete(synchronize_session=False)
                 
                 # Now delete assignments
-                self.db.query(Assignment).filter(Assignment.id.in_(old_ids)).delete(synchronize_session=False)
+                self.db.query(Assignment).filter(
+                    Assignment.user_id == self.user_id,
+                    Assignment.id.in_(old_ids),
+                ).delete(synchronize_session=False)
 
             # Check courses: if course has no active assignments and was created before since_date, mark ARCHIVED
-            all_courses = self.db.query(Course).all()
+            all_courses = self.db.query(Course).filter(Course.user_id == self.user_id).all()
             for c in all_courses:
                 has_active_assignments = self.db.query(Assignment).filter(Assignment.course_id == c.id).count() > 0
                 is_recent = c.updated_at and c.updated_at >= since_date
@@ -264,15 +358,17 @@ class ClassroomSyncService:
         """Sync a single course to database"""
         repo = CourseRepository(self.db)
 
-        existing = repo.get_by_external_id(course_data["id"])
+        existing = repo.get_by_external_id(course_data["id"], self.user_id)
         state = "ACTIVE" if is_active and course_data.get("courseState") == "ACTIVE" else "ARCHIVED"
+        teacher_name = (existing.teacher_name if existing and existing.teacher_name else self._get_teacher_name(course_data["id"]))
         course_dict = {
+            "user_id": self.user_id,
             "external_id": course_data["id"],
             "name": course_data.get("name", ""),
             "section": course_data.get("section", ""),
             "description": course_data.get("description", ""),
             "room": course_data.get("room", ""),
-            "teacher_name": self._get_teacher_name(course_data["id"]),
+            "teacher_name": teacher_name,
             "course_state": state,
             "alternate_link": course_data.get("alternateLink", ""),
         }
@@ -299,7 +395,10 @@ class ClassroomSyncService:
 
     def _sync_coursework(self, course_id: str, since_date: Optional[datetime] = None) -> int:
         """Sync coursework (assignments) for a course, skipping items older than since_date"""
-        course = self.db.query(Course).filter(Course.external_id == course_id).first()
+        course = self.db.query(Course).filter(
+            Course.external_id == course_id,
+            Course.user_id == self.user_id,
+        ).first()
         if not course:
             return 0
 
@@ -358,7 +457,7 @@ class ClassroomSyncService:
         repo = AssignmentRepository(self.db)
 
         external_id = work["id"]
-        existing = repo.get_by_external_id(external_id)
+        existing = repo.get_by_external_id(external_id, self.user_id)
 
         # Parse due date
         due_at = None
@@ -372,6 +471,7 @@ class ClassroomSyncService:
             )
 
         assignment_dict = {
+            "user_id": self.user_id,
             "external_id": external_id,
             "course_id": course_db_id,
             "title": work.get("title", ""),
@@ -393,13 +493,27 @@ class ClassroomSyncService:
             self._sync_materials(existing.id, work.get("materials", []))
             return existing
         else:
+            created_value = work.get("creationTime")
+            created_at = (
+                datetime.fromisoformat(created_value.replace("Z", "+00:00"))
+                if created_value else None
+            )
             assignment = repo.create(assignment_dict)
+            self._new_assignments[assignment.id] = created_at
             self._sync_materials(assignment.id, work.get("materials", []))
-        return assignment
+            try:
+                from app.services.alert_service import AlertService
+                AlertService(self.db).notify_new_assignment(assignment)
+            except Exception as e:
+                logger.warning(f"Could not dispatch new assignment notification for {assignment.id}: {e}")
+            return assignment
 
     def _sync_student_submission_states(self, course_id: str) -> int:
         """Update this account's own turned-in/returned state for every course item."""
-        course = self.db.query(Course).filter(Course.external_id == course_id).first()
+        course = self.db.query(Course).filter(
+            Course.external_id == course_id,
+            Course.user_id == self.user_id,
+        ).first()
         if not course:
             return 0
 
@@ -418,6 +532,7 @@ class ClassroomSyncService:
                     assignment = self.db.query(Assignment).filter(
                         Assignment.course_id == course.id,
                         Assignment.external_id == submission.get("courseWorkId"),
+                        Assignment.user_id == self.user_id,
                     ).first()
                     state = submission.get("state")
                     if assignment and state and state in SubmissionState.__members__:
@@ -428,6 +543,7 @@ class ClassroomSyncService:
                     self.db.commit()
                     return count
         except HttpError as error:
+            self._submission_sync_failed.add(course_id)
             logger.warning(f"Could not sync own submission states for course {course_id}: {error}")
             self.db.rollback()
             return 0
@@ -438,7 +554,10 @@ class ClassroomSyncService:
         count = 0
         page_token = None
         course_id = course_data["id"]
-        local_course = self.db.query(Course).filter(Course.external_id == course_id).first()
+        local_course = self.db.query(Course).filter(
+            Course.external_id == course_id,
+            Course.user_id == self.user_id,
+        ).first()
         if not local_course:
             return 0
         while True:
@@ -539,9 +658,9 @@ class ClassroomSyncService:
                 return students
 
 
-def get_classroom_service(db: Session = None) -> Optional[ClassroomSyncService]:
+def get_classroom_service(db: Session = None, user_id: str = "legacy") -> Optional[ClassroomSyncService]:
     """Factory function to get ClassroomSyncService"""
     if db is None:
         db = next(get_db())
-    service = ClassroomSyncService(db)
+    service = ClassroomSyncService(db, user_id=user_id)
     return service if service.service else None

@@ -14,11 +14,22 @@ from app.assignments.schemas.assignment import (
     ApprovalMode, DocumentFetchRequest
 )
 from app.assignments.services.assignment_service import AssignmentService
+from app.auth.clerk_auth import get_current_user_optional
+from app.core.config import settings
 
 router = APIRouter(prefix="/assignments", tags=["assignments"])
 
 # Dependency injection
 assignment_service: AssignmentService = None
+
+
+def _authenticated_user_id(user: Optional[dict]) -> str:
+    user_id = str((user or {}).get("id") or "")
+    if user_id:
+        return user_id
+    if settings.environment == "development":
+        return "dev_student_user"
+    raise HTTPException(status_code=401, detail="Sign in to access assignments.")
 
 
 def get_assignment_service(db: Session = Depends(get_db)) -> AssignmentService:
@@ -56,7 +67,8 @@ def list_assignments(
     status: Optional[str] = Query(None),
     since: Optional[str] = Query(None),
     course_id: Optional[int] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """
     Fast DB-first assignments endpoint with course metadata and attached materials joined.
@@ -73,8 +85,11 @@ def list_assignments(
                 since_dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
         except Exception:
             pass
+    user_id = _authenticated_user_id(clerk_user)
     if not since_dt:
-        sem_setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
+        sem_setting = db.query(Setting).filter(
+            Setting.key == f"classroom:{user_id}:semester_start_date"
+        ).first()
         if sem_setting and sem_setting.value:
             try:
                 val = sem_setting.value.strip().replace('"', '')
@@ -91,7 +106,11 @@ def list_assignments(
         db.query(Assignment, Course, Submission)
         .outerjoin(Course, Assignment.course_id == Course.id)
         .outerjoin(Submission, Submission.assignment_id == Assignment.id)
-        .filter(Course.course_state.in_(["ACTIVE", "active", ""]) | Course.course_state.is_(None))
+        .filter(
+            Assignment.user_id == user_id,
+            Course.user_id == user_id,
+            Course.course_state.in_(["ACTIVE", "active", ""]) | Course.course_state.is_(None),
+        )
         .filter(
             (Assignment.due_at >= since_dt) | 
             (Assignment.due_at.is_(None) & (Assignment.created_at >= since_dt))
@@ -173,14 +192,16 @@ def list_assignments(
 @router.get("/{assignment_id}")
 def get_assignment_by_id(
     assignment_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Retrieve single assignment with course and materials."""
+    user_id = _authenticated_user_id(clerk_user)
     result = (
         db.query(Assignment, Course, Submission)
         .outerjoin(Course, Assignment.course_id == Course.id)
         .outerjoin(Submission, Submission.assignment_id == Assignment.id)
-        .filter(Assignment.id == assignment_id)
+        .filter(Assignment.id == assignment_id, Assignment.user_id == user_id)
         .first()
     )
     if not result:
@@ -251,15 +272,21 @@ async def ingest_assignment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _find_assignment(db: Session, assignment_id: str | int) -> Optional[Assignment]:
+def _find_assignment(db: Session, assignment_id: str | int, user_id: str) -> Optional[Assignment]:
     try:
         aid = int(assignment_id)
-        res = db.query(Assignment).filter(Assignment.id == aid).first()
+        res = db.query(Assignment).filter(
+            Assignment.id == aid,
+            Assignment.user_id == user_id,
+        ).first()
         if res:
             return res
     except (ValueError, TypeError):
         pass
-    return db.query(Assignment).filter(Assignment.external_id == str(assignment_id)).first()
+    return db.query(Assignment).filter(
+        Assignment.external_id == str(assignment_id),
+        Assignment.user_id == user_id,
+    ).first()
 
 
 TUTOR_SYSTEM_PROMPT = """
@@ -311,13 +338,18 @@ Output valid JSON matching:
 
 
 @router.get("/{assignment_id}/breakdown", response_model=dict)
-def get_assignment_breakdown(assignment_id: str, db: Session = Depends(get_db)):
+def get_assignment_breakdown(
+    assignment_id: str,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Get structured requirements breakdown for the assignment tutor panel"""
     import json
     import re
     from app.services.ai_solution import _call_groq
 
-    assignment = _find_assignment(db, assignment_id)
+    user_id = _authenticated_user_id(clerk_user)
+    assignment = _find_assignment(db, assignment_id, user_id)
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
@@ -368,15 +400,24 @@ class TutorChatRequest(BaseModel):
 
 
 @router.post("/{assignment_id}/tutor", response_model=dict)
-def ask_assignment_tutor(assignment_id: str, payload: TutorChatRequest, db: Session = Depends(get_db)):
+def ask_assignment_tutor(
+    assignment_id: str,
+    payload: TutorChatRequest,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """AI Tutor chat answering student questions and providing Socratic guidance"""
     from app.services.ai_solution import _call_groq
 
-    assignment = _find_assignment(db, assignment_id)
+    user_id = _authenticated_user_id(clerk_user)
+    assignment = _find_assignment(db, assignment_id, user_id)
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    course = db.query(Course).filter(Course.id == assignment.course_id).first()
+    course = db.query(Course).filter(
+        Course.id == assignment.course_id,
+        Course.user_id == user_id,
+    ).first()
     materials = db.query(AssignmentMaterial).filter(AssignmentMaterial.assignment_id == assignment.id).all()
     mat_summary = "\n".join(f"- {m.title} ({m.material_type})" for m in materials) or "None"
 
@@ -414,14 +455,15 @@ class DraftReviewRequest(BaseModel):
 async def review_assignment_draft(
     assignment_id: str,
     payload: Optional[DraftReviewRequest] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Pre-submission rubric and requirement checker for student drafts"""
     import json
     import re
     from app.services.ai_solution import _call_groq
 
-    assignment = _find_assignment(db, assignment_id)
+    assignment = _find_assignment(db, assignment_id, _authenticated_user_id(clerk_user))
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
@@ -467,14 +509,16 @@ class ScheduleTurnInRequest(BaseModel):
 def schedule_assignment_turn_in(
     assignment_id: str,
     payload: ScheduleTurnInRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Schedule turn-in only when a safe execution path is available."""
-    assignment = _find_assignment(db, assignment_id)
+    user_id = _authenticated_user_id(clerk_user)
+    assignment = _find_assignment(db, assignment_id, user_id)
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    key = f"schedule_turnin_{assignment.id}"
+    key = f"schedule_turnin_{user_id}_{assignment.id}"
     if not payload.enabled:
         setting = db.query(Setting).filter(Setting.key == key).first()
         if setting:

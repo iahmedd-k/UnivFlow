@@ -13,14 +13,17 @@ import io
 
 
 class GoogleDocsService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, user_id: str = "legacy"):
         self.db = db
+        self.user_id = user_id
         self.docs_service = None
         self.drive_service = None
         self._load_credentials()
 
     def _load_credentials(self) -> bool:
-        cred_row = self.db.query(GoogleCredential).first()
+        cred_row = self.db.query(GoogleCredential).filter(
+            GoogleCredential.user_id == self.user_id
+        ).first()
         if not cred_row:
             logger.warning("No Google credentials found")
             return False
@@ -722,8 +725,8 @@ class GoogleDocsService:
             return None
 
 
-def get_google_docs_service(db: Session = None) -> Optional[GoogleDocsService]:
+def get_google_docs_service(db: Session = None, user_id: str = "legacy") -> Optional[GoogleDocsService]:
     if db is None:
         db = next(get_db())
-    service = GoogleDocsService(db)
+    service = GoogleDocsService(db, user_id=user_id)
     return service if service.docs_service else None

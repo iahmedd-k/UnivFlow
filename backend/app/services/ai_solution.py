@@ -210,6 +210,56 @@ def extract_code_deliverables(markdown: str) -> Dict[str, Any]:
     return {"files": files, "terminal_outputs": terminal_outputs}
 
 
+def extract_colab_notebooks(markdown: str) -> List[Dict[str, Any]]:
+    """Extract validated Jupyter notebooks from Claude's dedicated Colab fences."""
+    notebooks = []
+    task_header = re.compile(
+        r"(?im)^\s{0,3}#{1,6}\s*.*?\b(?:Task|Exercise|Problem|Question|Section|Part)\s*(\d+|[A-Z])\b.*$"
+    )
+    fence = re.compile(r"(?ms)^```colab-json\s*\n(.*?)^```[ \t]*$")
+
+    for match in fence.finditer(markdown or ""):
+        try:
+            notebook = json.loads(match.group(1))
+        except json.JSONDecodeError as error:
+            logger.warning("Ignoring invalid Colab notebook JSON: %s", error)
+            continue
+
+        if (
+            not isinstance(notebook, dict)
+            or notebook.get("nbformat") != 4
+            or not isinstance(notebook.get("cells"), list)
+            or not notebook["cells"]
+            or any(
+                not isinstance(cell, dict)
+                or cell.get("cell_type") not in ("markdown", "code", "raw")
+                or not isinstance(cell.get("source"), (str, list))
+                for cell in notebook["cells"]
+            )
+        ):
+            logger.warning("Ignoring malformed Colab notebook: expected a non-empty nbformat 4 notebook.")
+            continue
+
+        preceding_text = (markdown or "")[:match.start()]
+        task_matches = list(task_header.finditer(preceding_text))
+        task = task_matches[-1].group(1).lower() if task_matches else "1"
+        notebooks.append({
+            "task": task,
+            "language": "ipynb",
+            "name": f"task_{task}_colab.ipynb",
+            "content": json.dumps(notebook, ensure_ascii=False, indent=2) + "\n",
+        })
+
+    return notebooks
+
+
+def extract_assignment_deliverables(markdown: str) -> Dict[str, Any]:
+    """Return executable task files and validated Colab notebooks together."""
+    deliverables = extract_code_deliverables(markdown)
+    deliverables["files"].extend(extract_colab_notebooks(markdown))
+    return deliverables
+
+
 def append_execution_metadata(markdown: str, results: List[Dict[str, Any]]) -> str:
     """Store actual runner results with the solution without adding a DB column."""
     payload = base64.b64encode(json.dumps(results, ensure_ascii=False).encode("utf-8")).decode("ascii")
@@ -729,17 +779,36 @@ def review_and_refine_solution(assignment: Assignment, raw_solution: str, requir
     }
 
 
-def export_solution_to_google_doc(db: Session, assignment: Assignment, solution_content: str) -> Optional[Dict[str, Any]]:
+def export_solution_to_google_doc(
+    db: Session,
+    assignment: Assignment,
+    solution_content: str,
+    execution_results: Optional[List[Dict[str, Any]]] = None,
+    notebook_deliverables: Optional[List[Dict[str, Any]]] = None,
+    user_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """Agent Step 4: Automatically create a formatted, professional Google Doc in user's Google Drive with embedded screenshots."""
-    deliverables = extract_code_deliverables(solution_content)
-    execution_results = extract_execution_metadata(solution_content)
+    report_content = re.sub(
+        r"(?ms)^```colab-json\s*\n.*?^```[ \t]*$",
+        "",
+        solution_content or "",
+    )
+    report_content = re.sub(
+        r"(?is)^#\s*AIR UNIVERSITY[^\n]*\n.*?^\s*---\s*$\n*",
+        "",
+        report_content,
+    )
+    deliverables = extract_code_deliverables(report_content)
+    execution_results = execution_results if execution_results is not None else extract_execution_metadata(solution_content)
+    notebook_deliverables = notebook_deliverables or extract_colab_notebooks(solution_content)
     results_by_file = {item.get("filename"): item for item in execution_results}
 
     if not solution_content or not solution_content.strip():
         logger.warning("Skipping Google Doc export because solution content is empty.")
         return None
 
-    docs_service = get_google_docs_service(db)
+    owner_id = user_id or assignment.user_id
+    docs_service = get_google_docs_service(db, user_id=owner_id)
     if not docs_service:
         logger.warning("Google Docs / Drive service not connected; skipping doc creation.")
         return None
@@ -749,7 +818,7 @@ def export_solution_to_google_doc(db: Session, assignment: Assignment, solution_
         course_name = course.name if course else "Course"
 
         doc_title = f"{assignment.title} - Solution ({datetime.now().strftime('%Y-%m-%d')})"
-        profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).order_by(Setting.updated_at.desc()).first()
+        profile_row = db.query(Setting).filter(Setting.key == f"clerk_user_{owner_id}").first()
         profile = {}
         if profile_row and profile_row.value:
             try:
@@ -806,6 +875,11 @@ def export_solution_to_google_doc(db: Session, assignment: Assignment, solution_
         if has_code_files:
             for idx, source_file in enumerate(deliverables["files"]):
                 task = source_file["task"]
+                task_heading = re.search(
+                    rf"(?im)^\s{{0,3}}#{{1,6}}\s*Task\s+{re.escape(str(task))}\s*(?:[-—:]\s*)?([^\n]*)",
+                    report_content,
+                )
+                task_title = task_heading.group(1).strip() if task_heading else source_file["name"]
                 lang = (source_file.get("language") or "python").lower()
                 is_diagram = lang in ("mermaid", "diagram", "plantuml", "graphviz", "dot", "mmd", "puml", "drawio", "drawio.xml", "mxfile", "xml") or source_file["name"].endswith((".mmd", ".puml", ".dot", ".drawio.xml", ".xml"))
                 result = results_by_file.get(source_file["name"], {})
@@ -821,7 +895,7 @@ def export_solution_to_google_doc(db: Session, assignment: Assignment, solution_
                 # 1. Task Title (Heading 1)
                 docs_service.append_styled_block(
                     doc_id,
-                    f"\nTask {task}: {source_file['name']}\n",
+                    f"\nTask {task}: {task_title} — {source_file['name']}\n",
                     style_type="HEADING_1"
                 )
 
@@ -891,7 +965,7 @@ def export_solution_to_google_doc(db: Session, assignment: Assignment, solution_
                     docs_service.insert_page_break(doc_id)
         else:
             # Theoretical or hybrid solution with diagrams
-            clean_markdown = strip_execution_metadata(solution_content)
+            clean_markdown = strip_execution_metadata(report_content)
             
             # Parse sections and headings
             lines = clean_markdown.splitlines()
@@ -992,6 +1066,40 @@ def export_solution_to_google_doc(db: Session, assignment: Assignment, solution_
                     except Exception as diag_err:
                         logger.warning(f"Could not embed diagram screenshot: {diag_err}")
 
+        for notebook in notebook_deliverables:
+            docs_service.append_styled_block(
+                doc_id,
+                f"\nTask {notebook['task']}: Google Colab Notebook\n",
+                style_type="HEADING_1",
+            )
+            uploaded = None
+            if docs_service.drive_service:
+                try:
+                    uploaded = docs_service.upload_file(
+                        name=notebook["name"],
+                        content=notebook["content"].encode("utf-8"),
+                        mime_type="application/x-ipynb+json",
+                    )
+                except Exception as upload_error:
+                    logger.error("Could not upload Colab notebook %s to Drive: %s", notebook["name"], upload_error)
+            notebook_url = None
+            if uploaded:
+                notebook_url = uploaded.get("webViewLink")
+                if not notebook_url and uploaded.get("id"):
+                    notebook_url = f"https://drive.google.com/open?id={uploaded['id']}"
+            if notebook_url:
+                docs_service.append_styled_block(
+                    doc_id,
+                    f"Download and open {notebook['name']} in Google Colab: {notebook_url}\n\n",
+                    style_type="NORMAL",
+                )
+            else:
+                docs_service.append_styled_block(
+                    doc_id,
+                    f"{notebook['name']} is included in the downloadable assignment files.\n\n",
+                    style_type="NORMAL",
+                )
+
         # Ensure submission record tracks Google Doc ID & Drive ID
         submission = db.query(Submission).filter(Submission.assignment_id == assignment.id).first()
         if not submission:
@@ -1021,7 +1129,8 @@ def generate_agentic_solution(
     assignment_id: int,
     provider: str = "groq",
     model: str = DEFAULT_MODEL,
-    create_google_doc: bool = True
+    create_google_doc: bool = True,
+    user_id: str = "legacy",
 ) -> Dict[str, Any]:
     """
     Full End-to-End Autonomous Agentic Pipeline:
@@ -1031,7 +1140,10 @@ def generate_agentic_solution(
     4. Structural coverage check and bounded per-file execution
     5. Google Docs & Drive Publisher (optional)
     """
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    assignment = db.query(Assignment).filter(
+        Assignment.id == assignment_id,
+        Assignment.user_id == user_id,
+    ).first()
     if not assignment:
         return {"error": "Assignment not found"}
 
@@ -1047,7 +1159,7 @@ def generate_agentic_solution(
     materials = db.query(AssignmentMaterial).filter(AssignmentMaterial.assignment_id == assignment_id).all()
     material_texts = []
     material_errors = []
-    docs_service = get_google_docs_service(db)
+    docs_service = get_google_docs_service(db, user_id=user_id)
 
     for m in materials:
         m_content = m.content or ""
@@ -1438,7 +1550,12 @@ def generate_agentic_solution(
         google_doc_info = None
         if create_google_doc:
             logger.info(f"Agentic Pipeline Step 4: Exporting solution to Google Docs for assignment {assignment_id}")
-            google_doc_info = export_solution_to_google_doc(db, assignment, stored_markdown)
+            google_doc_info = export_solution_to_google_doc(
+                db,
+                assignment,
+                stored_markdown,
+                user_id=user_id,
+            )
 
         return {
             "status": "completed",

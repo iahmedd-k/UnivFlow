@@ -30,17 +30,13 @@ def send_email(
     custom_args: dict = None,
 ) -> bool:
     """Send email via SendGrid API with spam-reduction best practices"""
-    client = get_sendgrid_client()
-    if not client:
-        logger.error("SendGrid client not available")
-        return False
-
-    from_email = from_email or settings.sendgrid_from_email or settings.email_from
+    from_email = from_email or settings.sendgrid_from_email or settings.email_from or "noreply@basarat.live"
     from_name = from_name or "Uniflow"
 
-    if not from_email:
-        logger.error("No from email configured")
-        return False
+    client = get_sendgrid_client()
+    if not client:
+        logger.warning(f"SendGrid client not configured, falling back to SMTP for {to_email}")
+        return send_smtp_email(to_email, subject, html_content, text_content)
 
     if not text_content:
         # Simple HTML to text conversion
@@ -68,12 +64,17 @@ def send_email(
         # Categories for tracking
         if categories:
             for cat in categories:
-                mail.add_category(cat)
+                if isinstance(cat, str):
+                    from sendgrid.helpers.mail import Category
+                    mail.add_category(Category(cat))
+                else:
+                    mail.add_category(cat)
 
         # Custom args for tracking
         if custom_args:
             for key, value in custom_args.items():
-                mail.add_custom_arg(key, value)
+                from sendgrid.helpers.mail import CustomArg
+                mail.add_custom_arg(CustomArg(str(key), str(value)))
 
         response = client.send(mail)
         

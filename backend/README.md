@@ -1,24 +1,24 @@
 # Uniflow API
 
-FastAPI service for the Uniflow academic support platform. Full-stack setup and root commands are documented in the repository [README](../README.md).
+FastAPI service for the Uniflow academic support platform. This folder also owns its container images and Azure deployment configuration.
 
 ## Local development
 
-From the repository root, create and activate a Python 3.12 environment, then install dependencies:
+From this directory, create and activate a Python 3.12 environment, then install dependencies:
 
 ```powershell
-python -m venv backend/.venv
-.\backend\.venv\Scripts\Activate.ps1
-python -m pip install -r backend/requirements.txt
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
 
-Start the API from the repository root with `npm run dev:backend`, or from `backend/` with:
+Start the API from this directory with:
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-The API listens on port 8000. Open `/docs` for the OpenAPI interface and `/health` for the health endpoint.
+The API listens on port 8000. Open `/docs` for the OpenAPI interface and `/health` for the health endpoint. Configure local backend settings in the ignored `.env` file; configure the frontend independently in `../frontend/.env.local`.
 
 ## Upstash Redis
 
@@ -48,8 +48,12 @@ The API registry mounts feature routers under the `/api/v1` prefix used by the w
 
 ## Database changes
 
-Create schema changes as Alembic migrations under `alembic/versions/`. Do not edit an already-applied migration to change a deployed schema. Apply migrations with `alembic upgrade head` from `backend/` or `npm run db:migrate` from the root.
+Create schema changes as Alembic migrations under `alembic/versions/`. Do not edit an already-applied migration to change a deployed schema. Apply migrations with `alembic upgrade head` from this directory.
 
 ## Tests
 
-Run backend tests from `backend/` with `python -m pytest`, or from the repository root with `npm test`.
+Run backend tests from this directory with `python -m pytest`.
+
+## Azure deployment
+
+Azure Docker Compose, Caddy, and production environment examples live in [`deploy/`](deploy/). GitHub Actions builds and deploys backend images only; Vercel handles the frontend separately. See the repository [deployment guide](../docs/deployment.md).

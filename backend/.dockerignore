@@ -1,0 +1,13 @@
+.env
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.coverage
+htmlcov
+tmp
+.codex-runtime
+.playwright-browsers
+uniflow.db
+*.db

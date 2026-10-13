@@ -4,9 +4,11 @@ from .enums import *
 
 class Course(Base):
     __tablename__ = "courses"
+    __table_args__ = (UniqueConstraint("user_id", "external_id", name="uq_courses_user_external_id"),)
 
     id = Column(Integer, primary_key=True, index=True)
-    external_id = Column(String(255), unique=True, nullable=False, index=True)
+    user_id = Column(String(255), nullable=False, default="legacy")
+    external_id = Column(String(255), nullable=False, index=True)
     name = Column(String(500), nullable=False)
     section = Column(String(100))
     description = Column(Text)

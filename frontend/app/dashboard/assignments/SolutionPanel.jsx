@@ -10,15 +10,21 @@ export default function SolutionPanel({ assignment }) {
   const [solution, setSolution] = useState(null);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
+  const [refreshingStatus, setRefreshingStatus] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [imagePrompt, setImagePrompt] = useState('A clear, simple educational illustration for this assignment. No text or labels.');
   const [generatingImage, setGeneratingImage] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [claudeViewerUrl, setClaudeViewerUrl] = useState('');
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [activeFileTab, setActiveFileTab] = useState(0);
   const [uploadingMaterial, setUploadingMaterial] = useState(false);
   const [materialsList, setMaterialsList] = useState(assignment?.materials || []);
+
+  useEffect(() => {
+    setMaterialsList(assignment?.materials || []);
+  }, [assignment?.id, assignment?.materials]);
 
   const handleMaterialUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -105,7 +111,7 @@ export default function SolutionPanel({ assignment }) {
         token
       );
       if (provider === 'claude_browser') {
-        setNotice('Zero-Touch Pipeline Active: Auto-fetching Drive docs, scanning Downloads, opening Chrome, auto-authenticating into Claude with Google, and synthesizing your solution…');
+        setNotice('Claude pipeline active: preparing assignment materials and connecting to your private hosted browser. Sign in through Settings if this is your first run.');
       } else {
         setNotice('The autonomous multi-agent solver has started! Breaking down rubric requirements…');
       }
@@ -119,11 +125,24 @@ export default function SolutionPanel({ assignment }) {
     }
   };
 
+  const refreshSolverStatus = async () => {
+    setRefreshingStatus(true);
+    setError('');
+    try {
+      await refresh();
+    } catch (e) {
+      setError(e.message || 'Could not refresh solver status.');
+    } finally {
+      setRefreshingStatus(false);
+    }
+  };
+
   const openClaudeWindow = async () => {
     try {
       const token = getToken ? await getToken() : null;
       const res = await api.openClaudeBrowser(token);
-      setNotice(res.message || 'Chrome window opened for Claude.');
+      setClaudeViewerUrl(res.viewer_url || '');
+      setNotice(res.message || 'Your private hosted Claude browser is ready.');
     } catch (e) {
       setError(e.message || 'Could not open Chrome window.');
     }
@@ -503,10 +522,10 @@ export default function SolutionPanel({ assignment }) {
               </div>
               <div>
                 <strong style={{ display: 'block', fontSize: 12, color: '#2c2f3b' }}>
-                  Zero-Touch Autonomous Pipeline
+                  Claude Browser Pipeline
                 </strong>
                 <span style={{ fontSize: 11, color: '#858998' }}>
-                  Auto-fetches Drive files · Scans Downloads · Auto-signs in with Google
+                  Uses only materials attached to this assignment · Opens Uniflow’s persistent browser profile
                 </span>
               </div>
             </div>
@@ -560,10 +579,20 @@ export default function SolutionPanel({ assignment }) {
                 onClick={openClaudeWindow}
                 className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-violet/30 bg-white px-4 text-sm font-semibold text-violet transition hover:bg-violet-light"
                 style={{ cursor: 'pointer', padding: '10px 14px', fontSize: 12, color: '#6657d9' }}
-                title="Launch or bring Claude Chrome automation window to front"
+                title="Start your private hosted Claude browser"
               >
                 <Icon name="external-link" size={14} /> Open Claude Window
               </button>
+              {claudeViewerUrl && (
+                <a
+                  href={claudeViewerUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-violet/30 bg-white px-4 text-xs font-semibold text-violet"
+                >
+                  Open private browser
+                </a>
+              )}
             </div>
           </div>
         )}
@@ -606,7 +635,7 @@ export default function SolutionPanel({ assignment }) {
                   maxWidth: 480,
                 }}
               >
-                The four CrewAI agents are working in sequence. Progress updates as each specialist finishes.
+                The solver is analyzing the assignment, preparing its task deliverables, and building the final report.
               </p>
             </div>
           </div>
@@ -652,17 +681,26 @@ export default function SolutionPanel({ assignment }) {
                   'The solver run could not complete. You can retry with fresh parameters.'}
               </span>
             </div>
-            <button
-              type="button"
-              onClick={startSolver}
-              disabled={starting}
-              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50"
-              style={{ cursor: 'pointer' }}
-            >
-              <span>
+            <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+              <button
+                type="button"
+                onClick={refreshSolverStatus}
+                disabled={refreshingStatus}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ cursor: 'pointer' }}
+              >
+                <Icon name="refresh" size={13} /> {refreshingStatus ? 'Refreshing…' : 'Refresh status'}
+              </button>
+              <button
+                type="button"
+                onClick={startSolver}
+                disabled={starting}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ cursor: 'pointer' }}
+              >
                 <Icon name="refresh" size={13} /> Retry Solver
-              </span>
-            </button>
+              </button>
+            </div>
           </div>
         )}
       </section>
@@ -767,7 +805,7 @@ export default function SolutionPanel({ assignment }) {
                   background: 'linear-gradient(135deg, #d97706, #b45309)',
                   borderColor: '#92400e',
                 }}
-                title="Re-run assignment using Claude in your logged-in Chrome browser"
+                title="Re-run assignment using Claude in the persistent Uniflow browser"
               >
                 <span>
                   <Icon name="sparkles" size={13} /> Re-Solve with Claude
@@ -957,7 +995,7 @@ export default function SolutionPanel({ assignment }) {
                             flexShrink: 0,
                           }}
                         >
-                          <Icon name="codeFile" size={15} />
+                          <Icon name={file.name.endsWith('.ipynb') ? 'fileText' : 'codeFile'} size={15} />
                         </div>
                         <div style={{ overflow: 'hidden' }}>
                           <strong
@@ -974,29 +1012,32 @@ export default function SolutionPanel({ assignment }) {
                             {file.name}
                           </strong>
                           <span style={{ fontSize: 10, color: '#64748b' }}>
-                            Task {file.task || idx + 1} · {String(file.language || 'py').toUpperCase()} ·{' '}
-                            {file.content ? file.content.split('\n').length : 0} lines
+                            {file.name.endsWith('.ipynb')
+                              ? `Task ${file.task || idx + 1} · Google Colab notebook`
+                              : `Task ${file.task || idx + 1} · ${String(file.language || 'py').toUpperCase()} · ${file.content ? file.content.split('\n').length : 0} lines`}
                           </span>
                         </div>
                       </div>
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                        <button
-                          type="button"
-                          onClick={() => copyCode(file.content, idx)}
-                          title="Copy Code"
-                          style={{
-                            padding: '4px 8px',
-                            background: '#f1f5f9',
-                            border: '1px solid #cbd5e1',
-                            borderRadius: 6,
-                            fontSize: 10,
-                            cursor: 'pointer',
-                            color: '#334155',
-                          }}
-                        >
-                          {copiedIndex === idx ? <Icon name="check" size={12} /> : <Icon name="copyCode" size={12} />}
-                        </button>
+                        {!file.name.endsWith('.ipynb') && (
+                          <button
+                            type="button"
+                            onClick={() => copyCode(file.content, idx)}
+                            title="Copy Code"
+                            style={{
+                              padding: '4px 8px',
+                              background: '#f1f5f9',
+                              border: '1px solid #cbd5e1',
+                              borderRadius: 6,
+                              fontSize: 10,
+                              cursor: 'pointer',
+                              color: '#334155',
+                            }}
+                          >
+                            {copiedIndex === idx ? <Icon name="check" size={12} /> : <Icon name="copyCode" size={12} />}
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => downloadSingleFile(file.name, file.content)}
@@ -1127,7 +1168,7 @@ export default function SolutionPanel({ assignment }) {
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted">Final report structure</p>
                     <h2 style={{ margin: 0, fontSize: 13 }}>
-                      Task Statement, Implementation Code & Execution Evidence
+                      Task Statement, Source Code, Colab Notebooks & Execution Evidence
                     </h2>
                   </div>
                 </div>
@@ -1136,6 +1177,7 @@ export default function SolutionPanel({ assignment }) {
 
             <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 20 }}>
               {files.map((file, idx) => {
+                const isNotebook = file.name.endsWith('.ipynb');
                 const output = outputs.find(
                   (o) => o.filename === file.name || String(o.task) === String(file.task)
                 );
@@ -1190,7 +1232,7 @@ export default function SolutionPanel({ assignment }) {
                             border: '1px solid #e2e8f0',
                           }}
                         >
-                          🛠️ {screenshot?.tool || output?.tool || (file.name.endsWith('.mmd') || file.name.endsWith('.xml') ? 'Mermaid / Draw.io Tool' : `${String(file.language || 'py').toUpperCase()} Runner`)}
+                          🛠️ {isNotebook ? 'Google Colab notebook' : screenshot?.tool || output?.tool || (file.name.endsWith('.mmd') || file.name.endsWith('.xml') ? 'Mermaid / Draw.io Tool' : `${String(file.language || 'py').toUpperCase()} Runner`)}
                         </span>
                       </div>
                       <span
@@ -1207,7 +1249,9 @@ export default function SolutionPanel({ assignment }) {
                               : output ? '1px solid #f43f5e44' : '1px solid #e2e8f0',
                         }}
                       >
-                        {output?.status === 'passed'
+                        {isNotebook
+                          ? 'Open in Google Colab'
+                          : output?.status === 'passed'
                           ? `✓ Run passed (Exit ${output.exit_code ?? 0})`
                           : output
                             ? `Run ${String(output.status || 'checked').replaceAll('_', ' ')}`
@@ -1220,7 +1264,9 @@ export default function SolutionPanel({ assignment }) {
                       <p style={{ margin: '0 0 12px', fontSize: 12, color: '#475569', lineHeight: 1.5 }}>
                         <strong>Objective: </strong>
                         {file.description ||
-                          `Implement standalone module ${file.name} adhering to assignment rubric requirements and verifying outputs.`}
+                          (isNotebook
+                            ? 'Download this notebook and open it in Google Colab to run the GPU-capable training workflow.'
+                            : `Implement standalone module ${file.name} adhering to assignment rubric requirements and verifying outputs.`)}
                       </p>
 
                       {/* 2. Code Listing Box */}
@@ -1242,7 +1288,7 @@ export default function SolutionPanel({ assignment }) {
                           }}
                         >
                           <span style={{ color: '#94a3b8', fontSize: 11, fontFamily: 'monospace' }}>
-                            {file.name.endsWith('.mmd') || file.name.endsWith('.xml') ? '📊' : '💻'} {file.name}
+                            {isNotebook ? '📓' : file.name.endsWith('.mmd') || file.name.endsWith('.xml') ? '📊' : '💻'} {file.name}
                           </span>
                           <button
                             type="button"

@@ -136,20 +136,20 @@ export default function AssignmentsPage() {
   };
 
   return (
-    <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-12 text-[#292d3a]">
+    <main className="mx-auto flex w-full max-w-6xl flex-col gap-5 pb-12 text-ink">
       {/* Header */}
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.11em] text-[#9195a3]">COURSEWORK & DEADLINES</p>
-          <h1 className="my-1 text-2xl font-semibold tracking-[-0.6px] text-[#252837]">
+          <p className="text-xs font-semibold uppercase tracking-wider text-label">COURSEWORK & DEADLINES</p>
+          <h1 className="my-1 text-2xl font-semibold tracking-tight text-ink">
             Assignments
           </h1>
-          <p className="text-xs text-[#858998]">
+          <p className="text-xs text-muted">
             Review deadlines, query your AI academic tutor, test solutions, and turn in to Google Classroom.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Link href="/dashboard/templates" className="inline-flex min-h-9 items-center justify-center gap-[7px] rounded-[7px] border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] no-underline hover:bg-[#f8f8fb]">
+          <Link href="/dashboard/templates" className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-border-input bg-surface px-3 text-xs font-semibold text-nav no-underline hover:bg-surface-secondary">
             <Icon name="files" size={15}/>
             <span>Cover Templates</span>
           </Link>
@@ -157,7 +157,7 @@ export default function AssignmentsPage() {
             type="button"
             onClick={() => loadAssignments(true)}
             disabled={refreshing || loading}
-            className="inline-flex min-h-9 items-center justify-center gap-[7px] rounded-[7px] border border-violet bg-violet px-3 text-xs font-semibold text-white hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-55"
+            className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-violet bg-violet px-3 text-xs font-semibold text-white hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-55"
             aria-label="Refresh assignments"
           >
             {refreshing ? 'Syncing…' : <><Icon name="refresh" size={14}/> Sync Classroom</>}
@@ -166,62 +166,62 @@ export default function AssignmentsPage() {
       </header>
 
       {/* 4 Summary Stat Cards matching Uniflow Overview Design */}
-      <section className="mb-5 grid grid-cols-1 gap-[13px] sm:grid-cols-2 xl:grid-cols-4" aria-label="Coursework summary">
-        <article className="flex min-h-[102px] items-start gap-3 rounded-[11px] border border-[#ebebf0] bg-white p-[17px_15px]">
-          <span className="grid size-[30px] shrink-0 place-items-center rounded-[9px] bg-[#f0edff] text-violet"><Icon name="clipboard" size={18}/></span>
+      <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Coursework summary">
+        <article className="flex min-h-24 items-start gap-3 rounded-xl border border-border bg-surface p-4">
+          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-violet-light text-violet"><Icon name="clipboard" size={18}/></span>
           <div className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs text-[#858998]">Total coursework</span>
-            <strong className="text-[22px] font-semibold leading-none tracking-[-0.7px] text-[#2c2f3c]">{loading ? '—' : stats.total}</strong>
-            <small className="text-xs text-[#aaacb7]">{stats.quizzes} quizzes included</small>
+            <span className="text-xs text-muted">Total coursework</span>
+            <strong className="text-2xl font-semibold leading-none tracking-tight text-heading">{loading ? '—' : stats.total}</strong>
+            <small className="text-xs text-subtle">{stats.quizzes} quizzes included</small>
           </div>
         </article>
 
-        <article className="flex min-h-[102px] items-start gap-3 rounded-[11px] border border-[#ebebf0] bg-white p-[17px_15px]">
-          <span className="grid size-[30px] shrink-0 place-items-center rounded-[9px] bg-[#fff1e9] text-[#d88752]"><Icon name="clock" size={18}/></span>
+        <article className="flex min-h-24 items-start gap-3 rounded-xl border border-border bg-surface p-4">
+          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-warning-bg text-warning"><Icon name="clock" size={18}/></span>
           <div className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs text-[#858998]">Upcoming & open</span>
-            <strong className="text-[22px] font-semibold leading-none tracking-[-0.7px] text-[#d88752]">{loading ? '—' : stats.upcoming}</strong>
-            <small className="text-xs text-[#aaacb7]">Pending submissions</small>
+            <span className="text-xs text-muted">Upcoming & open</span>
+            <strong className="text-2xl font-semibold leading-none tracking-tight text-warning">{loading ? '—' : stats.upcoming}</strong>
+            <small className="text-xs text-subtle">Pending submissions</small>
           </div>
         </article>
 
-        <article className="flex min-h-[102px] items-start gap-3 rounded-[11px] border border-[#ebebf0] bg-white p-[17px_15px]">
-          <span className="grid size-[30px] shrink-0 place-items-center rounded-[9px] bg-[#fff0f0] text-[#b15252]"><Icon name="alert" size={18}/></span>
+        <article className="flex min-h-24 items-start gap-3 rounded-xl border border-border bg-surface p-4">
+          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-danger-bg text-danger"><Icon name="alert" size={18}/></span>
           <div className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs text-[#858998]">Past deadline</span>
-            <strong className="text-[22px] font-semibold leading-none tracking-[-0.7px] text-[#b15252]">{loading ? '—' : stats.overdue}</strong>
-            <small className="text-xs text-[#aaacb7]">{stats.overdue > 0 ? 'Requires attention' : 'All clear!'}</small>
+            <span className="text-xs text-muted">Past deadline</span>
+            <strong className="text-2xl font-semibold leading-none tracking-tight text-danger">{loading ? '—' : stats.overdue}</strong>
+            <small className="text-xs text-subtle">{stats.overdue > 0 ? 'Requires attention' : 'All clear!'}</small>
           </div>
         </article>
 
-        <article className="flex min-h-[102px] items-start gap-3 rounded-[11px] border border-[#ebebf0] bg-white p-[17px_15px]">
-          <span className="grid size-[30px] shrink-0 place-items-center rounded-[9px] bg-[#e8f7f1] text-[#47a887]"><Icon name="checkCircle" size={18}/></span>
+        <article className="flex min-h-24 items-start gap-3 rounded-xl border border-border bg-surface p-4">
+          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-success-bg text-success"><Icon name="checkCircle" size={18}/></span>
           <div className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs text-[#858998]">Submitted & done</span>
-            <strong className="text-[22px] font-semibold leading-none tracking-[-0.7px] text-[#47a887]">{loading ? '—' : stats.submitted}</strong>
-            <small className="text-xs text-[#aaacb7]">{stats.completionRate}% completion rate</small>
+            <span className="text-xs text-muted">Submitted & done</span>
+            <strong className="text-2xl font-semibold leading-none tracking-tight text-success">{loading ? '—' : stats.submitted}</strong>
+            <small className="text-xs text-subtle">{stats.completionRate}% completion rate</small>
           </div>
         </article>
       </section>
 
       {/* Filter and Search Bar Container */}
-      <div className="overflow-hidden rounded-[11px] border border-[#ebebf0] bg-white">
+      <div className="overflow-hidden rounded-xl border border-border bg-surface">
         {/* Top Search Controls Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#f0f0f3] px-[18px] py-3.5">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border-light px-4 py-3.5">
           {/* Search Input */}
           <div className="relative min-w-[220px] flex-1">
-            <span className="pointer-events-none absolute left-[11px] top-1/2 -translate-y-1/2 text-[13px] text-[#9a9dab]">
+            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-subtle">
               <Icon name="search" size={15}/>
             </span>
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search assignments or courses…"
-              className="h-9 w-full rounded-lg border border-[#e4e4eb] bg-[#fafafd] pl-8 pr-[30px] text-xs text-[#2c2f3b] outline-none focus-visible:ring-2 focus-visible:ring-violet/20"
+              className="h-9 w-full rounded-lg border border-border-input bg-surface-tertiary pl-8 pr-7 text-xs text-heading outline-none focus-visible:ring-2 focus-visible:ring-violet/20"
               aria-label="Search assignments"
             />
             {query && (
-              <button type="button" onClick={() => setQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer border-0 bg-transparent p-1 text-xs text-[#9a9cab]">
+              <button type="button" onClick={() => setQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer border-0 bg-transparent p-1 text-xs text-subtle">
                 <Icon name="close" size={14}/>
               </button>
             )}
@@ -233,7 +233,7 @@ export default function AssignmentsPage() {
               <select
                 value={selectedCourse}
                 onChange={(e) => setSelectedCourse(e.target.value)}
-                className="h-9 cursor-pointer rounded-lg border border-[#e4e4eb] bg-white px-2.5 text-xs font-medium text-slate-600 outline-none"
+                className="h-9 cursor-pointer rounded-lg border border-border-input bg-surface px-2.5 text-xs font-medium text-nav outline-none"
                 aria-label="Filter by course"
               >
                 <option value="all">All Courses ({availableCourses.length})</option>
@@ -248,7 +248,7 @@ export default function AssignmentsPage() {
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value)}
-              className="h-9 cursor-pointer rounded-lg border border-[#e4e4eb] bg-white px-2.5 text-xs font-medium text-slate-600 outline-none"
+              className="h-9 cursor-pointer rounded-lg border border-border-input bg-surface px-2.5 text-xs font-medium text-nav outline-none"
               aria-label="Sort assignments"
             >
               <option value="due_asc">Deadline: Earliest first</option>
@@ -258,11 +258,11 @@ export default function AssignmentsPage() {
             </select>
 
             {/* View Mode Toggle */}
-            <div className="inline-flex rounded-lg border border-[#e4e4eb] bg-[#f8f8fb] p-0.5">
+            <div className="inline-flex rounded-lg border border-border-input bg-surface-secondary p-0.5">
               <button
                 type="button"
                 onClick={() => setViewMode('grid')}
-                className={`cursor-pointer rounded-md border-0 px-2 py-1 text-xs font-semibold ${viewMode === 'grid' ? 'bg-white text-violet shadow-sm' : 'bg-transparent text-[#858998]'}`}
+                className={`cursor-pointer rounded-md border-0 px-2 py-1 text-xs font-semibold ${viewMode === 'grid' ? 'bg-surface text-violet shadow-sm' : 'bg-transparent text-muted'}`}
                 title="Grid View"
               >
                 <Icon name="dashboard" size={13}/> Grid
@@ -270,7 +270,7 @@ export default function AssignmentsPage() {
               <button
                 type="button"
                 onClick={() => setViewMode('list')}
-                className={`cursor-pointer rounded-md border-0 px-2 py-1 text-xs font-semibold ${viewMode === 'list' ? 'bg-white text-violet shadow-sm' : 'bg-transparent text-[#858998]'}`}
+                className={`cursor-pointer rounded-md border-0 px-2 py-1 text-xs font-semibold ${viewMode === 'list' ? 'bg-surface text-violet shadow-sm' : 'bg-transparent text-muted'}`}
                 title="List View"
               >
                 <Icon name="listChecks" size={13}/> List
@@ -280,7 +280,7 @@ export default function AssignmentsPage() {
         </div>
 
         {/* Status Tabs Strip */}
-        <nav className="flex gap-1.5 overflow-x-auto bg-white px-[17px] py-3" aria-label="Filter assignments">
+        <nav className="flex gap-1.5 overflow-x-auto bg-surface px-4 py-3" aria-label="Filter assignments">
           {statusFilters.map((item) => {
             const isActive = filter === item.id;
             return (
@@ -289,7 +289,7 @@ export default function AssignmentsPage() {
                 key={item.id}
                 onClick={() => setFilter(item.id)}
                 aria-pressed={isActive}
-                className={`shrink-0 cursor-pointer whitespace-nowrap rounded-[7px] border px-2.5 py-[7px] text-xs ${isActive ? 'border-[#e9e5ff] bg-[#f2efff] font-semibold text-[#5e4fc5]' : 'border-transparent bg-transparent text-[#777b89]'}`}
+                className={`shrink-0 cursor-pointer whitespace-nowrap rounded-md border px-2.5 py-1.5 text-xs ${isActive ? 'border-violet-light bg-violet-light font-semibold text-violet' : 'border-transparent bg-transparent text-nav'}`}
               >
                 {item.label}
               </button>
@@ -300,12 +300,12 @@ export default function AssignmentsPage() {
 
       {/* Error Callout */}
       {error && (
-        <div className="flex items-center justify-between gap-2.5 rounded-lg border border-[#f1dede] bg-[#fff8f8] px-[13px] py-[11px] text-xs text-[#a04a4a]" role="alert">
+        <div className="flex items-center justify-between gap-2.5 rounded-lg border border-rose-border bg-rose-bg px-3 py-2.5 text-xs text-rose" role="alert">
           <div>
             <strong className="block font-semibold">Assignments could not be loaded</strong>
             <span>{error}</span>
           </div>
-          <button type="button" onClick={() => loadAssignments(true)} className="inline-flex min-h-9 shrink-0 items-center justify-center gap-[7px] rounded-[7px] border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb]">
+          <button type="button" onClick={() => loadAssignments(true)} className="inline-flex min-h-9 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-input bg-surface px-3 text-xs font-semibold text-nav hover:bg-surface-secondary">
             Try again
           </button>
         </div>
@@ -313,16 +313,16 @@ export default function AssignmentsPage() {
 
       {/* Assignments Content */}
       {loading ? (
-        <div className="rounded-[11px] border border-[#ebebf0] bg-white p-6 text-center text-[#858998]">
-          <span className="mb-2 inline-block size-[9px] animate-spin rounded-full border-2 border-[#e2e0f2] border-t-[#6555d7]" />
+        <div className="rounded-xl border border-border bg-surface p-6 text-center text-muted">
+          <span className="mb-2 inline-block size-2 animate-spin rounded-full border-2 border-line border-t-violet" />
           <p className="m-0 text-xs">Loading your coursework…</p>
         </div>
       ) : visibleAssignments.length === 0 ? (
-        <div className="rounded-[11px] border border-[#ebebf0] bg-white">
-          <div className="px-5 py-[34px] text-center text-xs leading-relaxed text-[#9396a3]">
-            <span className="mx-auto mb-2.5 grid size-[35px] place-items-center rounded-[11px] bg-[#edf8f3] text-[#53aa87]"><Icon name="checkCircle" size={19}/></span>
-            <strong className="mb-[5px] block text-xs text-[#515563]">{query ? 'No matching coursework' : filter === 'all' ? 'No assignments yet' : 'Nothing in this view'}</strong>
-            <p className="mx-auto max-w-[360px]">
+        <div className="rounded-xl border border-border bg-surface">
+          <div className="px-5 py-8 text-center text-xs leading-relaxed text-subtle">
+            <span className="mx-auto mb-2.5 grid size-9 place-items-center rounded-lg bg-success-light text-success"><Icon name="checkCircle" size={19}/></span>
+            <strong className="mb-1 block text-xs text-body">{query ? 'No matching coursework' : filter === 'all' ? 'No assignments yet' : 'Nothing in this view'}</strong>
+            <p className="mx-auto max-w-sm">
               {query
                 ? 'Try a different search term or clear the filter.'
                 : filter === 'all'
@@ -333,7 +333,7 @@ export default function AssignmentsPage() {
               <button
                 type="button"
                 onClick={() => setQuery('')}
-                className="mt-2.5 inline-flex min-h-9 cursor-pointer items-center justify-center gap-[7px] rounded-[7px] border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb]"
+                className="mt-2.5 inline-flex min-h-9 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-border-input bg-surface px-3 text-xs font-semibold text-nav hover:bg-surface-secondary"
               >
                 Clear Search
               </button>
@@ -351,7 +351,7 @@ export default function AssignmentsPage() {
           ))}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-[11px] border border-[#ebebf0] bg-white">
+        <div className="overflow-hidden rounded-xl border border-border bg-surface">
           <div className="flex flex-col">
             {visibleAssignments.map((assignment) => (
               <AssignmentCard

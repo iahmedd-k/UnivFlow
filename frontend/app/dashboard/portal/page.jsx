@@ -262,7 +262,7 @@ export default function PortalPage() {
                 </a>
               </div>
               <p className="text-xs text-slate-500">
-                Tip: Run <code className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-800 font-mono">launch_chrome_unified.bat</code> to run Uniflow, Claude, and your university portal in one single Chrome window with your existing Google sign-in.
+                Tip: Run <code className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-800 font-mono">launch_chrome_unified.bat</code> to open the persistent Uniflow browser used by Claude and your university portal. Sign in there the first time; your normal Chrome profile stays untouched.
               </p>
             </div>
           )}
