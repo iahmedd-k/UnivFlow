@@ -8,7 +8,9 @@ api_router = APIRouter()
 
 # Register feature endpoints under the same versioned prefix used by the web client.
 authenticated = [Depends(require_current_user)]
-api_router.include_router(feature_api_router, dependencies=authenticated)
+# Feature routers apply their own auth dependencies. Do not apply auth here:
+# the Google OAuth callback must accept the redirect without a Clerk bearer token.
+api_router.include_router(feature_api_router)
 
 # Version-specific endpoints live in app.v1.api.endpoints.
 api_router.include_router(execution.router, dependencies=authenticated)

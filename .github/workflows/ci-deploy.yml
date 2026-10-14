@@ -30,7 +30,7 @@ jobs:
         run: python -c "from app.main import app; assert app"
       - name: Run backend tests
         working-directory: backend
-        run: python -m pytest -q tests/test_health.py
+        run: python -m pytest -q tests/test_health.py tests/test_auth_oauth_redirect.py tests/test_google_oauth_callback_routing.py
 
   container-build-checks:
     runs-on: ubuntu-latest
