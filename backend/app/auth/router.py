@@ -198,11 +198,12 @@ def google_auth(
     """Generate Google OAuth authorization URL with CSRF state protection"""
     client_ip = request.client.host if request.client else "unknown"
     _check_rate_limit(f"google-auth:{client_ip}", limit=20, window_sec=60)
-    user_id = _google_owner_id(clerk_user, required=True)
 
     # If Google redirected directly back to /auth/google with code or error
     if request.query_params.get("code") or request.query_params.get("error"):
         return google_callback(request=request, db=db)
+
+    user_id = _google_owner_id(clerk_user, required=True)
 
     # Generate a cryptographically secure CSRF state token
     csrf_token = secrets.token_urlsafe(32)

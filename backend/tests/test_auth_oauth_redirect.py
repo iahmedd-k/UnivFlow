@@ -1,6 +1,61 @@
 from urllib.parse import parse_qs, urlsplit
+from unittest.mock import Mock
+
+import pytest
+from fastapi import HTTPException
+from starlette.requests import Request
 
 from app.auth import router
+
+
+def test_google_oauth_callback_does_not_require_clerk_session(monkeypatch):
+    request = Request({
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "https",
+        "path": "/api/v1/auth/google",
+        "query_string": b"code=google-auth-code&state=csrf-state",
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+        "server": ("example.com", 443),
+    })
+    db = object()
+    callback_result = object()
+    callback_args = {}
+
+    def handle_callback(*, request, db):
+        callback_args.update(request=request, db=db)
+        return callback_result
+
+    monkeypatch.setattr(router, "_check_rate_limit", Mock())
+    monkeypatch.setattr(router, "google_callback", handle_callback)
+
+    result = router.google_auth(request=request, db=db, clerk_user=None)
+
+    assert result is callback_result
+    assert callback_args == {"request": request, "db": db}
+
+
+def test_starting_google_oauth_still_requires_clerk_session(monkeypatch):
+    request = Request({
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "https",
+        "path": "/api/v1/auth/google",
+        "query_string": b"",
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+        "server": ("example.com", 443),
+    })
+
+    monkeypatch.setattr(router, "_check_rate_limit", Mock())
+
+    with pytest.raises(HTTPException) as error:
+        router.google_auth(request=request, db=object(), clerk_user=None)
+
+    assert error.value.status_code == 401
 
 
 def test_oauth_redirect_returns_to_classroom_and_preserves_query(monkeypatch):
