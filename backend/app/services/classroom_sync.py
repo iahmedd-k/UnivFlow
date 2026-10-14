@@ -310,6 +310,7 @@ class ClassroomSyncService:
         """Fetch active enrolled courses from Classroom API"""
         courses = []
         page_token = None
+        last_error = None
 
         # 1. Primary: Fetch only active courses where current user is enrolled student
         while True:
@@ -328,6 +329,7 @@ class ClassroomSyncService:
                     break
 
             except HttpError as e:
+                last_error = e
                 logger.warning(f"Fetching student courses with studentId=me returned error: {e}")
                 break
 
@@ -349,8 +351,15 @@ class ClassroomSyncService:
                         break
 
                 except HttpError as e:
+                    last_error = e
                     logger.error(f"Error fetching courses: {e}")
                     break
+
+        if not courses and last_error:
+            status = getattr(last_error.resp, "status", "unknown")
+            raise RuntimeError(
+                f"Google Classroom course listing failed (HTTP {status}): {last_error.reason}"
+            ) from last_error
 
         return courses
 
@@ -448,7 +457,11 @@ class ClassroomSyncService:
 
             except HttpError as e:
                 logger.error(f"Error fetching coursework for {course_id}: {e}")
-                break
+                status = getattr(e.resp, "status", "unknown")
+                raise RuntimeError(
+                    f"Google Classroom coursework request failed for course {course_id} "
+                    f"(HTTP {status}): {e.reason}"
+                ) from e
 
         return count
 

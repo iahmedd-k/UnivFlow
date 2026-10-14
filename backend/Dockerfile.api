@@ -10,6 +10,8 @@ RUN apt-get update \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m playwright install --with-deps chromium \
+    && python -c "from pathlib import Path; from playwright.sync_api import sync_playwright; p = sync_playwright().start(); assert Path(p.chromium.executable_path).is_file(); p.stop()"
 
 COPY . .
 EXPOSE 8000
