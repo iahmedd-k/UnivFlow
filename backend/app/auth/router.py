@@ -19,7 +19,7 @@ from app.db.database import get_db
 from app.db.repositories import GoogleCredentialRepository
 from app.db.models import Setting
 from app.core.logging import logger
-from app.auth.clerk_auth import get_current_user_optional
+from app.auth.clerk_auth import get_current_user_optional, require_current_user
 from pydantic import BaseModel, EmailStr
 
 # Only allow HTTP transport in local development/test environments
@@ -95,7 +95,7 @@ def _oauth_frontend_redirect(redirect_to: Optional[str] = None, **query_params: 
     return urlunsplit((frontend.scheme, frontend.netloc, target_path, urlencode(query), ""))
 
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(require_current_user)])
 def get_auth_status(
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
@@ -146,7 +146,7 @@ def get_auth_status(
     }
 
 
-@router.post("/sync-user")
+@router.post("/sync-user", dependencies=[Depends(require_current_user)])
 def sync_user(
     request: Request,
     payload: UserSyncRequest,
@@ -390,8 +390,8 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
         )
 
 
-@router.post("/google/disconnect")
-@router.post("/logout")
+@router.post("/google/disconnect", dependencies=[Depends(require_current_user)])
+@router.post("/logout", dependencies=[Depends(require_current_user)])
 def logout(
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
@@ -407,7 +407,7 @@ def logout(
     return {"message": "Google account disconnected successfully"}
 
 
-@router.get("/me")
+@router.get("/me", dependencies=[Depends(require_current_user)])
 def get_current_user(
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
@@ -449,7 +449,11 @@ def _get_notification_email_key(user_id: str) -> str:
     return f"notification_email_{user_id}"
 
 
-@router.get("/notification-email", response_model=NotificationEmailResponse)
+@router.get(
+    "/notification-email",
+    response_model=NotificationEmailResponse,
+    dependencies=[Depends(require_current_user)],
+)
 def get_notification_email(
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
@@ -462,7 +466,11 @@ def get_notification_email(
     return NotificationEmailResponse(email=email, message="Notification email retrieved")
 
 
-@router.put("/notification-email", response_model=NotificationEmailResponse)
+@router.put(
+    "/notification-email",
+    response_model=NotificationEmailResponse,
+    dependencies=[Depends(require_current_user)],
+)
 def set_notification_email(
     payload: NotificationEmailRequest,
     db: Session = Depends(get_db),
@@ -481,18 +489,15 @@ def set_notification_email(
         setting = Setting(key=key, value=payload.email, description="User notification email for alerts")
         db.add(setting)
 
-    # Also sync default key so background scheduler jobs and alerts always reach the user's configured address
-    default_setting = db.query(Setting).filter(Setting.key == "notification_email_default").first()
-    if default_setting:
-        default_setting.value = payload.email
-    else:
-        db.add(Setting(key="notification_email_default", value=payload.email, description="Default notification email for alerts"))
-
     db.commit()
     return NotificationEmailResponse(email=payload.email, message="Notification email updated successfully")
 
 
-@router.delete("/notification-email", response_model=NotificationEmailResponse)
+@router.delete(
+    "/notification-email",
+    response_model=NotificationEmailResponse,
+    dependencies=[Depends(require_current_user)],
+)
 def delete_notification_email(
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
@@ -503,8 +508,5 @@ def delete_notification_email(
     setting = db.query(Setting).filter(Setting.key == key).first()
     if setting:
         db.delete(setting)
-    default_setting = db.query(Setting).filter(Setting.key == "notification_email_default").first()
-    if default_setting:
-        db.delete(default_setting)
     db.commit()
     return NotificationEmailResponse(email=None, message="Notification email removed")

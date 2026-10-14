@@ -4,33 +4,53 @@ from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import Setting
 from app.core.logging import logger
+import base64
+import binascii
 import hmac
 import hashlib
 import json
+import time
 
 
 router = APIRouter(prefix="/clerk", tags=["Clerk Webhooks"])
 
 
-def verify_clerk_signature(payload: bytes, signature: str, signing_secret: str) -> bool:
-    """Verify Clerk webhook signature"""
+def verify_clerk_signature(
+    payload: bytes,
+    message_id: str | None,
+    timestamp: str | None,
+    signature: str | None,
+    signing_secret: str,
+) -> bool:
+    """Verify a timestamped Svix signature for a Clerk webhook."""
     try:
-        expected = hmac.new(
-            signing_secret.encode(),
-            payload,
-            hashlib.sha256
-        ).hexdigest()
-        return hmac.compare_digest(expected, signature)
-    except Exception:
+        if not message_id or not timestamp or not signature or not signing_secret.startswith("whsec_"):
+            return False
+
+        timestamp_seconds = int(timestamp)
+        if abs(time.time() - timestamp_seconds) > 300:
+            return False
+
+        secret = base64.b64decode(signing_secret.removeprefix("whsec_"), validate=True)
+        signed_content = message_id.encode() + b"." + timestamp.encode() + b"." + payload
+        digest = hmac.new(secret, signed_content, hashlib.sha256).digest()
+        expected = base64.b64encode(digest).decode()
+        return any(
+            version == "v1" and hmac.compare_digest(candidate, expected)
+            for item in signature.split()
+            for version, separator, candidate in [item.partition(",")]
+            if separator
+        )
+    except (ValueError, TypeError, binascii.Error):
         return False
 
 
 @router.post("/webhook")
 async def clerk_webhook(
     request: Request,
-    svix_id: str = Header(None, alias="svix-id"),
-    svix_timestamp: str = Header(None, alias="svix-timestamp"),
-    svix_signature: str = Header(None, alias="svix-signature"),
+    svix_id: str | None = Header(default=None, alias="svix-id"),
+    svix_timestamp: str | None = Header(default=None, alias="svix-timestamp"),
+    svix_signature: str | None = Header(default=None, alias="svix-signature"),
     db: Session = Depends(get_db)
 ):
     """Handle Clerk webhooks for user management"""
@@ -54,7 +74,13 @@ async def clerk_webhook(
     payload = await request.body()
     
     # Verify signature
-    if not verify_clerk_signature(payload, svix_signature, signing_secret):
+    if not verify_clerk_signature(
+        payload,
+        svix_id,
+        svix_timestamp,
+        svix_signature,
+        signing_secret,
+    ):
         logger.warning("Invalid Clerk webhook signature")
         raise HTTPException(status_code=401, detail="Invalid signature")
 

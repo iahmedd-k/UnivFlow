@@ -99,44 +99,43 @@ async def get_current_user_optional(
     auth: Optional[HTTPAuthorizationCredentials] = Security(security),
     db: Session = Depends(get_db)
 ) -> Optional[Dict[str, Any]]:
-    """Dependency that returns current user if token is present and valid, else None"""
+    """Return the current user when a bearer token is present and valid."""
     if not auth or not auth.credentials:
         return None
-    try:
-        payload = verify_clerk_token(auth.credentials)
-        user_id = payload.get("sub")
-        if not user_id:
-            return None
-        
-        # Check if we have stored profile data in Setting
-        setting = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
-        profile = json.loads(setting.value) if setting and setting.value else {}
+    payload = verify_clerk_token(auth.credentials)
+    user_id = payload.get("sub")
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(status_code=401, detail="Authentication token has no user identity")
 
-        email = profile.get("email") or payload.get("email") or payload.get("primary_email_address") or ""
-        name = profile.get("first_name", "") + " " + profile.get("last_name", "")
-        name = name.strip() or payload.get("name") or "Student"
+    setting = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
+    profile = json.loads(setting.value) if setting and setting.value else {}
 
-        return {
-            "id": user_id,
-            "email": email,
-            "name": name,
-            "claims": payload,
-            "authenticated": True
-        }
-    except Exception:
-        return None
+    email = profile.get("email") or payload.get("email") or payload.get("primary_email_address") or ""
+    name = profile.get("first_name", "") + " " + profile.get("last_name", "")
+    name = name.strip() or payload.get("name") or "Student"
+
+    return {
+        "id": user_id,
+        "email": email,
+        "name": name,
+        "claims": payload,
+        "authenticated": True
+    }
 
 
 async def require_current_user(
     auth: Optional[HTTPAuthorizationCredentials] = Security(security),
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
-    """Dependency that returns Clerk user or falls back to dev user for testing"""
+    """Require a Clerk session, allowing the fixed development identity only locally."""
     if auth and auth.credentials:
         user = await get_current_user_optional(auth, db)
-        if user:
+        if user is not None:
             return user
-    # Fallback user for local testing and development
+
+    if settings.is_production:
+        raise HTTPException(status_code=401, detail="Sign in to access this resource.")
+
     return {
         "id": "dev_student_user",
         "email": "student@au.edu.pk",
