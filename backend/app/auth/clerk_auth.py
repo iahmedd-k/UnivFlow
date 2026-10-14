@@ -79,12 +79,8 @@ def verify_clerk_token(token: str) -> Dict[str, Any]:
             )
             return payload
 
-        # If JWKS is unavailable (e.g. offline dev), allow decode in development mode
-        if settings.environment == "development" or settings.debug:
-            payload = jwt.decode(token, options={"verify_signature": False, "verify_aud": False})
-            return payload
-        else:
-            raise HTTPException(status_code=401, detail="Unable to verify token signature: public keys unavailable")
+        # No valid key found - token cannot be verified
+        raise HTTPException(status_code=401, detail="Unable to verify token signature: public keys unavailable")
 
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Authentication token has expired")
@@ -107,6 +103,11 @@ async def get_current_user_optional(
     if not isinstance(user_id, str) or not user_id:
         raise HTTPException(status_code=401, detail="Authentication token has no user identity")
 
+    # Check if user has been deleted (session revoked)
+    revoked = db.query(Setting).filter(Setting.key == f"clerk_user_revoked_{user_id}").first()
+    if revoked:
+        raise HTTPException(status_code=401, detail="User account has been deactivated")
+
     setting = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
     profile = json.loads(setting.value) if setting and setting.value else {}
 
@@ -127,7 +128,7 @@ async def require_current_user(
     auth: Optional[HTTPAuthorizationCredentials] = Security(security),
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
-    """Require a Clerk session, allowing the fixed development identity only locally."""
+    """Require a Clerk session - dev fallback in development only."""
     if auth and auth.credentials:
         user = await get_current_user_optional(auth, db)
         if user is not None:
@@ -135,11 +136,11 @@ async def require_current_user(
 
     if settings.is_production:
         raise HTTPException(status_code=401, detail="Sign in to access this resource.")
-
+    
+    # Development fallback - return a default dev user
     return {
         "id": "dev_student_user",
-        "email": "student@au.edu.pk",
-        "name": "Dev Student",
-        "claims": {},
-        "authenticated": True
+        "first_name": "Dev",
+        "last_name": "User",
+        "email": "dev@local.test",
     }

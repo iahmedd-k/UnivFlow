@@ -150,3 +150,26 @@ class AnnouncementRepository:
         self.db.commit()
         self.db.refresh(announcement)
         return announcement
+
+
+class ChangeEventRepository:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_by_external_id(self, external_id: str) -> Optional[ChangeEvent]:
+        return self.db.query(ChangeEvent).filter(ChangeEvent.external_id == external_id).first()
+
+    def create_or_update(self, event_data: dict) -> ChangeEvent:
+        event = self.get_by_external_id(event_data["external_id"])
+        if event:
+            for key, value in event_data.items():
+                setattr(event, key, value)
+        else:
+            event = ChangeEvent(**event_data)
+            self.db.add(event)
+        self.db.commit()
+        self.db.refresh(event)
+        return event
+
+    def get_by_user(self, user_id: str, limit: int = 50) -> List[ChangeEvent]:
+        return self.db.query(ChangeEvent).filter(ChangeEvent.user_id == user_id).order_by(ChangeEvent.created_at.desc()).limit(limit).all()

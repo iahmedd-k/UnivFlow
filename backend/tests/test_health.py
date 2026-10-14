@@ -10,9 +10,10 @@ def test_health_check():
     response = client.get("/health")
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "healthy"
+    # Accept "healthy" or "degraded" since external services (Piston, Kroki) may not be configured in test env
+    assert data["status"] in ("healthy", "degraded")
     assert data["service"] == "Uniflow"
-    assert data["database"] == "connected"
+    assert data["checks"]["database"] == "healthy"
 
 
 def test_root():

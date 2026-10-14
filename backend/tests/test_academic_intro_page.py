@@ -82,7 +82,7 @@ def test_export_solution_to_google_doc_incorporates_intro_page():
         elif model == Assignment:
             q.filter.return_value.first.return_value = mock_assignment
         elif model == Setting:
-            q.filter.return_value.order_by.return_value.first.return_value = mock_profile_setting
+            q.filter.return_value.first.return_value = mock_profile_setting
         else:
             q.filter.return_value.first.return_value = None
             q.filter.return_value.all.return_value = []

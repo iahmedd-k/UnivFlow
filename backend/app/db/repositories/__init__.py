@@ -14,7 +14,7 @@ from .academics import AttendanceRecordRepository
 from .academics import ExamRepository
 from .academics import QuizRepository
 from .academics import AnnouncementRepository
-from .notifications import ChangeEventRepository
+from .academics import ChangeEventRepository
 from .notifications import NotificationRepository
 from .notifications import DailyReportRepository
 from .settings import SettingRepository

@@ -466,8 +466,8 @@ def test_solve_assignment_via_claude_browser_already_running():
     assert res["status"] == "already_running"
 
 
-def test_solve_assignment_via_claude_browser_draft_on_export_failure():
-    """Verify a generated solution is saved as DRAFT when Google Docs export fails."""
+def test_solve_assignment_via_claude_browser_completed_with_google_docs_warning():
+    """Verify a generated solution is saved as COMPLETED with warning when Google Docs export fails."""
     mock_db = MagicMock()
     mock_assignment = Assignment(id=6, title="Export Fails", course_id=5, status=AssignmentStatus.DRAFT)
     mock_course = Course(id=5, name="DBMS", teacher_name="Dr. Ali", section="BSCS-4B")
@@ -523,8 +523,11 @@ def test_solve_assignment_via_claude_browser_draft_on_export_failure():
 
         res = solve_assignment_via_claude_browser(mock_db, assignment_id=6, max_wait_seconds=5)
 
-        assert res["status"] == "draft"
-        assert mock_assignment.status == AssignmentStatus.DRAFT
+        assert res["status"] == "completed"
+        assert "warning" in res
+        assert "Google Docs" in res["warning"]
+        assert mock_assignment.status == AssignmentStatus.READY_FOR_REVIEW
         assert mock_solution.draft_content is not None
+        assert mock_solution.validated_content is not None
         assert "Google Docs" in mock_solution.validation_errors
         assert mock_db.commit.called

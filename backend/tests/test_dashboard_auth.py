@@ -19,8 +19,7 @@ def test_dashboard_data_endpoints_require_current_user():
     try:
         for endpoint in (
             "/api/v1/dashboard/upcoming",
-            "/api/v1/dashboard/attendance-summary",
-            "/api/v1/dashboard/assignments-by-status",
+            "/api/v1/dashboard/overview",
         ):
             response = client.get(endpoint)
             assert response.status_code == 401, endpoint

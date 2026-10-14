@@ -100,7 +100,12 @@ def list_assignments(
             except Exception:
                 pass
     if not since_dt:
-        since_dt = datetime(2026, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        year = now.year
+        if now.month >= 8:
+            since_dt = datetime(year, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
+        else:
+            since_dt = datetime(year, 2, 1, 0, 0, 0, tzinfo=timezone.utc)
 
     query = (
         db.query(Assignment, Course, Submission)
@@ -109,7 +114,6 @@ def list_assignments(
         .filter(
             Assignment.user_id == user_id,
             Course.user_id == user_id,
-            Course.course_state.in_(["ACTIVE", "active", ""]) | Course.course_state.is_(None),
         )
         .filter(
             (Assignment.due_at >= since_dt) | 

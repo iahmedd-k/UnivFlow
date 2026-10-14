@@ -41,15 +41,17 @@ def test_requested_schedule_returns_non_success_without_persisting(monkeypatch):
     monkeypatch.setattr(
         assignment_router,
         "_find_assignment",
-        lambda _db, _assignment_id: SimpleNamespace(id=27),
+        lambda _db, _assignment_id, _user_id: SimpleNamespace(id=27),
     )
     db = FakeSession()
+    mock_clerk_user = {"id": "test_user"}
 
     with pytest.raises(HTTPException) as error:
         assignment_router.schedule_assignment_turn_in(
             "27",
             assignment_router.ScheduleTurnInRequest(enabled=True),
             db,
+            clerk_user=mock_clerk_user,
         )
 
     assert error.value.status_code == 501
@@ -63,15 +65,17 @@ def test_cancellation_removes_existing_schedule(monkeypatch):
     monkeypatch.setattr(
         assignment_router,
         "_find_assignment",
-        lambda _db, _assignment_id: SimpleNamespace(id=27),
+        lambda _db, _assignment_id, _user_id: SimpleNamespace(id=27),
     )
     existing = object()
     db = FakeSession(setting=existing)
+    mock_clerk_user = {"id": "test_user"}
 
     result = assignment_router.schedule_assignment_turn_in(
         "27",
         assignment_router.ScheduleTurnInRequest(enabled=False),
         db,
+        clerk_user=mock_clerk_user,
     )
 
     assert result["status"] == "cancelled"
@@ -84,14 +88,16 @@ def test_cancellation_is_idempotent_when_no_schedule_exists(monkeypatch):
     monkeypatch.setattr(
         assignment_router,
         "_find_assignment",
-        lambda _db, _assignment_id: SimpleNamespace(id=27),
+        lambda _db, _assignment_id, _user_id: SimpleNamespace(id=27),
     )
     db = FakeSession()
+    mock_clerk_user = {"id": "test_user"}
 
     result = assignment_router.schedule_assignment_turn_in(
         "27",
         assignment_router.ScheduleTurnInRequest(enabled=False),
         db,
+        clerk_user=mock_clerk_user,
     )
 
     assert result["status"] == "cancelled"

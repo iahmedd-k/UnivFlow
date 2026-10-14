@@ -25,16 +25,33 @@ from app.core.logging import logger
 from app.services.google_docs import get_google_docs_service
 from app.services.ai_solution import export_solution_to_google_doc
 
-CLAUDE_BROWSER_PROFILE_DIR = Path(__file__).resolve().parent.parent.parent / "tmp" / "claude_browser_profile"
+# Per-user browser profiles for isolation
+CLAUDE_BROWSER_PROFILE_ROOT = Path(__file__).resolve().parent.parent.parent / "tmp" / "claude_browser_profiles"
+CLAUDE_BROWSER_PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
+
+# Fallback global profile for backward compatibility
+CLAUDE_BROWSER_PROFILE_DIR = CLAUDE_BROWSER_PROFILE_ROOT / "global"
 CLAUDE_BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+
 CLAUDE_MATERIALS_DIR = Path(__file__).resolve().parent.parent.parent / "tmp" / "materials"
 CLAUDE_MATERIALS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Configurable ports and timeouts
 USER_CDP_PORT = 9222
 CDP_CONNECT_TIMEOUT_MS = 20000
 CDP_CONNECT_ATTEMPTS = 2
+BROWSER_LAUNCH_TIMEOUT = 30  # seconds
+CLAUDE_RESPONSE_TIMEOUT = 300  # seconds (5 minutes for complex responses)
 
-_claude_process: Optional[subprocess.Popen] = None
+def _get_headless_mode() -> bool:
+    """Get headless mode from settings, defaulting to True for production."""
+    try:
+        from app.core.config import settings
+        return settings.playwright_headless
+    except Exception:
+        return True  # Safe default for production
+
+_claude_processes: Dict[str, subprocess.Popen] = {}  # Per-user processes
 
 _HEAVY_ML_PATTERN = re.compile(
     r"\b(?:deep learning|deep neural|neural network|transformer|large language model|"
@@ -48,6 +65,107 @@ _DIAGRAM_FENCE_TAGS = {
 
 
 _ALREADY_SOLVING_STALE_SECONDS = 20 * 60
+
+
+def _validate_drawio_xml(xml_content: str) -> bool:
+    """Validate Draw.io XML structure for mxGraph compatibility."""
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(xml_content)
+        
+        # Check for required mxfile root
+        if root.tag != "mxfile":
+            return False
+        
+        # Check for diagram element
+        diagram = root.find("diagram")
+        if diagram is None:
+            return False
+        
+        # Check for mxGraphModel
+        mx_graph_model = diagram.find("mxGraphModel")
+        if mx_graph_model is None:
+            return False
+        
+        # Check for root element
+        root_elem = mx_graph_model.find("root")
+        if root_elem is None:
+            return False
+        
+        # Check for at least one mxCell
+        cells = root_elem.findall("mxCell")
+        if not cells:
+            return False
+        
+        return True
+    except Exception:
+        return False
+
+
+def _convert_drawio_to_mermaid(drawio_xml: str) -> Optional[str]:
+    """Attempt to convert Draw.io XML to Mermaid flowchart as fallback."""
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(drawio_xml)
+        
+        # Extract cells and connections
+        diagram = root.find("diagram")
+        if diagram is None:
+            return None
+        mx_graph_model = diagram.find("mxGraphModel")
+        if mx_graph_model is None:
+            return None
+        root_elem = mx_graph_model.find("root")
+        if root_elem is None:
+            return None
+        
+        cells = root_elem.findall("mxCell")
+        nodes = {}
+        edges = []
+        
+        for cell in cells:
+            cell_id = cell.get("id")
+            value = cell.get("value", "")
+            style = cell.get("style", "")
+            parent = cell.get("parent")
+            edge = cell.get("edge", "0")
+            source = cell.get("source")
+            target = cell.get("target")
+            
+            if edge == "1" and source and target:
+                edges.append((source, target))
+            elif value and value.strip():
+                # Clean HTML tags from value
+                import re
+                clean_value = re.sub(r'<[^>]+>', '', value)
+                clean_value = re.sub(r'<', '<', clean_value)
+                clean_value = re.sub(r'>', '>', clean_value)
+                clean_value = re.sub(r'&', '&', clean_value)
+                clean_value = re.sub(r'<br\s*/?>', ' ', clean_value)
+                clean_value = clean_value.strip()
+                if clean_value:
+                    nodes[cell_id] = clean_value[:50]  # Truncate long labels
+        
+        if not nodes:
+            return None
+        
+        # Generate Mermaid flowchart
+        lines = ["```mermaid", "flowchart TD"]
+        for node_id, label in nodes.items():
+            safe_id = re.sub(r'[^a-zA-Z0-9_]', '_', node_id)
+            safe_label = label.replace('"', '\\"')
+            lines.append(f'    {safe_id}["{safe_label}"]')
+        
+        for source, target in edges:
+            if source in nodes and target in nodes:
+                safe_source = re.sub(r'[^a-zA-Z0-9_]', '_', source)
+                safe_target = re.sub(r'[^a-zA-Z0-9_]', '_', target)
+                lines.append(f"    {safe_source} --> {safe_target}")
+        
+        lines.append("```")
+        return "\n".join(lines)
+    except Exception:
+        return None
 
 
 def _is_assignment_already_solving(db: Session, assignment_id: int, user_id: str) -> bool:
@@ -81,6 +199,13 @@ def _is_assignment_already_solving(db: Session, assignment_id: int, user_id: str
         return True
 
     return False
+
+
+def _get_user_profile_dir(user_id: str) -> Path:
+    """Get or create per-user browser profile directory."""
+    profile_dir = CLAUDE_BROWSER_PROFILE_ROOT / user_id
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    return profile_dir
 
 
 def find_system_browser() -> str:
@@ -144,36 +269,51 @@ def connect_to_chrome(chromium: Any, endpoint: Any) -> Any:
     raise RuntimeError(f"Chrome CDP attach failed on port {port} without an error detail.")
 
 
-def open_claude_browser_window() -> Dict[str, Any]:
+def open_claude_browser_window(user_id: str = "default", headless: bool = None) -> Dict[str, Any]:
     """
     Launch or focus the persistent Uniflow browser profile with remote debugging enabled.
-    Using a dedicated data directory is required by current Chrome versions and avoids
-    interrupting the user's normal browser session.
+    Using a dedicated data directory per user is required for isolation.
     """
-    global _claude_process
+    if headless is None:
+        headless = _get_headless_mode()
+    
+    global _claude_processes
+    
+    profile_dir = _get_user_profile_dir(user_id)
     active_port = get_active_cdp_port()
     if active_port is not None:
         return {
             "status": "ready",
             "port": active_port,
-            "message": f"Chrome remote debugging is already active on port {active_port}."
+            "user_id": user_id,
+            "message": f"Chrome remote debugging is already active on port {active_port} for user {user_id}.",
         }
 
     browser_bin = find_system_browser()
     cmd = [
         browser_bin,
-        f"--user-data-dir={CLAUDE_BROWSER_PROFILE_DIR}",
+        f"--user-data-dir={profile_dir}",
         f"--remote-debugging-port={USER_CDP_PORT}",
         "--remote-debugging-address=127.0.0.1",
         "--remote-allow-origins=*",
         "--restore-last-session",
         "https://claude.ai/new",
     ]
+    
+    if headless:
+        cmd.extend([
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-extensions",
+            "--disable-background-networking",
+        ])
 
     try:
         flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000200) if os.name == "nt" else 0
         try:
-            _claude_process = subprocess.Popen(
+            process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -181,42 +321,74 @@ def open_claude_browser_window() -> Dict[str, Any]:
                 creationflags=flags
             )
         except OSError:
-            _claude_process = subprocess.Popen(
+            process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 close_fds=True,
                 creationflags=(subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
             )
+        _claude_processes[user_id] = process
     except Exception as e:
-        logger.error(f"Failed to launch Chrome for Claude: {e}")
+        logger.error(f"Failed to launch Chrome for Claude (user {user_id}): {e}")
         return {"status": "error", "error": f"Failed to launch Chrome: {str(e)}"}
 
-    # Wait up to 10 seconds for CDP endpoint to become ready
-    deadline = time.monotonic() + 10.0
+    # Wait up to BROWSER_LAUNCH_TIMEOUT seconds for CDP endpoint to become ready
+    deadline = time.monotonic() + BROWSER_LAUNCH_TIMEOUT
     while time.monotonic() < deadline:
         if is_cdp_port_live(USER_CDP_PORT):
             return {
                 "status": "launched",
                 "port": USER_CDP_PORT,
+                "user_id": user_id,
+                "headless": headless,
                 "message": (
-                    f"Uniflow's persistent browser profile is ready on port {USER_CDP_PORT}. "
+                    f"Uniflow's persistent browser profile for user {user_id} is ready on port {USER_CDP_PORT}. "
                     "Sign in to Claude in that window the first time."
                 )
             }
         time.sleep(0.4)
 
     error_message = (
-        f"Chrome opened with Uniflow's persistent profile, but its debugging endpoint on "
+        f"Chrome opened with Uniflow's persistent profile for user {user_id}, but its debugging endpoint on "
         f"port {USER_CDP_PORT} did not become ready. Check that Chrome is installed and "
         "that no other process is using this profile or port."
     )
     logger.error(error_message)
+    # Cleanup failed process
+    if user_id in _claude_processes:
+        try:
+            _claude_processes[user_id].terminate()
+        except Exception:
+            pass
+        del _claude_processes[user_id]
     return {
         "status": "error",
         "port": USER_CDP_PORT,
         "error": error_message,
     }
+
+
+def close_claude_browser_window(user_id: str = "default") -> Dict[str, Any]:
+    """Close the user's Claude browser window and cleanup."""
+    global _claude_processes
+    
+    if user_id in _claude_processes:
+        try:
+            process = _claude_processes[user_id]
+            process.terminate()
+            process.wait(timeout=5)
+        except Exception as e:
+            logger.warning(f"Error terminating browser for user {user_id}: {e}")
+            try:
+                process.kill()
+            except Exception:
+                pass
+        finally:
+            del _claude_processes[user_id]
+        return {"status": "closed", "user_id": user_id}
+    
+    return {"status": "not_running", "user_id": user_id}
 
 
 def get_student_metadata(
@@ -515,8 +687,9 @@ def remove_heavy_ml_code_fences(markdown: str) -> str:
 def solve_assignment_via_claude_browser(
     db: Session,
     assignment_id: int,
-    max_wait_seconds: int = 180,
+    max_wait_seconds: int = CLAUDE_RESPONSE_TIMEOUT,
     user_id: str = "legacy",
+    headless: bool = None,
 ) -> Dict[str, Any]:
     """
     Autonomous pipeline that connects to the user's Chrome browser, attaches assignment PDFs/materials,
@@ -547,32 +720,30 @@ def solve_assignment_via_claude_browser(
     attachment_paths = prepare_assignment_materials(db, assignment, course)
     extracted_text = extract_assignment_question_text(db, assignment)
 
-    # Users must sign into their own hosted browser profile in production.
-    # In development, fall back to an isolated local Chrome profile so the flow can be tested.
+    # Resolve headless mode from config if not explicitly provided
+    if headless is None:
+        headless = _get_headless_mode()
+
+    # Try hosted browser service first
     from app.services.browser_sessions import BrowserSessionClient
     try:
         endpoint = BrowserSessionClient().cdp_endpoint(user_id)
+        logger.info("Using hosted Claude browser for user %s", user_id)
     except Exception as error:
-        logger.warning("Hosted Claude browser is unavailable for user %s: %s", user_id, error)
-        if settings.environment == "development":
-            logger.info("Development mode: falling back to isolated local Chrome profile.")
-            launch_result = open_claude_browser_window()
-            if launch_result.get("status") not in ("ready", "launched"):
-                return {
-                    "status": "needs_login",
-                    "error": (
-                        "Could not start a local Claude browser and the hosted browser service is unavailable. "
-                        f"Details: {launch_result.get('error', 'unknown error')}"
-                    ),
-                }
-            endpoint = f"http://127.0.0.1:{USER_CDP_PORT}"
-        else:
+        logger.warning("Hosted Claude browser unavailable for user %s: %s", user_id, error)
+        logger.info("Falling back to local Chrome profile (headless=%s)", headless)
+        launch_result = open_claude_browser_window(user_id=user_id, headless=headless)
+        if launch_result.get("status") not in ("ready", "launched"):
             return {
                 "status": "needs_login",
-                "error": "Start and sign into your private Claude browser from Settings, then resume this assignment.",
+                "error": (
+                    "Could not start local Claude browser and hosted browser service is unavailable. "
+                    f"Details: {launch_result.get('error', 'unknown error')}"
+                ),
             }
+        endpoint = f"http://127.0.0.1:{USER_CDP_PORT}"
 
-    logger.info("Connecting to the private Claude browser for assignment %s.", assignment_id)
+    logger.info("Connecting to the private Claude browser for assignment %s (user: %s).", assignment_id, user_id)
 
     # Set Playwright bypass for context-management errors on attached Chromium instances
     os.environ["PW_CHROMIUM_ATTACH_TO_OTHER"] = "1"
@@ -838,15 +1009,17 @@ def solve_assignment_via_claude_browser(
         cover_md = build_academic_cover_markdown(meta, assignment.title or "Assignment Solution")
         final_solution_content = cover_md + raw_solution_text.strip()
 
-        # 10. Execute code deliverables & render visual diagrams
+        # 10. Execute code deliverables & render visual diagrams with validation
         execution_results = []
         notebook_deliverables = []
+        validation_errors = []
         try:
             from app.services.ai_solution import (
                 append_execution_metadata,
                 extract_code_deliverables,
                 extract_colab_notebooks,
                 extract_diagram_deliverables,
+                review_and_refine_solution,
             )
             from app.services.code_runner import SingleFileCodeRunner
             from app.services.browser_tool_runner import BrowserToolRunner
@@ -863,13 +1036,71 @@ def solve_assignment_via_claude_browser(
             if heavy_ml_assignment:
                 raw_solution_text = remove_heavy_ml_code_fences(raw_solution_text)
 
+            # Use enhanced review with code execution verification
+            review_result = review_and_refine_solution(
+                assignment=assignment,
+                raw_solution=raw_solution_text,
+                requirements={"domain_type": "code_lab", "task_type": "coding"},
+                db=db,
+            )
+            
+            final_solution_content = cover_md + review_result.get("final_solution_markdown", raw_solution_text.strip())
+            execution_results = review_result.get("execution_results", [])
+            validation_errors = review_result.get("validation_errors", [])
+            
+            # If validation failed, attempt auto-repair for failed code files
+            if validation_errors and not heavy_ml_assignment:
+                logger.info(f"Attempting auto-repair for {len(validation_errors)} failed code files")
+                for error in validation_errors[:3]:  # Limit to 3 repairs
+                    try:
+                        from app.services.ai_solution import repair_single_task_code
+                        task_id = error.get("task")
+                        filename = error.get("filename")
+                        # Extract the failed code from the solution
+                        deliverables = extract_code_deliverables(raw_solution_text)
+                        failed_file = next((f for f in deliverables.get("files", []) if f["name"] == filename), None)
+                        if failed_file:
+                            repaired_code = repair_single_task_code(
+                                task_id=task_id,
+                                filename=filename,
+                                language=failed_file.get("language", "python"),
+                                current_code=failed_file.get("content", ""),
+                                error_message=error.get("error", ""),
+                                materials_context=extracted_text,
+                            )
+                            if repaired_code:
+                                # Replace in solution and re-execute
+                                raw_solution_text = replace_task_source(raw_solution_text, task_id, failed_file.get("language", "python"), repaired_code)
+                                logger.info(f"Auto-repaired Task {task_id} ({filename})")
+                    except Exception as repair_err:
+                        logger.warning(f"Auto-repair failed for {error.get('filename')}: {repair_err}")
+            
+            # Re-extract deliverables after potential repairs
             code_deliverables = extract_code_deliverables(raw_solution_text)
             for source_file in code_deliverables.get("files", []):
                 lang = (source_file.get("language") or "python").lower()
-                if lang in ("mermaid", "diagram", "drawio", "plantuml", "flowchart") or source_file["name"].endswith((".mmd", ".drawio.xml", ".puml")):
+                is_diagram = lang in ("mermaid", "diagram", "drawio", "plantuml", "flowchart") or source_file["name"].endswith((".mmd", ".drawio.xml", ".puml"))
+                
+                if is_diagram:
+                    # Validate Draw.io XML before rendering
+                    diag_code = source_file["content"]
+                    if lang in ("drawio", "drawio.xml", "mxfile", "xml") and not _validate_drawio_xml(diag_code):
+                        logger.warning(f"Invalid Draw.io XML for {source_file['name']}, attempting fallback")
+                        # Try to render as Mermaid instead
+                        try:
+                            mermaid_code = _convert_drawio_to_mermaid(diag_code)
+                            if mermaid_code:
+                                lang = "mermaid"
+                                diag_code = mermaid_code
+                            else:
+                                raise ValueError("Could not convert Draw.io to Mermaid")
+                        except Exception:
+                            validation_errors.append({"task": source_file["task"], "filename": source_file["name"], "error": "Invalid Draw.io XML"})
+                            continue
+                    
                     diag_res = BrowserToolRunner.render_diagram(
                         diagram_type=lang,
-                        diagram_code=source_file["content"],
+                        diagram_code=diag_code,
                         title=f"Task {source_file['task']} — {source_file['name']}"
                     )
                     execution_results.append({
@@ -969,24 +1200,28 @@ def solve_assignment_via_claude_browser(
 
         if not doc_result:
             error_message = (
-                "The solution was generated, but its required Google Docs report could not be created. "
-                "Check that Google Drive and Docs are connected, then retry from the solution panel."
+                "The solution was generated successfully, but Google Docs export failed. "
+                "Check that Google Drive and Docs are connected, then use 'Export to Doc' from the solution panel."
             )
+            logger.warning("Google Docs export failed for assignment %s: %s", assignment_id, error_message)
             solution.draft_content = final_solution_content
-            solution.validated_content = None
+            solution.validated_content = final_solution_content
             solution.ai_provider = "claude_browser"
             solution.validation_errors = error_message
             solution.generated_at = datetime.now(timezone.utc)
-            solution.validated_at = None
-            assignment.status = AssignmentStatus.DRAFT
+            solution.validated_at = datetime.now(timezone.utc)
+            assignment.status = AssignmentStatus.READY_FOR_REVIEW
             db.commit()
             return {
-                "status": "draft",
+                "status": "completed",
                 "assignment_id": assignment_id,
                 "solution_id": solution.id,
                 "characters": len(final_solution_content),
                 "attachments_used": attachment_paths,
-                "error": error_message,
+                "google_doc_url": None,
+                "google_doc_id": None,
+                "warning": error_message,
+                "message": "Assignment solution generated by Claude. Google Docs export failed - you can retry from the solution panel.",
             }
 
         # 12. Persist the completed solution after the report is available.

@@ -91,8 +91,11 @@ def _get_semester_start_dt(db: Session, override: Optional[str] = None, user_id:
             return dt
         except Exception:
             pass
-    # Guaranteed fallback to current semester start (September 1, 2026)
-    return datetime(2026, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    year = now.year
+    if now.month >= 8:
+        return datetime(year, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
+    return datetime(year, 2, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 
 @router.get("/settings", response_model=dict)
@@ -105,9 +108,15 @@ def get_classroom_settings(
     setting = db.query(Setting).filter(
         Setting.key == f"classroom:{user_id}:semester_start_date"
     ).first()
-    return {
-        "semester_start_date": setting.value.strip().replace('"', '') if setting and setting.value else "2026-09-01T00:00:00+00:00"
-    }
+    if setting and setting.value:
+        return {"semester_start_date": setting.value.strip().replace('"', '')}
+    now = datetime.now(timezone.utc)
+    year = now.year
+    if now.month >= 8:
+        default = datetime(year, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
+    else:
+        default = datetime(year, 2, 1, 0, 0, 0, tzinfo=timezone.utc)
+    return {"semester_start_date": default.isoformat()}
 
 
 @router.post("/settings", response_model=dict)
