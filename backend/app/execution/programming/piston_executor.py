@@ -1,6 +1,6 @@
 import time
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from app.execution.base import BaseExecutor, ExecutionRequest
 from app.execution.models import (
@@ -13,6 +13,18 @@ from app.integrations.piston import piston_client, PistonUnavailableError, Runti
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Language-specific default packages
+LANGUAGE_PACKAGES = {
+    "python": ["numpy", "pandas", "requests", "matplotlib", "scipy", "sklearn"],
+    "javascript": ["lodash", "axios", "express"],
+    "typescript": ["@types/node", "axios"],
+    "java": [],
+    "cpp": [],
+    "c": [],
+    "go": [],
+    "rust": [],
+}
 
 
 class PistonExecutor(BaseExecutor):
@@ -30,6 +42,15 @@ class PistonExecutor(BaseExecutor):
             for lang_id, config in LANGUAGE_REGISTRY.items()
             if config.backend == ExecutionBackend.PISTON
         ]
+
+    def _get_packages_for_language(self, language: str, request_packages: Optional[List[str]] = None) -> List[str]:
+        """Get packages to install for the language."""
+        packages = []
+        if request_packages:
+            packages.extend(request_packages)
+        if language in LANGUAGE_PACKAGES:
+            packages.extend(LANGUAGE_PACKAGES[language])
+        return packages
 
     async def execute(self, request: ExecutionRequest) -> ExecutionResult:
         start_time = time.perf_counter()
@@ -57,6 +78,9 @@ class PistonExecutor(BaseExecutor):
             compile_timeout = min(settings.code_execution_timeout_seconds * 1000, 30000)
             run_timeout = min(settings.code_execution_timeout_seconds * 1000, 30000)
 
+            # Get packages for this language
+            packages = self._get_packages_for_language(language, getattr(request, 'packages', None))
+
             piston_response = await self._client.execute_code(
                 language=runtime,
                 code=request.code,
@@ -65,6 +89,9 @@ class PistonExecutor(BaseExecutor):
                 args=request.args,
                 compile_timeout=compile_timeout,
                 run_timeout=run_timeout,
+                memory_limit_mb=getattr(settings, 'piston_memory_limit_mb', 256),
+                cpu_limit=getattr(settings, 'piston_cpu_limit', 1.0),
+                packages=packages,
             )
 
             execution_time = time.perf_counter() - start_time
@@ -153,5 +180,30 @@ class PistonExecutor(BaseExecutor):
             "java": "java",
             "go": "go",
             "assembly": "asm",
+            "rust": "rs",
+            "csharp": "cs",
+            "php": "php",
+            "ruby": "rb",
+            "swift": "swift",
+            "kotlin": "kt",
+            "scala": "scala",
+            "r": "r",
+            "dart": "dart",
+            "perl": "pl",
+            "lua": "lua",
+            "haskell": "hs",
+            "ocaml": "ml",
+            "fsharp": "fs",
+            "clojure": "clj",
+            "elixir": "ex",
+            "erlang": "erl",
+            "julia": "jl",
+            "nim": "nim",
+            "zig": "zig",
+            "vlang": "v",
+            "dart": "dart",
+            "solidity": "sol",
+            "vue": "vue",
+            "svelte": "svelte",
         }
         return extensions.get(language, "txt")

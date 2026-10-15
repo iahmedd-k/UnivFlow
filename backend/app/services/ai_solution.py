@@ -760,8 +760,8 @@ def replace_task_source(markdown: str, task_id: str, language: str, source: str)
     return markdown[:match.end()] + replaced + markdown[section_end:]
 
 
-def review_and_refine_solution(assignment: Assignment, raw_solution: str, requirements: Dict[str, Any], model: str = DEFAULT_MODEL) -> Dict[str, Any]:
-    """Perform a basic check and ensure draft exists."""
+def review_and_refine_solution(assignment: Assignment, raw_solution: str, requirements: Dict[str, Any], model: str = DEFAULT_MODEL, db: Session = None) -> Dict[str, Any]:
+    """Perform comprehensive review including code execution verification and output validation."""
     if not raw_solution or len(raw_solution.strip()) < 50:
         return {
             "is_complete": False,
@@ -771,11 +771,123 @@ def review_and_refine_solution(assignment: Assignment, raw_solution: str, requir
         }
 
     deliverables = extract_code_deliverables(raw_solution)
+    files = deliverables.get("files", [])
+    
+    if not files:
+        return {
+            "is_complete": True,
+            "confidence_score": 0.8,
+            "quality_notes": "Generated theoretical solution (no code files to verify).",
+            "final_solution_markdown": raw_solution.strip()
+        }
+
+    # Execute code deliverables and validate
+    execution_results = []
+    validation_passed = 0
+    validation_failed = 0
+    validation_errors = []
+
+    if db:
+        try:
+            from app.services.code_executor import code_executor
+            import asyncio
+            
+            for source_file in files:
+                lang = (source_file.get("language") or "python").lower()
+                code = source_file.get("content", "")
+                
+                if not code.strip():
+                    continue
+                
+                # Skip diagram files - they're validated separately
+                if lang in ("mermaid", "diagram", "plantuml", "graphviz", "dot", "mmd", "puml", "drawio", "drawio.xml", "mxfile", "xml") or source_file["name"].endswith((".mmd", ".drawio.xml", ".puml")):
+                    continue
+                
+                try:
+                    # Execute code with timeout
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(
+                        code_executor.execute_with_retry(
+                            language=lang,
+                            code=code,
+                            max_attempts=2,
+                        )
+                    )
+                    loop.close()
+                    
+                    exec_result = {
+                        "task": source_file["task"],
+                        "filename": source_file["name"],
+                        "language": lang,
+                        "success": result.success,
+                        "status": "passed" if result.success else "failed",
+                        "exit_code": getattr(result, 'exit_code', None),
+                        "stdout": getattr(result, 'stdout', ''),
+                        "stderr": getattr(result, 'stderr', ''),
+                        "execution_time": getattr(result, 'execution_time', 0),
+                        "error_type": getattr(result, 'error_type', None),
+                        "error_message": getattr(result, 'error_message', None),
+                    }
+                    
+                    execution_results.append(exec_result)
+                    
+                    if result.success:
+                        validation_passed += 1
+                    else:
+                        validation_failed += 1
+                        validation_errors.append({
+                            "task": source_file["task"],
+                            "filename": source_file["name"],
+                            "error": exec_result.get("error_message") or exec_result.get("stderr")
+                        })
+                        
+                except Exception as e:
+                    validation_failed += 1
+                    validation_errors.append({
+                        "task": source_file["task"],
+                        "filename": source_file["name"],
+                        "error": f"Execution failed: {str(e)}"
+                    })
+                    execution_results.append({
+                        "task": source_file["task"],
+                        "filename": source_file["name"],
+                        "language": lang,
+                        "success": False,
+                        "status": "error",
+                        "error_message": str(e),
+                    })
+                    
+        except Exception as e:
+            logger.warning(f"Code execution verification failed: {e}")
+            validation_errors.append({"error": f"Execution system error: {str(e)}"})
+
+    # Determine overall quality
+    total_validated = validation_passed + validation_failed
+    if total_validated > 0:
+        confidence_score = validation_passed / total_validated
+    else:
+        confidence_score = 0.7  # Default for non-executable content
+
+    is_complete = validation_failed == 0 and total_validated > 0
+    
+    # Append execution metadata to solution
+    if execution_results:
+        final_solution = append_execution_metadata(raw_solution.strip(), execution_results)
+    else:
+        final_solution = raw_solution.strip()
+
+    quality_notes = f"Validated {validation_passed}/{total_validated} code deliverables."
+    if validation_errors:
+        quality_notes += f" {validation_failed} failed: " + "; ".join(e.get("error", "Unknown error")[:100] for e in validation_errors[:3])
+
     return {
-        "is_complete": True,
-        "confidence_score": 0.95,
-        "quality_notes": f"Generated {len(deliverables.get('files', []))} verified deliverables.",
-        "final_solution_markdown": raw_solution.strip()
+        "is_complete": is_complete,
+        "confidence_score": round(confidence_score, 2),
+        "quality_notes": quality_notes,
+        "final_solution_markdown": final_solution,
+        "execution_results": execution_results,
+        "validation_errors": validation_errors,
     }
 
 

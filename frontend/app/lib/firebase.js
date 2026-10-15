@@ -2,15 +2,33 @@ import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAnalytics, isSupported as isAnalyticsSupported } from "firebase/analytics";
 import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from "firebase/messaging";
 
-export const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "AIzaSyB1_clizW36lfP5nYgJxaI5y_6Z9qyaZLE",
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || "uniflow-4fa00.firebaseapp.com",
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "uniflow-4fa00",
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || "uniflow-4fa00.firebasestorage.app",
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "1068232496877",
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || "1:1068232496877:web:248d76843ca2162ab71ee4",
-  measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID || "G-C45SZNVG2B"
-};
+function getFirebaseConfig() {
+  const isProduction = process.env.NODE_ENV === 'production';
+  
+  const config = {
+    apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+    authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+    projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+    storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+    appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+    measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID,
+  };
+  
+  const missing = Object.entries(config).filter(([, v]) => !v).map(([k]) => k);
+  
+  if (isProduction && missing.length > 0) {
+    console.error(
+      `Firebase config missing required environment variables: ${missing.join(', ')}. ` +
+      `Please set them in your environment variables.`
+    );
+    throw new Error(`Firebase config incomplete: missing ${missing.join(', ')}`);
+  }
+  
+  return config;
+}
+
+const firebaseConfig = getFirebaseConfig();
 
 // Initialize Firebase App safely (avoid re-initializing during hot-reloads)
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);

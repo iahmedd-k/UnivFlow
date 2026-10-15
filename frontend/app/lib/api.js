@@ -1,4 +1,19 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+function getApiBase() {
+  const envUrl = process.env.NEXT_PUBLIC_API_URL;
+  const isProduction = process.env.NODE_ENV === 'production';
+  
+  if (isProduction && !envUrl) {
+    console.error(
+      'NEXT_PUBLIC_API_URL is required in production. ' +
+      'Please set it in your environment variables.'
+    );
+    throw new Error('NEXT_PUBLIC_API_URL is not configured');
+  }
+  
+  return envUrl || 'http://localhost:8000/api/v1';
+}
+
+const API_BASE = getApiBase();
 const ROOT_URL = API_BASE.replace('/api/v1', '');
 
 // In-memory client cache with TTL

@@ -123,3 +123,54 @@ def release_lock(key: str, owner_token: str) -> None:
         f"{quote(key, safe='')}/{quote(owner_token, safe='')}"
     )
     _request("POST", path)
+
+
+def check_rate_limit(key: str, limit: int, window_seconds: int) -> bool:
+    """Check rate limit using sliding window algorithm.
+    Returns True if allowed, False if rate limited.
+    """
+    if not is_configured():
+        return True
+    
+    now = int(__import__("time").time())
+    window_start = now - window_seconds
+    
+    try:
+        pipeline = [
+            ["ZREMRANGEBYSCORE", quote(key, safe=''), "0", str(window_start)],
+            ["ZCARD", quote(key, safe='')],
+            ["ZADD", quote(key, safe=''), str(now), f"{now}:{__import__('uuid').uuid4().hex[:8]}"],
+            ["EXPIRE", quote(key, safe=''), str(window_seconds)],
+        ]
+        
+        for cmd in pipeline:
+            _request("POST", "/" + "/".join(quote(str(p), safe='') for p in cmd))
+        
+        count_result = _request("POST", f"/zcard/{quote(key, safe='')}")
+        current_count = int(count_result) if count_result else 0
+        
+        if current_count > limit:
+            _request("POST", f"/zrem/{quote(key, safe='')}/{str(now)}:*")
+            return False
+        
+        return True
+    except UpstashRedisError as error:
+        logger.warning("Rate limit check failed, allowing request: %s", error)
+        return True
+
+
+def get_rate_limit_remaining(key: str, limit: int, window_seconds: int) -> int:
+    """Get remaining requests in current window."""
+    if not is_configured():
+        return limit
+    
+    now = int(__import__("time").time())
+    window_start = now - window_seconds
+    
+    try:
+        _request("POST", f"/zremrangebyscore/{quote(key, safe='')}/0/{window_start}")
+        count_result = _request("POST", f"/zcard/{quote(key, safe='')}")
+        current_count = int(count_result) if count_result else 0
+        return max(0, limit - current_count)
+    except UpstashRedisError:
+        return limit

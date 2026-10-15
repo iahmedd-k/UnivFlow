@@ -14,11 +14,14 @@ class KrokiRenderResponse(BaseModel):
     content_type: str = ""
     error: Optional[str] = None
     error_type: Optional[str] = None
+    version: int = 1
+    endpoint: str = "unknown"
 
 
 class KrokiHealthResponse(BaseModel):
     status: str
     version: Optional[str] = None
+    endpoint: str = "unknown"
 
 
 class DiagramTypeInfo(BaseModel):

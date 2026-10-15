@@ -13,6 +13,20 @@ permissions:
 jobs:
   backend-tests:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: univflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d univflow"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,15 +36,24 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - name: Install backend dependencies
         run: python -m pip install -r backend/requirements.txt
+      - name: Validate production database migrations
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/univflow
+          ENVIRONMENT: production
+          SECRET_KEY: ci-migration-check-only
+        run: python -m alembic upgrade head
       - name: Verify production API startup imports
         working-directory: backend
         env:
           ENVIRONMENT: production
           DEBUG: "false"
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/univflow
+          SECRET_KEY: ci-startup-check-only
         run: python -c "from app.main import app; assert app"
       - name: Run backend tests
         working-directory: backend
-        run: python -m pytest -q tests/test_health.py tests/test_auth_oauth_redirect.py tests/test_google_oauth_callback_routing.py
+        run: python -m pytest -q tests/
 
   container-build-checks:
     runs-on: ubuntu-latest

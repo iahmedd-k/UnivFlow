@@ -1,6 +1,6 @@
 import time
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from app.diagram.models import (
     DiagramRequest,
@@ -33,6 +33,7 @@ class DiagramService:
         source: str = "",
         output_format: str = "svg",
         attempt: int = 1,
+        validate_only: bool = False,
     ) -> DiagramResult:
         start_time = time.perf_counter()
 
@@ -105,6 +106,36 @@ class DiagramService:
                 execution_time=execution_time,
             )
 
+        # Validate syntax before rendering
+        validation = await self._client.validate_diagram_source(dt.value, source)
+        if not validation.get("valid", False):
+            execution_time = time.perf_counter() - start_time
+            return DiagramResult.error_result(
+                diagram_type=dt,
+                diagram_kind=dk,
+                error_type="ValidationError",
+                error_message=f"Syntax validation failed: {validation.get('error', 'Unknown error')}",
+                status=DiagramStatus.RENDER_ERROR,
+                attempt=attempt,
+                execution_time=execution_time,
+            )
+
+        if validate_only:
+            execution_time = time.perf_counter() - start_time
+            return DiagramResult(
+                success=True,
+                diagram_id=f"val-{int(time.time())}",
+                diagram_type=dt,
+                diagram_kind=dk,
+                source=source,
+                output_format=of,
+                content_base64="",
+                content_type=validation.get("content_type", ""),
+                status=DiagramStatus.SUCCESS,
+                execution_time=execution_time,
+                attempt=attempt,
+            )
+
         request = DiagramRequest(
             diagram_type=dt,
             diagram_kind=dk,
@@ -121,7 +152,10 @@ class DiagramService:
             )
 
             execution_time = time.perf_counter() - start_time
-            return DiagramResult.from_kroki_response(kroki_response, request, execution_time)
+            result = DiagramResult.from_kroki_response(kroki_response, request, execution_time)
+            result.version = getattr(kroki_response, 'version', 1)
+            result.endpoint = getattr(kroki_response, 'endpoint', 'unknown')
+            return result
 
         except DiagramRenderError as e:
             execution_time = time.perf_counter() - start_time
@@ -220,6 +254,19 @@ class DiagramService:
                 break
 
         return last_result
+
+    async def validate_diagram(self, diagram_type: str, source: str) -> Dict[str, Any]:
+        """Validate diagram source syntax without rendering."""
+        try:
+            dt = resolve_diagram_type(diagram_type)
+            validation = await self._client.validate_diagram_source(dt.value, source)
+            return validation
+        except Exception as e:
+            return {"valid": False, "error": str(e)}
+
+    async def get_diagram_version(self, source: str) -> int:
+        """Get version number for diagram source."""
+        return self._client.get_diagram_version(source)
 
     async def health_check(self) -> dict:
         try:

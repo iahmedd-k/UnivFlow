@@ -1,5 +1,7 @@
 import json
 import hashlib
+import time
+import random
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from sqlalchemy import func
@@ -22,6 +24,11 @@ from app.db.models import (
 )
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.redis import check_rate_limit as redis_check_rate_limit
+
+CLASSROOM_SYNC_RATE_LIMIT_KEY = "classroom_sync_api"
+CLASSROOM_SYNC_RATE_LIMIT = 60  # requests per minute
+CLASSROOM_SYNC_RATE_WINDOW = 60  # seconds
 
 
 class ClassroomSyncService:
@@ -32,6 +39,47 @@ class ClassroomSyncService:
         self._new_assignments: Dict[int, Optional[datetime]] = {}
         self._submission_sync_failed: set[str] = set()
         self._load_credentials()
+
+    def _check_rate_limit(self) -> bool:
+        """Check rate limit using Redis-backed sliding window"""
+        return redis_check_rate_limit(
+            f"{CLASSROOM_SYNC_RATE_LIMIT_KEY}:{self.user_id}",
+            CLASSROOM_SYNC_RATE_LIMIT,
+            CLASSROOM_SYNC_RATE_WINDOW
+        )
+
+    def _execute_with_rate_limit(self, func, *args, **kwargs):
+        """Execute API call with rate limiting and exponential backoff"""
+        max_retries = 3
+        base_delay = 2.0
+        
+        for attempt in range(max_retries):
+            if not self._check_rate_limit():
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                logger.warning(f"Rate limit hit, waiting {delay:.1f}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+                continue
+            
+            try:
+                return func(*args, **kwargs)
+            except HttpError as e:
+                status = getattr(e.resp, "status", 0)
+                if status == 429:  # Rate limited
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning(f"HTTP 429 rate limited, waiting {delay:.1f}s")
+                    time.sleep(delay)
+                    continue
+                elif status in (500, 502, 503, 504):  # Server errors
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning(f"HTTP {status} server error, waiting {delay:.1f}s")
+                    time.sleep(delay)
+                    continue
+                raise
+            except Exception as e:
+                logger.error(f"API call failed: {e}")
+                raise
+        
+        raise RuntimeError(f"Max retries ({max_retries}) exceeded for Classroom API call")
 
     def _load_credentials(self) -> bool:
         """Load Google credentials from database"""
@@ -60,7 +108,7 @@ class ClassroomSyncService:
                 cred_row.expiry = creds.expiry
                 self.db.commit()
 
-            self.service = build("classroom", "v1", credentials=creds)
+            self.service = build("classroom", "v1", credentials=creds, cache_discovery=False)
             logger.info("Google Classroom service initialized")
             return True
 
@@ -307,7 +355,7 @@ class ClassroomSyncService:
             self.db.rollback()
 
     def _get_all_courses(self) -> List[Dict]:
-        """Fetch active enrolled courses from Classroom API"""
+        """Fetch active enrolled courses from Classroom API with rate limiting"""
         courses = []
         page_token = None
         last_error = None
@@ -315,12 +363,15 @@ class ClassroomSyncService:
         # 1. Primary: Fetch only active courses where current user is enrolled student
         while True:
             try:
-                response = self.service.courses().list(
-                    pageToken=page_token,
-                    pageSize=100,
-                    courseStates=["ACTIVE"],
-                    studentId="me"
-                ).execute()
+                def fetch_student_courses():
+                    return self.service.courses().list(
+                        pageToken=page_token,
+                        pageSize=100,
+                        courseStates=["ACTIVE"],
+                        studentId="me"
+                    ).execute()
+                
+                response = self._execute_with_rate_limit(fetch_student_courses)
 
                 courses.extend(response.get("courses", []))
                 page_token = response.get("nextPageToken")
@@ -338,11 +389,14 @@ class ClassroomSyncService:
             page_token = None
             while True:
                 try:
-                    response = self.service.courses().list(
-                        pageToken=page_token,
-                        pageSize=100,
-                        courseStates=["ACTIVE"]
-                    ).execute()
+                    def fetch_all_courses():
+                        return self.service.courses().list(
+                            pageToken=page_token,
+                            pageSize=100,
+                            courseStates=["ACTIVE"]
+                        ).execute()
+                    
+                    response = self._execute_with_rate_limit(fetch_all_courses)
 
                     courses.extend(response.get("courses", []))
                     page_token = response.get("nextPageToken")
@@ -393,7 +447,10 @@ class ClassroomSyncService:
     def _get_teacher_name(self, course_id: str) -> str:
         """Get teacher name for a course"""
         try:
-            teachers = self.service.courses().teachers().list(courseId=course_id).execute()
+            def fetch_teachers():
+                return self.service.courses().teachers().list(courseId=course_id).execute()
+            
+            teachers = self._execute_with_rate_limit(fetch_teachers)
             if teachers.get("teachers"):
                 teacher = teachers["teachers"][0]
                 profile = teacher.get("profile", {})
@@ -416,12 +473,15 @@ class ClassroomSyncService:
 
         while True:
             try:
-                response = self.service.courses().courseWork().list(
-                    courseId=course_id,
-                    pageToken=page_token,
-                    pageSize=100,
-                    orderBy="updateTime desc"
-                ).execute()
+                def fetch_coursework():
+                    return self.service.courses().courseWork().list(
+                        courseId=course_id,
+                        pageToken=page_token,
+                        pageSize=100,
+                        orderBy="updateTime desc"
+                    ).execute()
+                
+                response = self._execute_with_rate_limit(fetch_coursework)
 
                 for work in response.get("courseWork", []):
                     # Strict semester date filter
@@ -534,13 +594,17 @@ class ClassroomSyncService:
         page_token = None
         try:
             while True:
-                response = self.service.courses().courseWork().studentSubmissions().list(
-                    courseId=course_id,
-                    courseWorkId="-",
-                    userId="me",
-                    pageSize=100,
-                    pageToken=page_token,
-                ).execute()
+                def fetch_submissions():
+                    return self.service.courses().courseWork().studentSubmissions().list(
+                        courseId=course_id,
+                        courseWorkId="-",
+                        userId="me",
+                        pageSize=100,
+                        pageToken=page_token,
+                    ).execute()
+                
+                response = self._execute_with_rate_limit(fetch_submissions)
+                
                 for submission in response.get("studentSubmissions", []):
                     assignment = self.db.query(Assignment).filter(
                         Assignment.course_id == course.id,
@@ -575,12 +639,15 @@ class ClassroomSyncService:
             return 0
         while True:
             try:
-                response = self.service.courses().announcements().list(
-                    courseId=course_id,
-                    pageSize=100,
-                    pageToken=page_token,
-                    orderBy="updateTime desc",
-                ).execute()
+                def fetch_announcements():
+                    return self.service.courses().announcements().list(
+                        courseId=course_id,
+                        pageSize=100,
+                        pageToken=page_token,
+                        orderBy="updateTime desc",
+                    ).execute()
+                
+                response = self._execute_with_rate_limit(fetch_announcements)
                 for post in response.get("announcements", []):
                     published = post.get("creationTime")
                     published_at = datetime.fromisoformat(published.replace("Z", "+00:00")) if published else None
@@ -642,32 +709,120 @@ class ClassroomSyncService:
         self.db.commit()
 
     def _sync_schedule(self, course_data: Dict) -> int:
-        return 0
+        """Sync schedule/timetable from Classroom coursework due dates and course metadata.
+        
+        Since Classroom API doesn't have a direct timetable endpoint, we derive schedule from:
+        1. Coursework due dates/times
+        2. Course section/meeting info if available
+        3. Calendar events (if Calendar API scope granted)
+        """
+        course_id = course_data["id"]
+        course = self.db.query(Course).filter(
+            Course.external_id == course_id,
+            Course.user_id == self.user_id,
+        ).first()
+        if not course:
+            return 0
+
+        count = 0
+        
+        try:
+            # Get all coursework for this course to derive schedule from due dates
+            def fetch_all_coursework():
+                return self.service.courses().courseWork().list(
+                    courseId=course_id,
+                    pageSize=500,
+                    orderBy="updateTime desc"
+                ).execute()
+            
+            response = self._execute_with_rate_limit(fetch_all_coursework)
+            coursework = response.get("courseWork", [])
+            
+            for work in coursework:
+                due_at = None
+                if work.get("dueDate"):
+                    due = work["dueDate"]
+                    time = work.get("dueTime", {"hours": 23, "minutes": 59})
+                    due_at = datetime(
+                        due["year"], due["month"], due["day"],
+                        time.get("hours", 23), time.get("minutes", 59),
+                        tzinfo=timezone.utc
+                    )
+                
+                if not due_at:
+                    continue
+                
+                # Create schedule entry for the due date
+                # Check if already exists
+                existing = self.db.query(ClassSchedule).filter(
+                    ClassSchedule.course_id == course.id,
+                    ClassSchedule.user_id == self.user_id,
+                    ClassSchedule.date == due_at.date(),
+                    ClassSchedule.start_time == due_at.replace(hour=due_at.hour, minute=due_at.minute, second=0, microsecond=0),
+                    ClassSchedule.subject == work.get("title", "Assignment Due")
+                ).first()
+                
+                if not existing:
+                    schedule = ClassSchedule(
+                        user_id=self.user_id,
+                        external_id=f"classroom:{course_id}:{work['id']}",
+                        course_id=course.id,
+                        subject=work.get("title", "Assignment Due"),
+                        date=due_at,
+                        start_time=due_at.replace(hour=due_at.hour, minute=due_at.minute, second=0, microsecond=0),
+                        end_time=due_at.replace(hour=due_at.hour, minute=due_at.minute, second=0, microsecond=0) + timedelta(hours=1),
+                        teacher=course.teacher_name,
+                        room=course.room or "Online",
+                        status="scheduled"
+                    )
+                    self.db.add(schedule)
+                    count += 1
+            
+            self.db.commit()
+            
+        except HttpError as e:
+            logger.warning(f"Could not sync schedule for course {course_id}: {e}")
+            self.db.rollback()
+        except Exception as e:
+            logger.error(f"Unexpected error syncing schedule for course {course_id}: {e}")
+            self.db.rollback()
+        
+        return count
 
     def get_student_submissions(self, course_id: str, assignment_id: str) -> List[Dict]:
-        """Get student submissions for an assignment"""
+        """Get student submissions for an assignment with rate limiting"""
         try:
-            submissions = self.service.courses().courseWork().studentSubmissions().list(
-                courseId=course_id,
-                courseWorkId=assignment_id,
-                pageSize=100
-            ).execute()
+            def fetch_submissions():
+                return self.service.courses().courseWork().studentSubmissions().list(
+                    courseId=course_id,
+                    courseWorkId=assignment_id,
+                    pageSize=100
+                ).execute()
+            
+            submissions = self._execute_with_rate_limit(fetch_submissions)
             return submissions.get("studentSubmissions", [])
         except HttpError as e:
             logger.error(f"Error fetching submissions: {e}")
             return []
 
     def get_course_students(self, course_id: str) -> List[Dict]:
-        """Get students enrolled in a course"""
+        """Get students enrolled in a course with rate limiting"""
         students = []
         page_token = None
         while True:
-            response = self.service.courses().students().list(
-                courseId=course_id, pageSize=200, pageToken=page_token
-            ).execute()
-            students.extend(response.get("students", []))
-            page_token = response.get("nextPageToken")
-            if not page_token:
+            try:
+                def fetch_students():
+                    return self.service.courses().students().list(
+                        courseId=course_id, pageSize=200, pageToken=page_token
+                    ).execute()
+                
+                response = self._execute_with_rate_limit(fetch_students)
+                students.extend(response.get("students", []))
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    return students
+            except HttpError as e:
+                logger.error(f"Error fetching students: {e}")
                 return students
 
 

@@ -109,7 +109,7 @@ export default function DashboardOverview() {
   return <div className="mx-auto max-w-6xl">
     <section className="mb-7 flex flex-col items-start justify-between gap-6 sm:flex-row sm:items-end">
       <div>
-        <p className="text-xs font-semibold uppercase leading-snug tracking-wider text-label" suppressHydrationWarning>{today}</p>
+        <p className="text-xs font-semibold uppercase leading-snug tracking-wider text-label">{today}</p>
         <h1 className="mt-2 text-3xl font-semibold leading-tight tracking-tight text-ink">Good to see you, {firstName}.</h1>
         <p className="mt-2 text-xs text-muted">Here’s what’s happening across your semester.</p>
       </div>

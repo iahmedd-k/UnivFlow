@@ -36,7 +36,10 @@ class CourseRepository:
         return course
 
     def get_all(self, user_id: str = "legacy") -> List[Course]:
-        return self.db.query(Course).filter(Course.user_id == user_id).all()
+        courses = self.db.query(Course).filter(Course.user_id == user_id).all()
+        if not courses and user_id != "legacy":
+            courses = self.db.query(Course).filter(Course.user_id == "legacy").all()
+        return courses
 
 
 class AssignmentRepository:

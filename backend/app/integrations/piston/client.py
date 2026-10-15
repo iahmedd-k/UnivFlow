@@ -1,6 +1,6 @@
 import httpx
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from app.core.config import settings
 from app.integrations.piston.schemas import (
@@ -27,6 +27,11 @@ class PistonClient:
         self.timeout = settings.piston_timeout_seconds
         self._client: Optional[httpx.AsyncClient] = None
         self._runtimes_cache: Optional[List[PistonRuntime]] = None
+        
+        # Resource limits (can be overridden per-request)
+        self.default_memory_limit = getattr(settings, 'piston_memory_limit_mb', 256)  # MB
+        self.default_cpu_limit = getattr(settings, 'piston_cpu_limit', 1.0)  # CPU cores
+        self.default_packages = getattr(settings, 'piston_default_packages', {})  # language -> list of packages
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -142,9 +147,30 @@ class PistonClient:
         args: Optional[List[str]] = None,
         compile_timeout: int = 10000,
         run_timeout: int = 10000,
+        memory_limit_mb: Optional[int] = None,
+        cpu_limit: Optional[float] = None,
+        packages: Optional[List[str]] = None,
+        env_vars: Optional[Dict[str, str]] = None,
     ) -> PistonExecuteResponse:
+        """Execute code with resource limits and package management."""
         if files is None:
             files = [{"name": "main", "content": code}]
+
+        # Apply resource limits and package management
+        memory_limit = memory_limit_mb or self.default_memory_limit
+        cpu_limit = cpu_limit or self.default_cpu_limit
+        
+        # Add packages for the language if specified
+        if packages:
+            for file in files:
+                if "packages" not in file:
+                    file["packages"] = packages
+        
+        # Add environment variables
+        if env_vars:
+            for file in files:
+                if "env" not in file:
+                    file["env"] = env_vars
 
         request = PistonRunRequest(
             language=language,
@@ -153,9 +179,36 @@ class PistonClient:
             args=args or [],
             compile_timeout=compile_timeout,
             run_timeout=run_timeout,
+            # Resource limits (Piston v2+ supports these)
+            memory_limit=f"{memory_limit}m",
+            cpu_limit=cpu_limit,
         )
 
         return await self.execute(request)
+
+    async def install_packages(self, language: str, packages: List[str]) -> Dict[str, Any]:
+        """Install packages for a specific language runtime."""
+        client = await self._get_client()
+        try:
+            response = await client.post(
+                f"{self.base_url}/api/v2/packages",
+                json={"language": language, "packages": packages},
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Failed to install packages for {language}: {e}")
+            raise PistonAPIError(500, f"Package installation failed: {str(e)}")
+
+    async def get_package_list(self, language: str) -> List[str]:
+        """Get available packages for a language."""
+        client = await self._get_client()
+        try:
+            response = await client.get(f"{self.base_url}/api/v2/packages/{language}")
+            response.raise_for_status()
+            return response.json()
+        except Exception:
+            return []
 
 
 piston_client = PistonClient()

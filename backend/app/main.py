@@ -62,16 +62,17 @@ app = FastAPI(
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
 
-cors_origins = [
-    settings.frontend_url,
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:3001",
-    "http://127.0.0.1:3001",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
-cors_origins = list(set([o for o in cors_origins if o]))
+cors_origins = list(dict.fromkeys([
+    o for o in [
+        settings.frontend_url,
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ] if o
+]))
 
 app.add_middleware(
     CORSMiddleware,
@@ -136,5 +137,78 @@ def root():
 
 @app.get("/health")
 def health_check(db: Session = Depends(get_db)):
-    db.execute(text("SELECT 1"))
-    return {"status": "healthy", "service": settings.app_name, "database": "connected"}
+    checks = {}
+    
+    # Database check
+    try:
+        db.execute(text("SELECT 1"))
+        checks["database"] = "healthy"
+    except Exception as e:
+        checks["database"] = f"unhealthy: {str(e)}"
+    
+    # Redis/Upstash check
+    try:
+        from app.core.redis import is_configured, _request
+        if is_configured():
+            _request("GET", "/ping")
+            checks["redis"] = "healthy"
+        else:
+            checks["redis"] = "not_configured"
+    except Exception as e:
+        checks["redis"] = f"unhealthy: {str(e)}"
+    
+    # Supabase check
+    try:
+        from app.db.supabase_client import get_supabase
+        supabase = get_supabase()
+        if supabase:
+            checks["supabase"] = "healthy"
+        else:
+            checks["supabase"] = "not_configured"
+    except Exception as e:
+        checks["supabase"] = f"unhealthy: {str(e)}"
+    
+    # S3 check
+    try:
+        from app.db.s3_client import get_s3_client
+        s3 = get_s3_client()
+        if s3:
+            checks["s3"] = "healthy"
+        else:
+            checks["s3"] = "not_configured"
+    except Exception as e:
+        checks["s3"] = f"unhealthy: {str(e)}"
+    
+    # Piston check
+    try:
+        from app.integrations.piston.client import PistonClient
+        import httpx
+        piston = PistonClient()
+        resp = httpx.get(f"{settings.piston_base_url}/health", timeout=5.0)
+        if resp.status_code == 200:
+            checks["piston"] = "healthy"
+        else:
+            checks["piston"] = f"unhealthy: HTTP {resp.status_code}"
+    except Exception as e:
+        checks["piston"] = f"unhealthy: {str(e)}"
+    
+    # Kroki check
+    try:
+        from app.integrations.kroki.client import KrokiClient
+        kroki = KrokiClient()
+        import httpx
+        resp = httpx.get(f"{settings.kroki_base_url}/", timeout=5.0)
+        if resp.status_code == 200:
+            checks["kroki"] = "healthy"
+        else:
+            checks["kroki"] = f"unhealthy: HTTP {resp.status_code}"
+    except Exception as e:
+        checks["kroki"] = f"unhealthy: {str(e)}"
+    
+    all_healthy = all(v == "healthy" or v == "not_configured" for v in checks.values())
+    
+    return {
+        "status": "healthy" if all_healthy else "degraded",
+        "service": settings.app_name,
+        "checks": checks
+    }

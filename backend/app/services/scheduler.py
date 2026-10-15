@@ -1,30 +1,97 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
+from hashlib import sha256
+import time
+import threading
 
 from app.core.config import settings
 from app.core.logging import logger
 from app.db.database import SessionLocal
 from app.db.models import GoogleCredential, Setting
+from app.db.repositories.portal import PortalSyncJobRepository
 
 scheduler = AsyncIOScheduler(timezone=settings.timezone)
 
 
-def _run_portal_sync_job():
-    """Refresh every connected student profile without prompting for page captures."""
+def _run_portal_auto_sync():
+    """Automatically sync portal for all users with active sessions."""
     db = SessionLocal()
     try:
-        from app.portal.router import _sync_portal_for_user
-        suffix = ":university_portal_url"
-        keys = db.query(Setting.key).filter(Setting.key.like(f"portal:%{suffix}")).all()
-        for (key,) in keys:
-            user_id = key[len("portal:"):-len(suffix)]
-            if not user_id:
-                continue
-            result = _sync_portal_for_user(user_id)
-            logger.info(f"[Scheduler] University portal sync: {result.get('status')}")
+        # Get all users with active portal sessions
+        active_users = db.query(Setting).filter(
+            Setting.key.like("portal:%:portal_session_status"),
+            Setting.value == "ACTIVE"
+        ).all()
+        
+        for setting in active_users:
+            # Extract user_id from key: portal:{user_id}:portal_session_status
+            key_parts = setting.key.split(":")
+            if len(key_parts) >= 2:
+                user_id = key_parts[1]
+                if user_id and user_id != "dev_student_user":
+                    try:
+                        repo = PortalSyncJobRepository(db)
+                        active_job = repo.get_active_job(user_id)
+                        if not active_job:
+                            job_id = sha256(f"{user_id}:{time.time_ns()}".encode()).hexdigest()[:20]
+                            repo.create(user_id, job_id, sync_type="auto")
+                            db.commit()
+                            # Run sync in background thread
+                            threading.Thread(target=_run_portal_sync_job, args=(user_id, job_id), daemon=True).start()
+                            logger.info(f"[Scheduler] Started auto portal sync for user {user_id}")
+                    except Exception as e:
+                        logger.warning(f"[Scheduler] Failed to start auto portal sync for user {user_id}: {e}")
+                        db.rollback()
     except Exception as e:
-        logger.warning(f"[Scheduler] University Portal sync skipped or error: {e}")
+        logger.warning(f"[Scheduler] Portal auto sync job error: {e}")
+    finally:
+        db.close()
+
+
+def _run_portal_sync_job(uid: str, job_id: str):
+    """Run portal sync for a specific user and job."""
+    from app.portal.router import _sync_portal_for_user
+    
+    db = SessionLocal()
+    try:
+        repo = PortalSyncJobRepository(db)
+        repo.complete_job(job_id, error=None)  # Mark as running
+        
+        result = _sync_portal_for_user(uid)
+        
+        repo.complete_job(job_id, result=result, error=None)
+    except Exception as error:
+        repo = PortalSyncJobRepository(db)
+        repo.complete_job(job_id, error=str(error))
+    finally:
+        db.close()
+
+
+def _cleanup_expired_oauth_states():
+    """Clean up expired OAuth CSRF state tokens from the database."""
+    db = SessionLocal()
+    try:
+        import time
+        import json
+        cutoff = time.time() - 900  # 15 minutes TTL
+        states = db.query(Setting).filter(Setting.key.like("oauth_csrf_state_%")).all()
+        deleted = 0
+        for state in states:
+            try:
+                data = json.loads(state.value)
+                created_at = data.get("created_at", 0)
+                if created_at < cutoff:
+                    db.delete(state)
+                    deleted += 1
+            except (json.JSONDecodeError, TypeError):
+                db.delete(state)
+                deleted += 1
+        if deleted:
+            db.commit()
+            logger.info(f"[Scheduler] Cleaned up {deleted} expired OAuth state tokens")
+    except Exception as e:
+        logger.warning(f"[Scheduler] OAuth state cleanup error: {e}")
     finally:
         db.close()
 
@@ -235,10 +302,69 @@ def start_scheduler():
             coalesce=True,
         )
 
+        # 7. OAuth State Cleanup: Remove expired CSRF state tokens every 5 minutes
+        scheduler.add_job(
+            _cleanup_expired_oauth_states,
+            IntervalTrigger(minutes=5),
+            id="oauth_state_cleanup",
+            name="OAuth CSRF State Cleanup (Every 5m)",
+            replace_existing=True,
+            misfire_grace_time=60,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # 8. Portal Auto Sync: Run every 30 minutes for users with active sessions
+        scheduler.add_job(
+            _run_portal_auto_sync,
+            IntervalTrigger(minutes=30),
+            id="portal_auto_sync",
+            name="University Portal Auto Sync (Every 30m)",
+            replace_existing=True,
+            misfire_grace_time=300,
+            max_instances=1,
+            coalesce=True,
+        )
+
         scheduler.start()
         logger.info("[Scheduler] Automated background sync and alert scheduler started successfully.")
     except Exception as e:
         logger.error(f"[Scheduler] Failed to start scheduler: {e}")
+
+
+def _run_portal_auto_sync():
+    """Automatically sync portal for all users with active sessions."""
+    db = SessionLocal()
+    try:
+        # Get all users with active portal sessions
+        active_users = db.query(Setting).filter(
+            Setting.key.like("portal:%:portal_session_status"),
+            Setting.value == "ACTIVE"
+        ).all()
+        
+        for setting in active_users:
+            # Extract user_id from key: portal:{user_id}:portal_session_status
+            key_parts = setting.key.split(":")
+            if len(key_parts) >= 2:
+                user_id = key_parts[1]
+                if user_id and user_id != "dev_student_user":
+                    try:
+                        repo = PortalSyncJobRepository(db)
+                        active_job = repo.get_active_job(user_id)
+                        if not active_job:
+                            job_id = sha256(f"{user_id}:{time.time_ns()}".encode()).hexdigest()[:20]
+                            repo.create(user_id, job_id, sync_type="auto")
+                            db.commit()
+                            # Run sync in background thread
+                            threading.Thread(target=_run_portal_sync_job, args=(user_id, job_id), daemon=True).start()
+                            logger.info(f"[Scheduler] Started auto portal sync for user {user_id}")
+                    except Exception as e:
+                        logger.warning(f"[Scheduler] Failed to start auto portal sync for user {user_id}: {e}")
+                        db.rollback()
+    except Exception as e:
+        logger.warning(f"[Scheduler] Portal auto sync job error: {e}")
+    finally:
+        db.close()
 
 
 def shutdown_scheduler():

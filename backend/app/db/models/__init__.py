@@ -26,7 +26,10 @@ from .academic_records import Announcement
 from .academic_records import ChangeEvent
 from .notifications import Notification
 from .notifications import DailyReport
+from .notifications import NotificationPreference
+from .notifications import NotificationTemplate
 from .settings import Setting
+from .portal import PortalSyncJob
 from . import indexes as _indexes  # Register named database indexes.
 
 __all__ = [
@@ -56,5 +59,8 @@ __all__ = [
     "ChangeEvent",
     "Notification",
     "DailyReport",
+    "NotificationPreference",
+    "NotificationTemplate",
     "Setting",
+    "PortalSyncJob",
 ]

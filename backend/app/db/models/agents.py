@@ -6,6 +6,7 @@ class AgentRun(Base):
     __tablename__ = "agent_runs"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(255), nullable=False, default="legacy", index=True)
     trigger = Column(SQLEnum(AgentRunTrigger), nullable=False)
     status = Column(SQLEnum(AgentRunStatus), default=AgentRunStatus.RUNNING)
     started_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -24,6 +25,7 @@ class AgentEvent(Base):
     __tablename__ = "agent_events"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(255), nullable=False, default="legacy", index=True)
     run_id = Column(Integer, ForeignKey("agent_runs.id"), nullable=False)
     event_type = Column(String(100), nullable=False)
     source = Column(String(50), nullable=False)

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.db.database import get_db
@@ -20,6 +21,7 @@ from app.db.repositories import GoogleCredentialRepository
 from app.db.models import Setting
 from app.core.logging import logger
 from app.auth.clerk_auth import get_current_user_optional, require_current_user
+from app.core.redis import check_rate_limit as redis_check_rate_limit
 from pydantic import BaseModel, EmailStr
 
 # Only allow HTTP transport in local development/test environments
@@ -50,9 +52,6 @@ class NotificationEmailResponse(BaseModel):
 # Per-user cache for connected Google emails: {user_id: email}
 _cached_google_emails: Dict[str, str] = {}
 
-# Simple in-memory rate limiter: {key: [timestamps]}
-_rate_limit_records: Dict[str, list] = {}
-
 
 def _google_owner_id(clerk_user: Optional[dict], *, required: bool = False) -> Optional[str]:
     user_id = str((clerk_user or {}).get("id") or "")
@@ -64,13 +63,9 @@ def _google_owner_id(clerk_user: Optional[dict], *, required: bool = False) -> O
 
 
 def _check_rate_limit(key: str, limit: int = 20, window_sec: int = 60) -> None:
-    now = time.time()
-    records = _rate_limit_records.get(key, [])
-    records = [t for t in records if now - t < window_sec]
-    if len(records) >= limit:
+    allowed = redis_check_rate_limit(key, limit, window_sec)
+    if not allowed:
         raise HTTPException(status_code=429, detail="Too many requests. Please try again in a moment.")
-    records.append(now)
-    _rate_limit_records[key] = records
 
 
 def _safe_oauth_redirect_to(redirect_to: Optional[str]) -> Optional[str]:
@@ -196,12 +191,12 @@ def google_auth(
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Generate Google OAuth authorization URL with CSRF state protection"""
-    client_ip = request.client.host if request.client else "unknown"
-    _check_rate_limit(f"google-auth:{client_ip}", limit=20, window_sec=60)
-
     # If Google redirected directly back to /auth/google with code or error
     if request.query_params.get("code") or request.query_params.get("error"):
         return google_callback(request=request, db=db)
+
+    client_ip = request.client.host if request.client else "unknown"
+    _check_rate_limit(f"google-auth:{client_ip}", limit=20, window_sec=60)
 
     user_id = _google_owner_id(clerk_user, required=True)
 
@@ -255,7 +250,15 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
         logger.error(f"Google OAuth error received: {error}")
         if state:
             state_key = f"oauth_csrf_state_{state}"
-            state_record = db.query(Setting).filter(Setting.key == state_key).first()
+            try:
+                state_record = db.query(Setting).filter(Setting.key == state_key).first()
+            except (KeyError, SQLAlchemyError):
+                logger.exception("Google OAuth callback could not read its CSRF state.")
+                db.rollback()
+                return RedirectResponse(
+                    url=_oauth_frontend_redirect(google_error="callback_failed"),
+                    status_code=302,
+                )
             if state_record:
                 try:
                     oauth_state = json.loads(state_record.value)
@@ -282,7 +285,15 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
             status_code=302,
         )
     state_key = f"oauth_csrf_state_{state}"
-    state_record = db.query(Setting).filter(Setting.key == state_key).first()
+    try:
+        state_record = db.query(Setting).filter(Setting.key == state_key).first()
+    except (KeyError, SQLAlchemyError):
+        logger.exception("Google OAuth callback could not read its CSRF state.")
+        db.rollback()
+        return RedirectResponse(
+            url=_oauth_frontend_redirect(google_error="callback_failed"),
+            status_code=302,
+        )
     if not state_record:
         logger.warning("Google OAuth state was missing or expired.")
         return RedirectResponse(

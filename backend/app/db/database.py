@@ -21,6 +21,14 @@ def get_database_url() -> str:
         if url.startswith("postgresql+psycopg://"):
             return url.replace("postgresql+psycopg://", "postgresql+psycopg2://", 1)
         return url
+    
+    if settings.is_production:
+        raise RuntimeError(
+            "DATABASE_URL or SUPABASE_DB_URL must be set in production. "
+            "SQLite is not supported for production deployments."
+        )
+    
+    logger.warning("No DATABASE_URL configured, falling back to SQLite for development only")
     return "sqlite:///./uniflow.db"
 
 database_url = get_database_url()
@@ -31,9 +39,6 @@ def create_engine_with_fallback(url: str):
         engine = create_engine(
             url,
             echo=settings.database_echo,
-            # Reuse a small number of healthy connections instead of opening a
-            # new Supabase connection for every API request. The configured
-            # PostgreSQL URL uses Supabase's session pooler (port 5432).
             pool_size=5,
             max_overflow=5,
             pool_timeout=10,
@@ -49,6 +54,8 @@ def create_engine_with_fallback(url: str):
             logger.warning(f"PostgreSQL initial ping warning (will retry on demand): {conn_err}")
         return engine
     else:
+        if settings.is_production:
+            raise RuntimeError("SQLite database is not supported in production")
         return create_engine(
             url,
             echo=settings.database_echo,

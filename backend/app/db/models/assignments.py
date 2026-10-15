@@ -54,6 +54,7 @@ class AssignmentMaterial(Base):
     __tablename__ = "assignment_materials"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(255), nullable=False, default="legacy", index=True)
     assignment_id = Column(Integer, ForeignKey("assignments.id"), nullable=False)
     material_type = Column(String(50), nullable=False)
     title = Column(String(500))
@@ -85,6 +86,7 @@ class AssignmentSolution(Base):
     __tablename__ = "assignment_solutions"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(255), nullable=False, default="legacy", index=True)
     assignment_id = Column(Integer, ForeignKey("assignments.id"), unique=True, nullable=False)
     draft_content = Column(Text)
     validated_content = Column(Text)
@@ -101,6 +103,7 @@ class Submission(Base):
     __tablename__ = "submissions"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(255), nullable=False, default="legacy", index=True)
     assignment_id = Column(Integer, ForeignKey("assignments.id"), unique=True, nullable=False)
     google_doc_id = Column(String(255))
     google_drive_file_id = Column(String(255))

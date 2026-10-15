@@ -28,13 +28,38 @@ def test_google_oauth_callback_does_not_require_clerk_session(monkeypatch):
         callback_args.update(request=request, db=db)
         return callback_result
 
-    monkeypatch.setattr(router, "_check_rate_limit", Mock())
+    monkeypatch.setattr(router, "_check_rate_limit", Mock(side_effect=KeyError("key")))
     monkeypatch.setattr(router, "google_callback", handle_callback)
 
     result = router.google_auth(request=request, db=db, clerk_user=None)
 
     assert result is callback_result
     assert callback_args == {"request": request, "db": db}
+
+
+def test_google_callback_redirects_safely_when_state_store_raises_key_error(monkeypatch):
+    request = Request({
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "https",
+        "path": "/api/v1/auth/google",
+        "query_string": b"code=google-auth-code&state=csrf-state",
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+        "server": ("example.com", 443),
+    })
+    db = Mock()
+    db.query.side_effect = KeyError("key")
+    monkeypatch.setattr(router.settings, "frontend_url", "https://uniflow.example")
+
+    response = router.google_callback(request=request, db=db)
+    parsed = urlsplit(response.headers["location"])
+
+    assert response.status_code == 302
+    assert parsed.netloc == "uniflow.example"
+    assert parse_qs(parsed.query) == {"google_error": ["callback_failed"]}
+    db.rollback.assert_called_once()
 
 
 def test_starting_google_oauth_still_requires_clerk_session(monkeypatch):

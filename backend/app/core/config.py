@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
-from typing import Optional, List
+from typing import Optional, List, Dict
 from functools import lru_cache
+import secrets
 
 
 class Settings(BaseSettings):
@@ -8,8 +9,16 @@ class Settings(BaseSettings):
     environment: str = "development"
     debug: bool = False
     timezone: str = "Asia/Karachi"
-    secret_key: str = "dev-secret-key-change-in-production"
+    secret_key: str = ""
+    encryption_key_v2: str = ""
     access_token_expire_minutes: int = 30
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if not self.secret_key:
+            if self.is_production:
+                raise ValueError("SECRET_KEY must be set in production environment")
+            self.secret_key = secrets.token_urlsafe(32)
 
     database_url: str = ""
     database_echo: bool = False
@@ -112,6 +121,9 @@ class Settings(BaseSettings):
     # Piston Configuration
     piston_base_url: str = "http://localhost:2000"
     piston_timeout_seconds: int = 30
+    piston_memory_limit_mb: int = 256
+    piston_cpu_limit: float = 1.0
+    piston_default_packages: Dict[str, List[str]] = {}
 
     # Code Execution Limits
     code_execution_timeout_seconds: int = 10

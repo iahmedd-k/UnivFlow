@@ -9,7 +9,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -31,8 +31,9 @@ from app.core.redis import (
 )
 from app.core.logging import logger
 from app.db.database import get_db, SessionLocal
-from app.db.models import Course, Setting, TimetableEntry, ClassSchedule
+from app.db.models import Course, Setting, TimetableEntry, ClassSchedule, PortalSyncJob
 from app.db.repositories import AttendanceRecordRepository, CourseRepository, ClassScheduleRepository
+from app.db.repositories.portal import PortalSyncJobRepository
 
 router = APIRouter(prefix="/portal", tags=["University portal"])
 
@@ -40,10 +41,6 @@ PORTAL_PROFILE_ROOT = Path(__file__).resolve().parent.parent.parent / "tmp" / "p
 PORTAL_PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
 
 _portal_processes: dict[str, Any] = {}
-_sync_locks: dict[str, threading.Lock] = {}
-_sync_jobs: dict[str, dict] = {}
-_active_sync_jobs: dict[str, str] = {}
-_sync_jobs_lock = threading.Lock()
 
 
 class PortalUrlInput(BaseModel):
@@ -92,9 +89,13 @@ def _validate_portal_url(value: str) -> str:
     if parsed.scheme not in ("https", "http") or not parsed.hostname or parsed.username or parsed.password:
         raise HTTPException(status_code=422, detail="Enter a valid university portal URL (e.g. https://portals.au.edu.pk/students/).")
     # SSRF protection: reject loopback / link-local / AWS metadata addresses
+    # Allow private IP ranges (10.x, 172.16-31.x, 192.168.x) for on-premise university portals
     hostname = (parsed.hostname or "").lower()
-    if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or hostname.startswith("169.254.") or hostname.startswith("10.") or hostname.startswith("192.168."):
-        raise HTTPException(status_code=422, detail="Internal network and metadata addresses are not permitted as portal URLs.")
+    if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or hostname.startswith("169.254."):
+        raise HTTPException(status_code=422, detail="Loopback and link-local addresses are not permitted as portal URLs.")
+    # Check for AWS/GCP/Azure metadata service endpoints
+    if hostname in ("metadata.google.internal", "169.254.169.254", "metadata.azure.com", "metadata"):
+        raise HTTPException(status_code=422, detail="Cloud metadata service addresses are not permitted as portal URLs.")
     return cleaned
 
 
@@ -2043,25 +2044,32 @@ async def sync_portal_headless(db: Session = Depends(get_db), user: dict = Depen
 
 
 def _run_portal_sync_job(uid: str, job_id: str):
-    _persist_sync_job(uid, job_id, {"status": "running", "started_at": datetime.now(timezone.utc).isoformat()})
+    db = SessionLocal()
     try:
+        repo = PortalSyncJobRepository(db)
+        repo.complete_job(job_id, error=None)  # Mark as running
+        
         result = _sync_portal_for_user(uid)
-        _persist_sync_job(uid, job_id, {**result, "finished_at": datetime.now(timezone.utc).isoformat()})
+        
+        repo.complete_job(job_id, result=result, error=None)
     except Exception as error:
-        _persist_sync_job(uid, job_id, {"status": "error", "error": str(error), "finished_at": datetime.now(timezone.utc).isoformat()})
+        repo = PortalSyncJobRepository(db)
+        repo.complete_job(job_id, error=str(error))
     finally:
-        with _sync_jobs_lock:
-            if _active_sync_jobs.get(uid) == job_id:
-                _active_sync_jobs.pop(uid, None)
+        db.close()
 
 
 def _persist_sync_job(uid: str, job_id: str, result: dict):
-    with _sync_jobs_lock:
-        _sync_jobs[job_id] = result
+    """Legacy function - kept for compatibility, now uses persistent repository"""
     db = SessionLocal()
     try:
-        _set_portal_setting(db, uid, f"sync_job_{job_id}", json.dumps(result), "Portal sync job status")
-        db.commit()
+        repo = PortalSyncJobRepository(db)
+        if result.get("status") == "running":
+            repo.complete_job(job_id, error=None)
+        elif result.get("status") == "error":
+            repo.complete_job(job_id, error=result.get("error"))
+        else:
+            repo.complete_job(job_id, result=result, error=None)
     finally:
         db.close()
 
@@ -2069,40 +2077,42 @@ def _persist_sync_job(uid: str, job_id: str, result: dict):
 @router.post("/sync", response_model=dict)
 def queue_portal_sync(background_tasks: BackgroundTasks, db: Session = Depends(get_db), user: dict = Depends(require_current_user)):
     uid = _user_id(user)
-    with _sync_jobs_lock:
-        active_id = _active_sync_jobs.get(uid)
-        if active_id and _sync_jobs.get(active_id, {}).get("status") in ("queued", "running"):
-            return {"status": "queued", "job_id": active_id, "message": "Your portal sync is already in progress."}
-        job_id = sha256(f"{uid}:{time.time_ns()}".encode()).hexdigest()[:20]
-        queued = {"status": "queued", "created_at": datetime.now(timezone.utc).isoformat()}
-        _sync_jobs[job_id] = queued
-        _active_sync_jobs[uid] = job_id
-    _set_portal_setting(db, uid, f"sync_job_{job_id}", json.dumps(queued), "Portal sync job status")
+    repo = PortalSyncJobRepository(db)
+    
+    # Check for active job
+    active_job = repo.get_active_job(uid)
+    if active_job:
+        return {"status": "queued", "job_id": active_job.job_id, "message": "Your portal sync is already in progress."}
+    
+    # Create new job
+    job_id = sha256(f"{uid}:{time.time_ns()}".encode()).hexdigest()[:20]
+    repo.create(uid, job_id)
     db.commit()
+    
     background_tasks.add_task(_run_portal_sync_job, uid, job_id)
     return {"status": "queued", "job_id": job_id, "message": "Sync started. Your saved portal data remains available while it refreshes."}
 
 
 @router.get("/sync/{job_id}", response_model=dict)
 def get_portal_sync_status(job_id: str, db: Session = Depends(get_db), user: dict = Depends(require_current_user)):
-    with _sync_jobs_lock:
-        cached = _sync_jobs.get(job_id)
-        if cached:
-            return cached
-
-    item = _portal_setting(db, _user_id(user), f"sync_job_{job_id}")
-    if not item or not item.value:
-        item = db.query(Setting).filter(Setting.key.like(f"%sync_job_{job_id}")).first()
-
-    if not item or not item.value:
+    repo = PortalSyncJobRepository(db)
+    job = repo.get_by_job_id(job_id)
+    
+    if not job:
         raise HTTPException(status_code=404, detail="Sync job was not found or has expired.")
-    try:
-        data = json.loads(item.value)
-        with _sync_jobs_lock:
-            _sync_jobs[job_id] = data
-        return data
-    except Exception:
-        raise HTTPException(status_code=500, detail="Sync status is unreadable.")
+    
+    result = {
+        "job_id": job.job_id,
+        "status": job.status,
+        "sync_type": job.sync_type,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "error": job.error,
+        "result": json.loads(job.result) if job.result else None,
+        "retry_count": job.retry_count,
+    }
+    return result
 
 
 @router.post("/close", response_model=dict)

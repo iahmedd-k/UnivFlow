@@ -4,9 +4,11 @@ from .enums import *
 
 class ClassSchedule(Base):
     __tablename__ = "class_schedules"
+    __table_args__ = (UniqueConstraint("user_id", "external_id", name="uq_class_schedules_user_external_id"),)
 
     id = Column(Integer, primary_key=True, index=True)
-    external_id = Column(String(255), unique=True, nullable=False, index=True)
+    user_id = Column(String(255), nullable=False, default="legacy", index=True)
+    external_id = Column(String(255), nullable=False, index=True)
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
     subject = Column(String(255))
     date = Column(DateTime(timezone=True), nullable=False)
@@ -23,9 +25,11 @@ class ClassSchedule(Base):
 
 class TimetableEntry(Base):
     __tablename__ = "timetable_entries"
+    __table_args__ = (UniqueConstraint("user_id", "external_id", name="uq_timetable_entries_user_external_id"),)
 
     id = Column(Integer, primary_key=True, index=True)
-    external_id = Column(String(64), unique=True, nullable=False, index=True)
+    user_id = Column(String(255), nullable=False, default="legacy", index=True)
+    external_id = Column(String(64), nullable=False, index=True)
     subject = Column(String(255), nullable=False)
     weekday = Column(Integer, nullable=False)
     start_time = Column(String(10), nullable=False)
@@ -41,9 +45,11 @@ class TimetableEntry(Base):
 
 class AttendanceRecord(Base):
     __tablename__ = "attendance_records"
+    __table_args__ = (UniqueConstraint("user_id", "external_id", name="uq_attendance_records_user_external_id"),)
 
     id = Column(Integer, primary_key=True, index=True)
-    external_id = Column(String(255), unique=True, nullable=False, index=True)
+    user_id = Column(String(255), nullable=False, default="legacy", index=True)
+    external_id = Column(String(255), nullable=False, index=True)
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
     subject = Column(String(255))
     attended = Column(Integer, default=0)

@@ -1,6 +1,7 @@
 import json
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 
@@ -66,7 +67,7 @@ def _get_semester_start_dt(
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt
         except Exception:
-            pass
+            raise HTTPException(status_code=400, detail="Invalid 'since' date format. Use YYYY-MM-DD or ISO 8601.")
     return None
 
 
@@ -77,20 +78,25 @@ def _is_on_or_after(val, since_dt: Optional[datetime]) -> bool:
         if isinstance(val, datetime):
             target = val if val.tzinfo else val.replace(tzinfo=timezone.utc)
             return target >= since_dt
-        if hasattr(val, 'year'): # date object
+        if hasattr(val, 'year'):
             return val >= since_dt.date()
         return True
     except Exception:
         return True
 
 
-@router.get("/overview", response_model=dict)
-def get_dashboard_overview(
-    since: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
-    user: dict = Depends(require_current_user),
-):
-    user_id = str((user or {}).get("id") or "dev_student_user")
+def _filter_by_since_dt(items, since_dt: Optional[datetime], date_fields: List[str]):
+    """Filter items by since_dt using specified date fields."""
+    if not since_dt:
+        return items
+    return [item for item in items if any(
+        getattr(item, field, None) and _is_on_or_after(getattr(item, field), since_dt)
+        for field in date_fields
+    )]
+
+
+def _get_user_dashboard_data(db: Session, user_id: str, since_dt: Optional[datetime]):
+    """Get all dashboard data for a user in a consolidated query."""
     course_repo = CourseRepository(db)
     assignment_repo = AssignmentRepository(db)
     schedule_repo = ClassScheduleRepository(db)
@@ -99,53 +105,59 @@ def get_dashboard_overview(
     quiz_repo = QuizRepository(db)
     agent_repo = AgentRunRepository(db)
 
-    since_dt = _get_semester_start_dt(db, since, user_id)
-    
     courses = course_repo.get_all(user_id=user_id)
-    if since_dt:
-        courses = [c for c in courses if (c.created_at and _is_on_or_after(c.created_at, since_dt)) or (c.updated_at and _is_on_or_after(c.updated_at, since_dt)) or c.created_at is None]
-    
-    all_assignments = assignment_repo.get_all(user_id=user_id)
-    if since_dt:
-        all_assignments = [a for a in all_assignments if 
-            (a.due_at and _is_on_or_after(a.due_at, since_dt)) or 
-            (a.due_date and _is_on_or_after(a.due_date, since_dt)) or 
-            (a.due_at is None and (a.created_at and _is_on_or_after(a.created_at, since_dt) or a.updated_at and _is_on_or_after(a.updated_at, since_dt)))
-        ]
-    
+    courses = _filter_by_since_dt(courses, since_dt, ['created_at', 'updated_at'])
     owned_course_ids = {course.id for course in courses}
+
+    all_assignments = assignment_repo.get_all(user_id=user_id)
+    all_assignments = _filter_by_since_dt(all_assignments, since_dt, ['due_at', 'due_date', 'created_at', 'updated_at'])
+
     upcoming_schedules = [
         schedule for schedule in schedule_repo.get_upcoming(7)
         if schedule.course_id in owned_course_ids
     ]
-    if since_dt:
-        upcoming_schedules = [s for s in upcoming_schedules if s.date and _is_on_or_after(s.date, since_dt)]
-    
+    upcoming_schedules = _filter_by_since_dt(upcoming_schedules, since_dt, ['date'])
+
     attendance_records = [
         record for record in attendance_repo.get_all()
         if record.course_id in owned_course_ids
     ]
-    if since_dt:
-        attendance_records = [
-            r for r in attendance_records
-            if (r.last_updated and _is_on_or_after(r.last_updated, since_dt))
-            or (r.created_at and _is_on_or_after(r.created_at, since_dt))
-            or (r.last_updated is None and r.created_at is None)
-        ]
-    
+    attendance_records = _filter_by_since_dt(attendance_records, since_dt, ['last_updated', 'created_at'])
+
     upcoming_exams = exam_repo.get_upcoming(30)
-    if since_dt:
-        upcoming_exams = [e for e in upcoming_exams if e.date and _is_on_or_after(e.date, since_dt)]
-    
+    upcoming_exams = _filter_by_since_dt(upcoming_exams, since_dt, ['date'])
+
     upcoming_quizzes = quiz_repo.get_upcoming(30)
-    if since_dt:
-        upcoming_quizzes = [q for q in upcoming_quizzes if q.date and _is_on_or_after(q.date, since_dt)]
-    
+    upcoming_quizzes = _filter_by_since_dt(upcoming_quizzes, since_dt, ['date'])
+
     recent_agent_runs = agent_repo.get_recent(5)
+
+    return {
+        "courses": courses,
+        "all_assignments": all_assignments,
+        "upcoming_schedules": upcoming_schedules,
+        "attendance_records": attendance_records,
+        "upcoming_exams": upcoming_exams,
+        "upcoming_quizzes": upcoming_quizzes,
+        "recent_agent_runs": recent_agent_runs,
+        "owned_course_ids": owned_course_ids,
+    }
+
+
+@router.get("/overview", response_model=dict)
+def get_dashboard_overview(
+    since: Optional[str] = Query(None, description="Filter data since this date (YYYY-MM-DD or ISO 8601)"),
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_current_user),
+):
+    user_id = str((user or {}).get("id") or "dev_student_user")
+    since_dt = _get_semester_start_dt(db, since, user_id)
+    data = _get_user_dashboard_data(db, user_id, since_dt)
 
     submitted_states = {"TURNED_IN", "RETURNED"}
     is_submitted = lambda assignment: assignment.status in [AssignmentStatus.SUBMITTED, AssignmentStatus.APPROVED] or (assignment.submission_state and assignment.submission_state.value in submitted_states)
-    pending_assignments = [a for a in all_assignments if not is_submitted(a) and a.status in [AssignmentStatus.PENDING, AssignmentStatus.DRAFT, AssignmentStatus.READY_FOR_REVIEW]]
+    pending_assignments = [a for a in data["all_assignments"] if not is_submitted(a) and a.status in [AssignmentStatus.PENDING, AssignmentStatus.DRAFT, AssignmentStatus.READY_FOR_REVIEW]]
+    
     def is_past_due(assignment):
         due_at = assignment.due_at or assignment.due_date
         if due_at is None:
@@ -154,11 +166,11 @@ def get_dashboard_overview(
             due_at = due_at.replace(tzinfo=timezone.utc)
         return due_at < datetime.now(timezone.utc)
 
-    overdue_assignments = [a for a in all_assignments if is_past_due(a) and not is_submitted(a)]
-    completed_assignments = [a for a in all_assignments if is_submitted(a)]
+    overdue_assignments = [a for a in data["all_assignments"] if is_past_due(a) and not is_submitted(a)]
+    completed_assignments = [a for a in data["all_assignments"] if is_submitted(a)]
 
-    active_courses = [c for c in courses if not c.course_state or c.course_state.upper() == "ACTIVE"]
-    avg_attendance = sum(r.percentage for r in attendance_records) / len(attendance_records) if attendance_records else 0
+    active_courses = [c for c in data["courses"] if not c.course_state or c.course_state.upper() == "ACTIVE"]
+    avg_attendance = sum(r.percentage for r in data["attendance_records"]) / len(data["attendance_records"]) if data["attendance_records"] else 0
 
     academic_key = f"portal:{user_id}:portal_academic_summary"
     academic_setting = db.query(Setting).filter(Setting.key == academic_key).first()
@@ -169,9 +181,8 @@ def get_dashboard_overview(
         except Exception:
             pass
 
-    # AI Agent Solver & 4-Agent Crew Activity
-    course_map = {c.id: c.name for c in courses}
-    assignment_ids = [assignment.id for assignment in all_assignments]
+    course_map = {c.id: c.name for c in data["courses"]}
+    assignment_ids = [assignment.id for assignment in data["all_assignments"]]
     all_solutions = db.query(AssignmentSolution).filter(
         AssignmentSolution.assignment_id.in_(assignment_ids)
     ).all() if assignment_ids else []
@@ -180,7 +191,7 @@ def get_dashboard_overview(
     active_crew_runs = []
     ready_for_review_solutions = []
 
-    for a in all_assignments:
+    for a in data["all_assignments"]:
         sol = solution_by_assign.get(a.id)
         if a.status == AssignmentStatus.GENERATING or (sol and not sol.validated_content and sol.ai_provider and not sol.validation_errors):
             progress_key = f"assignment_crew_progress_{a.id}"
@@ -216,14 +227,14 @@ def get_dashboard_overview(
     return {
         "courses_count": len(active_courses),
         "assignments": {
-            "total": len(all_assignments),
+            "total": len(data["all_assignments"]),
             "pending": len(pending_assignments),
             "overdue": len(overdue_assignments),
             "completed": len(completed_assignments),
         },
-        "upcoming_classes": len(upcoming_schedules),
-        "upcoming_exams": len(upcoming_exams),
-        "upcoming_quizzes": len(upcoming_quizzes),
+        "upcoming_classes": len(data["upcoming_schedules"]),
+        "upcoming_exams": len(data["upcoming_exams"]),
+        "upcoming_quizzes": len(data["upcoming_quizzes"]),
         "average_attendance": round(avg_attendance, 2),
         "academic_summary": academic_summary,
         "ai_agent_hub": {
@@ -243,56 +254,30 @@ def get_dashboard_overview(
                 "changes_found": r.changes_found,
                 "notifications_sent": r.notifications_sent,
             }
-            for r in recent_agent_runs
+            for r in data["recent_agent_runs"]
         ],
     }
 
 
 @router.get("/upcoming", response_model=dict)
 def get_upcoming_items(
-    days: int = 7,
-    since: Optional[str] = Query(None),
+    days: int = Query(7, ge=1, le=30, description="Number of days to look ahead"),
+    since: Optional[str] = Query(None, description="Filter data since this date (YYYY-MM-DD or ISO 8601)"),
     db: Session = Depends(get_db),
     user: dict = Depends(require_current_user),
 ):
     user_id = str((user or {}).get("id") or "dev_student_user")
-    schedule_repo = ClassScheduleRepository(db)
-    assignment_repo = AssignmentRepository(db)
-    exam_repo = ExamRepository(db)
-    quiz_repo = QuizRepository(db)
-
     since_dt = _get_semester_start_dt(db, since, user_id)
-    
-    owned_course_ids = {
-        course.id for course in CourseRepository(db).get_all(user_id=user_id)
-    }
-    schedules = [
-        schedule for schedule in schedule_repo.get_upcoming(days)
-        if schedule.course_id in owned_course_ids
-    ]
-    if since_dt:
-        schedules = [s for s in schedules if s.date and _is_on_or_after(s.date, since_dt)]
-    
-    all_assignments = assignment_repo.get_all(user_id=user_id)
-    if since_dt:
-        all_assignments = [a for a in all_assignments if 
-            (a.due_at and _is_on_or_after(a.due_at, since_dt)) or 
-            (a.due_date and _is_on_or_after(a.due_date, since_dt)) or 
-            (a.due_at is None and (a.created_at and _is_on_or_after(a.created_at, since_dt) or a.updated_at and _is_on_or_after(a.updated_at, since_dt)))
-        ]
-    
+    data = _get_user_dashboard_data(db, user_id, since_dt)
+
+    now = datetime.now(timezone.utc)
+    cutoff = now + timedelta(days=days)
+
     upcoming_assignments = [
-        a for a in all_assignments
-        if a.due_at and a.due_at <= datetime.now(timezone.utc) + timedelta(days=days)
+        a for a in data["all_assignments"]
+        if a.due_at and a.due_at <= cutoff
         and a.status not in [AssignmentStatus.SUBMITTED, AssignmentStatus.APPROVED]
     ]
-    exams = exam_repo.get_upcoming(days)
-    if since_dt:
-        exams = [e for e in exams if e.date and _is_on_or_after(e.date, since_dt)]
-    
-    quizzes = quiz_repo.get_upcoming(days)
-    if since_dt:
-        quizzes = [q for q in quizzes if q.date and _is_on_or_after(q.date, since_dt)]
 
     return {
         "classes": [
@@ -305,7 +290,7 @@ def get_upcoming_items(
                 "teacher": s.teacher,
                 "room": s.room,
             }
-            for s in schedules
+            for s in data["upcoming_schedules"]
         ],
         "assignments": [
             {
@@ -325,7 +310,8 @@ def get_upcoming_items(
                 "time": e.time,
                 "room": e.room,
             }
-            for e in exams
+            for e in data["upcoming_exams"]
+            if e.date and e.date <= cutoff
         ],
         "quizzes": [
             {
@@ -335,7 +321,8 @@ def get_upcoming_items(
                 "time": q.time,
                 "room": q.room,
             }
-            for q in quizzes
+            for q in data["upcoming_quizzes"]
+            if q.date and q.date <= cutoff
         ],
     }
 
