@@ -1215,10 +1215,19 @@ def generate_assignment_solution(
                     db=sync_db,
                     assignment_id=assignment_id,
                     user_id=user_id,
+                    force=True,
                 )
                 logger.info(f"Claude Browser solution generated for assignment {assignment_id}: status={result.get('status')}")
                 if result.get("status") == "already_running":
                     logger.info(f"Claude Browser solve for assignment {assignment_id} skipped because another solve is already running.")
+                    from app.db.models import Assignment, AssignmentStatus
+                    asg = sync_db.query(Assignment).filter(
+                        Assignment.id == assignment_id,
+                        Assignment.user_id == user_id,
+                    ).first()
+                    if asg and asg.status == AssignmentStatus.GENERATING:
+                        asg.status = AssignmentStatus.DRAFT
+                        sync_db.commit()
                 elif result.get("status") == "draft":
                     from app.db.models import Assignment, AssignmentSolution, AssignmentStatus
                     sol = sync_db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()

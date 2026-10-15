@@ -734,6 +734,7 @@ def solve_assignment_via_claude_browser(
     max_wait_seconds: int = CLAUDE_RESPONSE_TIMEOUT,
     user_id: str = "legacy",
     headless: bool = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """
     Autonomous pipeline that connects to the user's Chrome browser, attaches assignment PDFs/materials,
@@ -749,7 +750,7 @@ def solve_assignment_via_claude_browser(
     if not assignment:
         return {"status": "error", "error": f"Assignment {assignment_id} not found"}
 
-    if _is_assignment_already_solving(db, assignment_id, user_id):
+    if not force and _is_assignment_already_solving(db, assignment_id, user_id):
         logger.warning("Claude solver called for assignment %s while another solve is in progress.", assignment_id)
         return {
             "status": "already_running",
