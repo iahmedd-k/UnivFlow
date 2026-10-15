@@ -1292,6 +1292,79 @@ def open_claude_browser(clerk_user: Optional[dict] = Depends(get_current_user_op
     return BrowserSessionClient().open(_classroom_user_id(clerk_user))
 
 
+class ClaudeCookieSyncRequest(BaseModel):
+    session_key: str
+    user_agent: Optional[str] = None
+
+
+@router.post("/claude-browser/sync-session", response_model=dict)
+def sync_claude_session(
+    payload: ClaudeCookieSyncRequest,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Sync the student's existing Claude sessionKey cookie from the extension or settings."""
+    user_id = _classroom_user_id(clerk_user)
+    raw_key = payload.session_key.strip()
+    # Strip optional surrounding quotes or cookie name prefixes if user pasted full cookie
+    if "sessionKey=" in raw_key:
+        raw_key = raw_key.split("sessionKey=")[-1].split(";")[0].strip()
+    raw_key = raw_key.strip('"\'')
+    if len(raw_key) < 20:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Claude session key. Ensure you copied the full sessionKey value.",
+        )
+
+    key_setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:claude_session_key"
+    ).first()
+    if not key_setting:
+        key_setting = Setting(
+            key=f"classroom:{user_id}:claude_session_key",
+            description="User's Claude session cookie for direct zero-latency solving.",
+        )
+        db.add(key_setting)
+    key_setting.value = raw_key
+
+    if payload.user_agent:
+        ua_setting = db.query(Setting).filter(
+            Setting.key == f"classroom:{user_id}:claude_user_agent"
+        ).first()
+        if not ua_setting:
+            ua_setting = Setting(
+                key=f"classroom:{user_id}:claude_user_agent",
+                description="User's browser User-Agent for Claude session alignment.",
+            )
+            db.add(ua_setting)
+        ua_setting.value = payload.user_agent.strip()
+
+    db.commit()
+    logger.info("Synced Claude session cookie for user %s", user_id)
+    return {
+        "status": "connected",
+        "has_session_key": True,
+        "message": "Claude session connected successfully. You can now enable automatic solving.",
+    }
+
+
+@router.delete("/claude-browser/session", response_model=dict)
+def disconnect_claude_session(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Disconnect the student's synced Claude sessionKey cookie."""
+    user_id = _classroom_user_id(clerk_user)
+    db.query(Setting).filter(
+        Setting.key.in_([
+            f"classroom:{user_id}:claude_session_key",
+            f"classroom:{user_id}:claude_user_agent",
+        ])
+    ).delete(synchronize_session=False)
+    db.commit()
+    return {"status": "disconnected", "has_session_key": False}
+
+
 @router.delete("/claude-browser/profile", response_model=dict)
 def delete_claude_browser_profile(
     db: Session = Depends(get_db),
@@ -1311,6 +1384,15 @@ def delete_claude_browser_profile(
     ).first()
     if setting:
         setting.value = "false"
+
+    # Also delete synced session key
+    db.query(Setting).filter(
+        Setting.key.in_([
+            f"classroom:{user_id}:claude_session_key",
+            f"classroom:{user_id}:claude_user_agent",
+        ])
+    ).delete(synchronize_session=False)
+
     waiting_jobs = db.query(BrowserAutomationJob).filter(
         BrowserAutomationJob.user_id == user_id,
         BrowserAutomationJob.status.in_(["pending", "needs_login"]),
@@ -1320,7 +1402,7 @@ def delete_claude_browser_profile(
         job.error = "Claude profile was deleted. Reconnect and resume this job after signing in."
         job.finished_at = datetime.now(timezone.utc)
     db.commit()
-    return {"profile_deleted": True, "automatic_solving_enabled": False}
+    return {"profile_deleted": True, "automatic_solving_enabled": False, "has_session_key": False}
 
 
 @router.get("/claude-browser/status", response_model=dict)
@@ -1329,16 +1411,30 @@ def get_claude_browser_status(
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     user_id = _classroom_user_id(clerk_user)
-    result = BrowserSessionClient().status(user_id)
+    try:
+        result = BrowserSessionClient().status(user_id)
+    except Exception:
+        result = {"active": False, "profile_exists": False, "viewer_url": None}
+
     setting = db.query(Setting).filter(
         Setting.key == f"classroom:{user_id}:auto_solve_enabled"
     ).first()
+
+    session_key_setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:claude_session_key"
+    ).first()
+    has_session_key = bool(session_key_setting and session_key_setting.value)
+
     jobs = db.query(BrowserAutomationJob).filter(
         BrowserAutomationJob.user_id == user_id,
     ).order_by(BrowserAutomationJob.queued_at.desc()).limit(10).all()
+
+    is_browser_active = bool(result.get("active"))
     return {
         **result,
-        "is_open": bool(result.get("active")),
+        "is_open": is_browser_active,
+        "has_session_key": has_session_key,
+        "connected": has_session_key or is_browser_active,
         "automatic_solving_enabled": bool(setting and setting.value == "true"),
         "jobs": [
             {
@@ -1363,10 +1459,20 @@ def set_automatic_claude_solving(
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     user_id = _classroom_user_id(clerk_user)
-    if enabled and not BrowserSessionClient().status(user_id).get("active"):
+    session_key_setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:claude_session_key"
+    ).first()
+    has_session_key = bool(session_key_setting and session_key_setting.value)
+    browser_active = False
+    try:
+        browser_active = bool(BrowserSessionClient().status(user_id).get("active"))
+    except Exception:
+        pass
+
+    if enabled and not (has_session_key or browser_active):
         raise HTTPException(
             status_code=409,
-            detail="Start your private Claude browser before enabling automatic solving.",
+            detail="Connect your Claude account (via 1-click sync or starting the private browser) before enabling automatic solving.",
         )
     key = f"classroom:{user_id}:auto_solve_enabled"
     setting = db.query(Setting).filter(Setting.key == key).first()

@@ -379,6 +379,15 @@ export const api = {
     method: 'DELETE',
   }),
 
+  syncClaudeSession: async (sessionKey, userAgent = null, token = null) => fetchFromApi('/classroom/claude-browser/sync-session', token, {
+    method: 'POST',
+    body: JSON.stringify({ session_key: sessionKey, user_agent: userAgent }),
+  }),
+
+  disconnectClaudeSession: async (token = null) => fetchFromApi('/classroom/claude-browser/session', token, {
+    method: 'DELETE',
+  }),
+
   // Notifications & sync activity
   getNotifications: async (status = null, limit = 50, token = null) => {
     const params = new URLSearchParams({ limit: String(limit) });

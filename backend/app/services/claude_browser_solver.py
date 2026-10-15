@@ -768,48 +768,95 @@ def solve_assignment_via_claude_browser(
     if headless is None:
         headless = _get_headless_mode()
 
-    # Try hosted browser service first
+    # Try hosted browser service first, or direct Playwright if session key is synced
     from app.services.browser_sessions import BrowserSessionClient
+    session_key_setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:claude_session_key"
+    ).first()
+    claude_session_key = session_key_setting.value.strip() if session_key_setting and session_key_setting.value else None
+
+    user_agent_setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:claude_user_agent"
+    ).first()
+    custom_user_agent = user_agent_setting.value.strip() if user_agent_setting and user_agent_setting.value else None
+
+    endpoint = None
+    use_direct_playwright = False
     try:
         endpoint = BrowserSessionClient().cdp_endpoint(user_id)
         logger.info("Using hosted Claude browser for user %s", user_id)
     except Exception as error:
         logger.warning("Hosted Claude browser unavailable for user %s: %s", user_id, error)
-        logger.info("Falling back to local Chrome profile (headless=%s)", headless)
-        launch_result = open_claude_browser_window(user_id=user_id, headless=headless)
-        if launch_result.get("status") not in ("ready", "launched"):
-            return {
-                "status": "needs_login",
-                "error": (
-                    "Could not start local Claude browser and hosted browser service is unavailable. "
-                    f"Details: {launch_result.get('error', 'unknown error')}"
-                ),
-            }
-        endpoint = f"http://127.0.0.1:{USER_CDP_PORT}"
+        if claude_session_key:
+            logger.info("User %s has synced Claude sessionKey; using direct headless Playwright.", user_id)
+            use_direct_playwright = True
+        else:
+            logger.info("Falling back to local Chrome profile (headless=%s)", headless)
+            launch_result = open_claude_browser_window(user_id=user_id, headless=headless)
+            if launch_result.get("status") not in ("ready", "launched"):
+                return {
+                    "status": "needs_login",
+                    "error": (
+                        "Could not start local Claude browser and hosted browser service is unavailable. "
+                        f"Details: {launch_result.get('error', 'unknown error')}"
+                    ),
+                }
+            endpoint = f"http://127.0.0.1:{USER_CDP_PORT}"
 
     logger.info("Connecting to the private Claude browser for assignment %s (user: %s).", assignment_id, user_id)
 
     # Set Playwright bypass for context-management errors on attached Chromium instances
     os.environ["PW_CHROMIUM_ATTACH_TO_OTHER"] = "1"
 
-    # 2. Connect Playwright over CDP
+    # 2. Connect Playwright over CDP or launch direct headless instance
     with sync_playwright() as p:
-        try:
-            browser = connect_to_chrome(p.chromium, endpoint)
-        except Exception as e:
-            logger.error("Could not attach to the hosted Chrome session: %s", e)
-            return {
-                "status": "error",
-                "error": (
-                    "The hosted Chrome DevTools endpoint accepted the connection "
-                    f"but did not complete Playwright's browser handshake after "
-                    f"{CDP_CONNECT_ATTEMPTS} attempts ({CDP_CONNECT_TIMEOUT_MS // 1000}s each). "
-                    "Close and reopen Uniflow's Chrome window, then retry. "
-                    f"Details: {e}"
-                )
-            }
+        browser = None
+        context = None
+        if use_direct_playwright:
+            browser = p.chromium.launch(
+                headless=True if headless is None else headless,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            )
+            context = browser.new_context(
+                user_agent=custom_user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            )
+        else:
+            try:
+                browser = connect_to_chrome(p.chromium, endpoint)
+                context = browser.contexts[0] if browser.contexts else None
+            except Exception as e:
+                if claude_session_key:
+                    logger.warning("CDP connect failed (%s), falling back to direct headless Chromium with sessionKey", e)
+                    browser = p.chromium.launch(
+                        headless=True if headless is None else headless,
+                        args=[
+                            "--no-sandbox",
+                            "--disable-dev-shm-usage",
+                            "--disable-gpu",
+                            "--disable-blink-features=AutomationControlled",
+                        ],
+                    )
+                    context = browser.new_context(
+                        user_agent=custom_user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    )
+                else:
+                    logger.error("Could not attach to the hosted Chrome session: %s", e)
+                    return {
+                        "status": "error",
+                        "error": (
+                            "The hosted Chrome DevTools endpoint accepted the connection "
+                            f"but did not complete Playwright's browser handshake after "
+                            f"{CDP_CONNECT_ATTEMPTS} attempts ({CDP_CONNECT_TIMEOUT_MS // 1000}s each). "
+                            "Close and reopen Uniflow's Chrome window, then retry. "
+                            f"Details: {e}"
+                        )
+                    }
 
-        context = browser.contexts[0] if browser.contexts else None
         if not context:
             return {"status": "error", "error": "No browser context found on Chrome."}
 
@@ -817,6 +864,21 @@ def solve_assignment_via_claude_browser(
             context.grant_permissions(["clipboard-read", "clipboard-write"])
         except Exception:
             pass
+
+        # Inject synced session cookie before navigation
+        if claude_session_key:
+            try:
+                context.add_cookies([{
+                    "name": "sessionKey",
+                    "value": claude_session_key,
+                    "domain": ".claude.ai",
+                    "path": "/",
+                    "secure": True,
+                    "httpOnly": True,
+                }])
+                logger.info("Successfully injected Claude sessionKey cookie for user %s", user_id)
+            except Exception as cookie_err:
+                logger.warning("Could not inject sessionKey cookie: %s", cookie_err)
 
         # Find or create a page for Claude
         page = None

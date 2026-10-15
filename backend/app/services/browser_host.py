@@ -214,11 +214,12 @@ class BrowserSessionHost:
                 processes.append(self._start_process(["fluxbox"], display))
                 processes.append(self._start_process(
                     ["x11vnc", "-display", f":{display}", "-rfbport", str(vnc_port),
-                     "-localhost", "-forever", "-shared", "-nopw", "-quiet"],
+                     "-localhost", "-forever", "-shared", "-nopw", "-quiet",
+                     "-wait", "20", "-defer", "20", "-noxdamage", "-ncache", "10", "-cursor", "arrow"],
                     display,
                 ))
 
-                # 3. Start Chromium with robust container flags and logging (Azure GPU + Memory optimized)
+                # 3. Start Chromium with container-safe defaults and logging
                 try:
                     chrome_log_handle = open(chrome_log_path, "w", encoding="utf-8", errors="replace")
                 except Exception:
@@ -232,21 +233,8 @@ class BrowserSessionHost:
                     "--remote-allow-origins=*",
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
-                    # GPU ACCELERATION (ANGLE on Linux/Mesa in Azure containers)
-                    "--use-gl=angle",
-                    "--enable-gpu-rasterization",
-                    "--enable-zero-copy",
-                    "--ignore-gpu-blocklist",
-                    "--enable-features=VaapiVideoDecoder,CanvasOopRasterization",
-                    # DISABLE BACKGROUND THROTTLING
-                    "--disable-background-timer-throttling",
-                    "--disable-renderer-backgrounding",
-                    "--disable-features=CalculateNativeWinOcclusion",
-                    # MEMORY LIMITS (critical for 8GB Azure)
-                    "--js-flags=--max-old-space-size=512",
-                    "--max_old_space_size=512",
-                    "--memory-pressure-off",
-                    # DISABLE UNNECESSARY SERVICES
+                    "--disable-gpu",
+                    "--use-gl=swiftshader",
                     "--no-first-run",
                     "--no-default-browser-check",
                     "--disable-background-networking",
@@ -254,6 +242,9 @@ class BrowserSessionHost:
                     "--disable-component-update",
                     "--disable-sync",
                     "--disable-default-apps",
+                    "--disable-background-timer-throttling",
+                    "--disable-renderer-backgrounding",
+                    "--window-size=1280,800",
                     "--password-store=basic",
                     "--use-mock-keychain",
                     "--start-maximized",
@@ -413,8 +404,10 @@ const scheme = location.protocol === "https:" ? "wss:" : "ws:";
 const rfb = new RFB(document.getElementById("screen"),
   `${{scheme}}//${{location.host}}/viewer/{key}/websockify?token=${{encodeURIComponent(token)}}`);
 rfb.scaleViewport = true;
-rfb.resizeSession = true;
-rfb.qualityLevel = 5;
+rfb.resizeSession = false;
+rfb.qualityLevel = 6;
+rfb.compressionLevel = 2;
+rfb.showDotCursor = true;
 rfb.addEventListener("connect", () => document.getElementById("notice").remove());
 rfb.addEventListener("disconnect", () => document.getElementById("notice").textContent = "Browser disconnected.");
 </script></body></html>"""

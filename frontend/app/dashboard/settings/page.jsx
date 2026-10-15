@@ -107,6 +107,50 @@ export default function SettingsPage() {
     }
   };
 
+  const [sessionKeyInput, setSessionKeyInput] = useState('');
+  const [syncingKey, setSyncingKey] = useState(false);
+
+  const handleSyncSessionKey = async (e) => {
+    if (e) e.preventDefault();
+    if (!sessionKeyInput.trim()) {
+      setBrowserError('Please enter a valid Claude sessionKey.');
+      return;
+    }
+    setSyncingKey(true);
+    setBrowserError('');
+    setBrowserNotice('');
+    try {
+      const token = await getToken();
+      const res = await api.syncClaudeSession(sessionKeyInput.trim(), navigator.userAgent, token);
+      setBrowserNotice(res?.message || 'Claude session connected successfully!');
+      setSessionKeyInput('');
+      await loadBrowserStatus();
+    } catch (err) {
+      setBrowserError(err.message || 'Could not sync Claude session key.');
+    } finally {
+      setSyncingKey(false);
+    }
+  };
+
+  const handleDisconnectSessionKey = async () => {
+    if (!window.confirm('Disconnect your Claude session key? Automatic solving will need to be reconnected.')) {
+      return;
+    }
+    setSyncingKey(true);
+    setBrowserError('');
+    setBrowserNotice('');
+    try {
+      const token = await getToken();
+      await api.disconnectClaudeSession(token);
+      setBrowserNotice('Claude session disconnected.');
+      await loadBrowserStatus();
+    } catch (err) {
+      setBrowserError(err.message || 'Could not disconnect Claude session.');
+    } finally {
+      setSyncingKey(false);
+    }
+  };
+
   const deleteClaudeProfile = async () => {
     if (!window.confirm('Delete your saved Claude browser profile and sign-in session? Automatic solving will also be disabled.')) {
       return;
@@ -121,6 +165,7 @@ export default function SettingsPage() {
         ...current,
         active: false,
         is_open: false,
+        has_session_key: false,
         profile_exists: false,
         automatic_solving_enabled: false,
         viewer_url: null,
@@ -221,77 +266,153 @@ export default function SettingsPage() {
       {browserNotice && <div className="rounded-lg border border-[#d8eee4] bg-[#f3fbf7] px-3 py-2.5 text-xs text-[#43816b]" role="status">{browserNotice}</div>}
 
       <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm">
-        <header className="border-b border-[#f0f0f3] px-5 py-4">
-          <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">PRIVATE CLAUDE BROWSER</p>
-          <h2 className="text-[13px] font-semibold text-[#343746]">Connect once, solve new assignments automatically</h2>
-        </header>
-        <div className="flex flex-col gap-4 p-5">
-          <p className="max-w-3xl text-xs leading-relaxed text-[#747887]">
-            Uniflow keeps a separate hosted browser profile for your account. Start it, sign in to Claude yourself,
-            then enable automatic solving. Claude login cookies stay in your private browser profile; they are not
-            shared with other students.
-          </p>
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              className="inline-flex min-h-9 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-3 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:cursor-wait disabled:opacity-55"
-              onClick={startClaudeBrowser}
-              disabled={browserBusy}
-            >
-              {browserBusy ? 'Starting…' : browserStatus?.is_open ? 'Open Claude sign-in window' : 'Start private Claude browser'}
-            </button>
-            <button
-              type="button"
-              className="inline-flex min-h-9 items-center justify-center rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb] disabled:opacity-55"
-              onClick={loadBrowserStatus}
-              disabled={browserBusy}
-            >
-              Refresh status
-            </button>
-            {browserStatus?.viewer_url && (
-              <a
-                className="text-xs font-semibold text-[#5142c1] underline"
-                href={browserStatus.viewer_url}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Open streamed browser
-              </a>
-            )}
-            {browserStatus?.profile_exists && (
-              <button
-                type="button"
-                className="text-xs font-semibold text-[#a04a4a] underline disabled:opacity-55"
-                onClick={deleteClaudeProfile}
-                disabled={browserBusy}
-              >
-                Delete saved Claude profile
-              </button>
-            )}
-            <span className="text-xs text-[#747887]">
-              {browserStatus?.is_open ? 'Browser running' : 'Browser stopped'}
-            </span>
+        <header className="border-b border-[#f0f0f3] px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">CLAUDE AI CONNECTION</p>
+            <h2 className="text-[13px] font-semibold text-[#343746]">1-Click Sync & Automatic Solving</h2>
           </div>
+          {browserStatus?.has_session_key ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#f3fbf7] px-2.5 py-1 text-xs font-semibold text-[#3a8369] border border-[#d8eee4]">
+              <span className="h-1.5 w-1.5 rounded-full bg-[#3a8369]" /> Connected (Session Cookie)
+            </span>
+          ) : browserStatus?.is_open ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#f6f5fe] px-2.5 py-1 text-xs font-semibold text-[#6657d9] border border-[#e5e1fc]">
+              <span className="h-1.5 w-1.5 rounded-full bg-[#6657d9]" /> Browser Running
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#f8f8fb] px-2.5 py-1 text-xs font-medium text-[#747887] border border-[#ebebf0]">
+              Not Connected
+            </span>
+          )}
+        </header>
+
+        <div className="flex flex-col gap-5 p-5">
+          {/* Method 1: Instant Session Cookie Connection */}
+          <div className="rounded-lg border border-[#e8e7f8] bg-[#faf9fe] p-4 flex flex-col gap-3">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div>
+                <h3 className="text-xs font-semibold text-[#483ba6]">⚡ 1-Click Fast Sync (No Captchas, No VNC Lag)</h3>
+                <p className="mt-1 text-xs leading-relaxed text-[#686c80] max-w-2xl">
+                  Sync your Claude session directly. Eliminates Google OAuth "Insecure browser" blocks, avoids Cloudflare captchas, and requires zero remote browser streaming.
+                </p>
+              </div>
+              {browserStatus?.has_session_key && (
+                <button
+                  type="button"
+                  className="rounded-md border border-[#e0c4c4] bg-white px-3 py-1.5 text-xs font-semibold text-[#a04a4a] hover:bg-[#fff5f5] disabled:opacity-55"
+                  onClick={handleDisconnectSessionKey}
+                  disabled={syncingKey || browserBusy}
+                >
+                  {syncingKey ? 'Disconnecting…' : 'Disconnect Claude Session'}
+                </button>
+              )}
+            </div>
+
+            {!browserStatus?.has_session_key && (
+              <form onSubmit={handleSyncSessionKey} className="mt-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                <input
+                  type="password"
+                  placeholder="Paste Claude sessionKey (sk-ant-sid01-...)"
+                  className="flex-1 rounded-md border border-[#d6d4f0] bg-white px-3 py-2 text-xs font-mono text-[#292d3a] placeholder:text-[#9fa3b5] focus:border-[#6657d9] focus:outline-none"
+                  value={sessionKeyInput}
+                  onChange={(e) => setSessionKeyInput(e.target.value)}
+                  disabled={syncingKey || browserBusy}
+                />
+                <button
+                  type="submit"
+                  className="inline-flex min-h-9 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-4 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55"
+                  disabled={syncingKey || browserBusy || !sessionKeyInput.trim()}
+                >
+                  {syncingKey ? 'Syncing…' : 'Connect Claude'}
+                </button>
+              </form>
+            )}
+
+            <div className="rounded-md border border-[#ececf4] bg-white p-3 text-xs text-[#6e7284]">
+              <p className="font-semibold text-[#4b4e60]">How to get your session key in 5 seconds:</p>
+              <ol className="mt-1.5 list-decimal pl-4 space-y-1">
+                <li>Log in to <a href="https://claude.ai" target="_blank" rel="noreferrer" className="text-[#6657d9] underline font-medium">claude.ai</a> on your computer.</li>
+                <li>Press <kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">F12</kbd> (or right click → Inspect) → click the <strong>Application</strong> tab (or <strong>Storage</strong> in Firefox).</li>
+                <li>On the left panel, click <strong>Cookies</strong> → <strong>https://claude.ai</strong>.</li>
+                <li>Find the cookie named <strong>sessionKey</strong>, double-click its value, copy it, and paste it above!</li>
+              </ol>
+            </div>
+          </div>
+
+          {/* Automatic Solving Opt-in */}
           <label className="flex max-w-3xl items-start gap-2 text-xs leading-relaxed text-[#5d6170]">
             <input
               type="checkbox"
               className="mt-0.5 accent-[#6657d9]"
               checked={Boolean(browserStatus?.automatic_solving_enabled)}
               onChange={(event) => setAutomaticSolving(event.target.checked)}
-              disabled={browserBusy || !browserStatus?.is_open}
+              disabled={browserBusy || (!browserStatus?.has_session_key && !browserStatus?.is_open)}
             />
             <span>
-              Automatically solve newly detected, published, unsubmitted, non-quiz assignments. This does not
-              submit work to Google Classroom. Sign into Claude in the streamed browser before enabling.
+              <strong>Automatically solve eligible assignments:</strong> Solves newly detected, published, unsubmitted assignments via Claude without manual triggers.
+              {(!browserStatus?.has_session_key && !browserStatus?.is_open) && (
+                <span className="block mt-0.5 text-[#a04a4a]"> (Connect Claude above to enable automatic solving)</span>
+              )}
             </span>
           </label>
+
+          {/* Fallback Method: Streamed Browser Window */}
+          <details className="rounded-lg border border-[#ebebf0] bg-[#fafafc] p-3 text-xs">
+            <summary className="cursor-pointer font-semibold text-[#5c6070] hover:text-[#292d3a]">
+              Alternative / Visual Window: Streamed Chromium Browser (VNC)
+            </summary>
+            <div className="mt-3 flex flex-col gap-3 pt-2 border-t border-[#ededf2]">
+              <p className="text-[#747887]">
+                If you prefer to sign in visually, you can start an isolated hosted Chromium container.
+              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-3 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55"
+                  onClick={startClaudeBrowser}
+                  disabled={browserBusy}
+                >
+                  {browserBusy ? 'Starting…' : browserStatus?.is_open ? 'Open sign-in window' : 'Start hosted browser'}
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb] disabled:opacity-55"
+                  onClick={loadBrowserStatus}
+                  disabled={browserBusy}
+                >
+                  Refresh status
+                </button>
+                {browserStatus?.viewer_url && (
+                  <a
+                    className="text-xs font-semibold text-[#5142c1] underline"
+                    href={browserStatus.viewer_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open streamed browser tab
+                  </a>
+                )}
+                {browserStatus?.profile_exists && (
+                  <button
+                    type="button"
+                    className="text-xs font-semibold text-[#a04a4a] underline disabled:opacity-55"
+                    onClick={deleteClaudeProfile}
+                    disabled={browserBusy}
+                  >
+                    Delete saved profile
+                  </button>
+                )}
+              </div>
+            </div>
+          </details>
+
           {browserStatus?.automatic_solving_enabled
             && (browserStatus?.jobs || []).some((job) => ['needs_login', 'failed'].includes(job.status)) && (
             <button
               type="button"
               className="self-start text-xs font-semibold text-[#5142c1] underline disabled:opacity-55"
               onClick={resumeClaudeJobs}
-              disabled={browserBusy || !browserStatus?.is_open}
+              disabled={browserBusy}
             >
               Resume waiting or failed assignments
             </button>

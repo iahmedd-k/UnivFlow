@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Uniflow Claude Sync</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    body {
+      width: 340px;
+      padding: 16px;
+      background: #fafafc;
+      color: #292d3a;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .logo {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, #6657d9, #8c7cf0);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: 700;
+      font-size: 16px;
+      box-shadow: 0 2px 6px rgba(102, 87, 217, 0.3);
+    }
+    .title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #1e2029;
+    }
+    .subtitle {
+      font-size: 11px;
+      color: #7b7f92;
+    }
+    .card {
+      background: white;
+      border: 1px solid #ebebf0;
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+    }
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .status-label {
+      color: #636779;
+    }
+    .badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 12px;
+    }
+    .badge-ok {
+      background: #eef9f3;
+      color: #2d7a52;
+      border: 1px solid #ccebd9;
+    }
+    .badge-warn {
+      background: #fff8eb;
+      color: #9a6514;
+      border: 1px solid #fce3b8;
+    }
+    .cookie-preview {
+      font-family: monospace;
+      font-size: 10px;
+      background: #f4f4f8;
+      padding: 6px 8px;
+      border-radius: 6px;
+      color: #555869;
+      word-break: break-all;
+      margin-top: 6px;
+      max-height: 44px;
+      overflow: hidden;
+    }
+    .field {
+      margin-top: 8px;
+    }
+    .field label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: #636779;
+      margin-bottom: 4px;
+    }
+    .field input {
+      width: 100%;
+      padding: 7px 10px;
+      font-size: 12px;
+      border: 1px solid #dcdce6;
+      border-radius: 6px;
+      background: #fdfdfd;
+      color: #292d3a;
+      outline: none;
+    }
+    .field input:focus {
+      border-color: #6657d9;
+    }
+    .btn {
+      width: 100%;
+      padding: 10px;
+      background: #6657d9;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .btn:hover:not(:disabled) {
+      background: #5344c9;
+    }
+    .btn:disabled {
+      background: #c2bee8;
+      cursor: not-allowed;
+    }
+    .btn-secondary {
+      background: white;
+      border: 1px solid #dcdce6;
+      color: #555869;
+      margin-top: 6px;
+    }
+    .btn-secondary:hover:not(:disabled) {
+      background: #f6f6f9;
+    }
+    .notice {
+      margin-top: 10px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      display: none;
+      line-height: 1.4;
+    }
+    .notice-ok {
+      background: #eef9f3;
+      color: #2d7a52;
+      border: 1px solid #ccebd9;
+    }
+    .notice-err {
+      background: #fff4f4;
+      color: #a83838;
+      border: 1px solid #fedcdc;
+    }
+    .footer {
+      text-align: center;
+      font-size: 10px;
+      color: #9da1b2;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">U</div>
+    <div>
+      <div class="title">Uniflow Claude Companion</div>
+      <div class="subtitle">Direct Free/Pro Session Sync</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="status-row">
+      <span class="status-label">Claude.ai Session:</span>
+      <span id="sessionStatus" class="badge badge-warn">Checking…</span>
+    </div>
+    <div id="cookieBox" class="cookie-preview">Searching for sessionKey cookie…</div>
+  </div>
+
+  <div class="card">
+    <div class="field">
+      <label for="apiUrl">Uniflow Backend URL:</label>
+      <input type="text" id="apiUrl" value="http://localhost:8000" placeholder="https://api.yourdomain.com">
+    </div>
+    <div class="field" style="margin-top: 8px;">
+      <label for="authToken">Auth Token (optional if logged in on tab):</label>
+      <input type="password" id="authToken" placeholder="Bearer token or leave blank for auto-detect">
+    </div>
+  </div>
+
+  <button id="syncBtn" class="btn" disabled>
+    <span>⚡ Sync Session to Uniflow</span>
+  </button>
+  <button id="copyBtn" class="btn btn-secondary">
+    <span>📋 Copy sessionKey to Clipboard</span>
+  </button>
+
+  <div id="noticeBox" class="notice"></div>
+
+  <div class="footer">
+    Zero VNC latency · No Cloudflare Captchas · 100% Private
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
