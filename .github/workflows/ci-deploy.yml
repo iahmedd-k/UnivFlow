@@ -160,10 +160,12 @@ jobs:
             "docker login ghcr.io --username '$GHCR_PULL_USERNAME' --password-stdin"
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" \
             "cd '$remote_dir' &&
+            docker image prune -f || true;
             IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml pull &&
             IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml run --rm api alembic upgrade head &&
             IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml up -d --wait --wait-timeout 180 --remove-orphans;
             deploy_status=\$?;
+            docker image prune -a -f || true;
             if [ \"\$deploy_status\" -ne 0 ]; then
               echo 'Deployment failed; collecting container health and startup diagnostics.'
               IMAGE_TAG='${IMAGE_TAG}' docker compose --env-file .env.production -f docker-compose.azure.yml ps
