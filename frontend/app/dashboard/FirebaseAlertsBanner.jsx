@@ -1,10 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { requestNotificationPermission, onMessageListener } from '@/app/lib/firebase';
+import { requestNotificationPermission, onMessageListener, isFirebaseConfigured } from '@/app/lib/firebase';
 import Icon from '@/app/dashboard/Icon';
 
 export default function FirebaseAlertsBanner() {
+  if (!isFirebaseConfigured) return null;
+
   const [permission, setPermission] = useState('default');
   const [token, setToken] = useState(null);
   const [activeAlert, setActiveAlert] = useState(null);
