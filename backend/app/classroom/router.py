@@ -403,11 +403,19 @@ def sync_classroom(
             if svc:
                 result = svc.sync_all()
                 logger.info(f"Classroom sync result for {uid}: {result}")
-                status = "failed" if result.get("errors") else "completed"
+                errors = result.get("errors") or []
+                status = "failed" if errors else "completed"
+                sync_error = "; ".join(errors) if errors else None
                 run = sync_db.query(Setting).filter(Setting.key == s_key).first()
                 if run:
                     previous = json.loads(run.value or "{}")
-                    run.value = json.dumps({**previous, "status": status, "finished_at": datetime.now(timezone.utc).isoformat(), "result": result})
+                    run.value = json.dumps({
+                        **previous,
+                        "status": status,
+                        "error": sync_error,
+                        "finished_at": datetime.now(timezone.utc).isoformat(),
+                        "result": result
+                    })
                     sync_db.commit()
             else:
                 raise RuntimeError("Google Classroom credentials could not be loaded.")

@@ -44,13 +44,19 @@ export default function ClassroomPage() {
       ]);
 
       if (results[0].status === 'fulfilled') setCourses(results[0].value || []);
-      if (results[1].status === 'fulfilled') setSync(results[1].value);
+      if (results[1].status === 'fulfilled') {
+        const syncData = results[1].value;
+        setSync(syncData);
+        if (syncData?.sync_run?.status === 'failed' && (!results[0].value || results[0].value.length === 0)) {
+          const syncErr = syncData.sync_run.error || syncData.sync_run.result?.errors?.[0];
+          if (syncErr) setError(syncErr);
+        }
+      }
       if (results[2].status === 'fulfilled') setSemesterDate(results[2].value?.semester_start_date || '');
       if (results[3].status === 'fulfilled') setAssignments(results[3].value || []);
 
       const failed = results.find((r) => r.status === 'rejected');
       if (failed) throw failed.reason;
-      setError('');
     } catch (err) {
       setError(err.message || 'Could not load local Classroom data.');
     } finally {
@@ -99,7 +105,8 @@ export default function ClassroomPage() {
           const result = latest.sync_run.result || {};
           setMessage(`Sync complete: ${result.courses || 0} courses and ${result.assignments || 0} assignments updated.`);
         } else if (latest.sync_run?.status === 'failed') {
-          setError(latest.sync_run.error || 'Google Classroom sync failed.');
+          const syncErr = latest.sync_run.error || latest.sync_run.result?.errors?.[0] || 'Google Classroom sync failed.';
+          setError(syncErr);
         }
       } catch (err) {
         if (!cancelled) {
