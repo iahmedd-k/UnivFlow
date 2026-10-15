@@ -6,6 +6,7 @@ import shutil
 import urllib.request
 import urllib.error
 import subprocess
+import atexit
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List, Tuple
@@ -44,12 +45,12 @@ BROWSER_LAUNCH_TIMEOUT = 30  # seconds
 CLAUDE_RESPONSE_TIMEOUT = 300  # seconds (5 minutes for complex responses)
 
 def _get_headless_mode() -> bool:
-    """Get headless mode from settings, defaulting to True for production."""
+    """Get headless mode from settings. Default to False (headed) for Azure GPU acceleration via ANGLE."""
     try:
         from app.core.config import settings
         return settings.playwright_headless
     except Exception:
-        return True  # Safe default for production
+        return False  # Safe default: HEADED for Azure GPU acceleration
 
 _claude_processes: Dict[str, subprocess.Popen] = {}  # Per-user processes
 
@@ -273,13 +274,24 @@ def open_claude_browser_window(user_id: str = "default", headless: bool = None) 
     """
     Launch or focus the persistent Uniflow browser profile with remote debugging enabled.
     Using a dedicated data directory per user is required for isolation.
+    Optimized for Azure (2 vCPU, 8GB): headed + ANGLE GPU + memory limits.
     """
     if headless is None:
         headless = _get_headless_mode()
-    
+
     global _claude_processes
-    
+
     profile_dir = _get_user_profile_dir(user_id)
+
+    # CLEAN STALE LOCKS BEFORE LAUNCH (critical for Azure container restarts)
+    for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        lock_path = profile_dir / lock_name
+        try:
+            if lock_path.is_symlink() or lock_path.exists():
+                lock_path.unlink()
+        except Exception:
+            pass
+
     active_port = get_active_cdp_port()
     if active_port is not None:
         return {
@@ -290,6 +302,8 @@ def open_claude_browser_window(user_id: str = "default", headless: bool = None) 
         }
 
     browser_bin = find_system_browser()
+
+    # BASE FLAGS (both headed/headless) - GPU via ANGLE + Memory limits
     cmd = [
         browser_bin,
         f"--user-data-dir={profile_dir}",
@@ -298,17 +312,47 @@ def open_claude_browser_window(user_id: str = "default", headless: bool = None) 
         "--remote-allow-origins=*",
         "--restore-last-session",
         "https://claude.ai/new",
+
+        # GPU ACCELERATION (ANGLE = DirectX on Windows/Azure)
+        "--use-gl=angle",
+        "--enable-gpu-rasterization",
+        "--enable-zero-copy",
+        "--ignore-gpu-blocklist",
+        "--enable-features=VaapiVideoDecoder,CanvasOopRasterization",
+
+        # DISABLE BACKGROUND THROTTLING
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--disable-features=CalculateNativeWinOcclusion",
+
+        # MEMORY LIMITS (critical for 8GB Azure)
+        "--js-flags=--max-old-space-size=512",
+        "--max_old_space_size=512",
+        "--memory-pressure-off",
+
+        # DISABLE UNNECESSARY SERVICES
+        "--disable-breakpad",
+        "--disable-component-update",
+        "--disable-background-networking",
+        "--disable-sync",
+        "--disable-default-apps",
+        "--no-first-run",
+        "--no-default-browser-check",
+
+        # RESOURCE OPTIMIZATIONS
+        "--disable-dev-shm-usage",
     ]
-    
+
     if headless:
         cmd.extend([
             "--headless=new",
-            "--disable-gpu",
+            # DO NOT use --disable-gpu in headless on Azure — ANGLE still works!
             "--no-sandbox",
-            "--disable-dev-shm-usage",
             "--disable-extensions",
-            "--disable-background-networking",
         ])
+    else:
+        # HEADED: Start maximized
+        cmd.extend(["--start-maximized"])
 
     try:
         flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000200) if os.name == "nt" else 0

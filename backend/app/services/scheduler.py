@@ -207,22 +207,55 @@ def _run_assignment_deadline_job():
         db.close()
 
 
+def _run_process_pending_notifications():
+    """Process pending notifications that are due for sending."""
+    db = SessionLocal()
+    try:
+        from app.services.notification_service import NotificationService
+        service = NotificationService(db)
+        sent_count = service.process_pending_notifications(limit=50)
+        if sent_count:
+            logger.info(f"[Scheduler] Processed and sent {sent_count} pending notification(s).")
+    except Exception as e:
+        logger.warning(f"[Scheduler] Process pending notifications error: {e}")
+    finally:
+        db.close()
+
+
+def _run_retry_failed_notifications():
+    """Retry failed notifications that haven't exceeded max retries."""
+    db = SessionLocal()
+    try:
+        from app.services.notification_service import NotificationService
+        service = NotificationService(db)
+        retried_count = service.retry_failed_notifications(limit=50)
+        if retried_count:
+            logger.info(f"[Scheduler] Retried {retried_count} failed notification(s).")
+    except Exception as e:
+        logger.warning(f"[Scheduler] Retry failed notifications error: {e}")
+    finally:
+        db.close()
+
+
+def _run_daily_class_list_email():
+    """Send daily morning email with list of all classes for the day."""
+    db = SessionLocal()
+    try:
+        from app.services.alert_service import AlertService
+        service = AlertService(db)
+        result = service.generate_daily_class_list_email(send_immediately=True)
+        if result:
+            logger.info(f"[Scheduler] Daily class list email dispatched: {result.get('classes_count')} classes to {result.get('recipient')}.")
+    except Exception as e:
+        logger.warning(f"[Scheduler] Daily class list email error: {e}")
+    finally:
+        db.close()
+
+
 def start_scheduler():
     """Initialize and start background automated sync and alert jobs"""
     try:
-        # 1. University Portal: refresh connected profiles every 15 minutes
-        scheduler.add_job(
-            _run_portal_sync_job,
-            IntervalTrigger(minutes=15),
-            id="portal_auto_sync",
-            name="University Portal Auto Sync (Every 15m)",
-            replace_existing=True,
-            misfire_grace_time=300,
-            max_instances=1,
-            coalesce=True,
-        )
-
-        # 2. Google Classroom: Every 30 minutes
+        # 1. Google Classroom: Every 30 minutes
         scheduler.add_job(
             _run_gcr_sync_job,
             IntervalTrigger(minutes=30),
@@ -318,11 +351,46 @@ def start_scheduler():
         scheduler.add_job(
             _run_portal_auto_sync,
             IntervalTrigger(minutes=30),
-            id="portal_auto_sync",
-            name="University Portal Auto Sync (Every 30m)",
+            id="portal_auto_sync_active_users",
+            name="University Portal Auto Sync for Active Users (Every 30m)",
             replace_existing=True,
             misfire_grace_time=300,
             max_instances=1,
+            coalesce=True,
+        )
+
+        # 9. Process Pending Notifications: Check every 5 minutes
+        scheduler.add_job(
+            _run_process_pending_notifications,
+            IntervalTrigger(minutes=5),
+            id="process_pending_notifications",
+            name="Process Pending Notifications (Every 5m)",
+            replace_existing=True,
+            misfire_grace_time=60,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # 10. Retry Failed Notifications: Check every 15 minutes
+        scheduler.add_job(
+            _run_retry_failed_notifications,
+            IntervalTrigger(minutes=15),
+            id="retry_failed_notifications",
+            name="Retry Failed Notifications (Every 15m)",
+            replace_existing=True,
+            misfire_grace_time=60,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # 11. Daily Class List Email: Every morning at 07:00 AM (strictly once per day)
+        scheduler.add_job(
+            _run_daily_class_list_email,
+            CronTrigger(hour=7, minute=0, timezone=settings.timezone),
+            id="daily_class_list_email",
+            name="Daily Class List Email (07:00 AM)",
+            replace_existing=True,
+            misfire_grace_time=3600,
             coalesce=True,
         )
 
@@ -330,41 +398,6 @@ def start_scheduler():
         logger.info("[Scheduler] Automated background sync and alert scheduler started successfully.")
     except Exception as e:
         logger.error(f"[Scheduler] Failed to start scheduler: {e}")
-
-
-def _run_portal_auto_sync():
-    """Automatically sync portal for all users with active sessions."""
-    db = SessionLocal()
-    try:
-        # Get all users with active portal sessions
-        active_users = db.query(Setting).filter(
-            Setting.key.like("portal:%:portal_session_status"),
-            Setting.value == "ACTIVE"
-        ).all()
-        
-        for setting in active_users:
-            # Extract user_id from key: portal:{user_id}:portal_session_status
-            key_parts = setting.key.split(":")
-            if len(key_parts) >= 2:
-                user_id = key_parts[1]
-                if user_id and user_id != "dev_student_user":
-                    try:
-                        repo = PortalSyncJobRepository(db)
-                        active_job = repo.get_active_job(user_id)
-                        if not active_job:
-                            job_id = sha256(f"{user_id}:{time.time_ns()}".encode()).hexdigest()[:20]
-                            repo.create(user_id, job_id, sync_type="auto")
-                            db.commit()
-                            # Run sync in background thread
-                            threading.Thread(target=_run_portal_sync_job, args=(user_id, job_id), daemon=True).start()
-                            logger.info(f"[Scheduler] Started auto portal sync for user {user_id}")
-                    except Exception as e:
-                        logger.warning(f"[Scheduler] Failed to start auto portal sync for user {user_id}: {e}")
-                        db.rollback()
-    except Exception as e:
-        logger.warning(f"[Scheduler] Portal auto sync job error: {e}")
-    finally:
-        db.close()
 
 
 def shutdown_scheduler():

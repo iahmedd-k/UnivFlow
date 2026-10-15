@@ -198,7 +198,7 @@ class BrowserSessionHost:
             try:
                 # 1. Start Xvfb display server
                 processes.append(self._start_process(
-                    ["Xvfb", f":{display}", "-screen", "0", "1440x1000x24", "-nolisten", "tcp"],
+                    ["Xvfb", f":{display}", "-screen", "0", "1280x800x24", "-nolisten", "tcp"],
                     display,
                 ))
 
@@ -218,7 +218,7 @@ class BrowserSessionHost:
                     display,
                 ))
 
-                # 3. Start Chromium with robust container flags and logging
+                # 3. Start Chromium with robust container flags and logging (Azure GPU + Memory optimized)
                 try:
                     chrome_log_handle = open(chrome_log_path, "w", encoding="utf-8", errors="replace")
                 except Exception:
@@ -232,12 +232,28 @@ class BrowserSessionHost:
                     "--remote-allow-origins=*",
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
-                    "--disable-gpu",
+                    # GPU ACCELERATION (ANGLE on Linux/Mesa in Azure containers)
+                    "--use-gl=angle",
+                    "--enable-gpu-rasterization",
+                    "--enable-zero-copy",
+                    "--ignore-gpu-blocklist",
+                    "--enable-features=VaapiVideoDecoder,CanvasOopRasterization",
+                    # DISABLE BACKGROUND THROTTLING
+                    "--disable-background-timer-throttling",
+                    "--disable-renderer-backgrounding",
+                    "--disable-features=CalculateNativeWinOcclusion",
+                    # MEMORY LIMITS (critical for 8GB Azure)
+                    "--js-flags=--max-old-space-size=512",
+                    "--max_old_space_size=512",
+                    "--memory-pressure-off",
+                    # DISABLE UNNECESSARY SERVICES
                     "--no-first-run",
                     "--no-default-browser-check",
                     "--disable-background-networking",
                     "--disable-breakpad",
                     "--disable-component-update",
+                    "--disable-sync",
+                    "--disable-default-apps",
                     "--password-store=basic",
                     "--use-mock-keychain",
                     "--start-maximized",
@@ -398,6 +414,7 @@ const rfb = new RFB(document.getElementById("screen"),
   `${{scheme}}//${{location.host}}/viewer/{key}/websockify?token=${{encodeURIComponent(token)}}`);
 rfb.scaleViewport = true;
 rfb.resizeSession = true;
+rfb.qualityLevel = 5;
 rfb.addEventListener("connect", () => document.getElementById("notice").remove());
 rfb.addEventListener("disconnect", () => document.getElementById("notice").textContent = "Browser disconnected.");
 </script></body></html>"""

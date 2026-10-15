@@ -1247,6 +1247,210 @@ Sent by Uniflow Academic Suite for Air University students.
     return html.strip(), text.strip()
 
 
+def build_daily_class_list_email(
+    student_name: str,
+    date_str: str,
+    classes_today: List[Dict],
+) -> Tuple[str, str]:
+    """
+    Generate a simple HTML and plain-text email for the daily class list.
+    Contains only the schedule of classes for the day.
+    """
+    classes_count = len(classes_today)
+    day_of_week = date_str.split(",")[0] if "," in date_str else date_str
+
+    # Build classes rows
+    if classes_today:
+        class_rows_html = ""
+        for item in classes_today:
+            course = item.get("course", "")
+            time_str = item.get("time", "")
+            room = item.get("room") or "Main Campus"
+            teacher = item.get("teacher") or "Department Faculty"
+
+            class_rows_html += f"""
+            <tr>
+              <td style="padding:12px 14px; border-bottom:1px solid #f1f5f9; vertical-align:top; width:30%;">
+                <div style="font-weight:700; color:#0f172a; font-size:13px;">{time_str}</div>
+                <div style="font-size:11px; color:#64748b; margin-top:2px;">{room}</div>
+              </td>
+              <td style="padding:12px 14px; border-bottom:1px solid #f1f5f9; vertical-align:top;">
+                <div style="font-weight:600; color:#1e293b; font-size:13px;">{course}</div>
+                <div style="font-size:11px; color:#64748b; margin-top:2px;">{teacher}</div>
+              </td>
+            </tr>
+            """
+    else:
+        class_rows_html = """
+        <tr>
+          <td colspan="2" style="padding:24px; text-align:center; color:#64748b; font-size:13px; font-style:italic;">
+            No university classes scheduled for today. Enjoy your day!
+          </td>
+        </tr>
+        """
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background-color: #f8fafc;
+      color: #0f172a;
+      margin: 0;
+      padding: 24px 12px;
+      line-height: 1.5;
+    }}
+    .email-container {{
+      max-width: 600px;
+      margin: 0 auto;
+      background: #ffffff;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }}
+    .header-bar {{
+      background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+      padding: 24px 28px;
+      border-bottom: 2px solid #e2e8f0;
+    }}
+    .brand-title {{
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #bfdbfe;
+      margin-bottom: 4px;
+    }}
+    .header-title {{
+      color: #ffffff;
+      font-size: 20px;
+      font-weight: 700;
+      margin: 0;
+      letter-spacing: -0.01em;
+    }}
+    .content-body {{
+      padding: 28px;
+    }}
+    .status-badge {{
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      background: #eff6ff;
+      color: #1d4ed8;
+      border: 1px solid #bfdbfe;
+      margin-bottom: 18px;
+    }}
+    .schedule-table {{
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      background: #ffffff;
+    }}
+    .schedule-table th {{
+      background: #f8fafc;
+      padding: 12px 14px;
+      text-align: left;
+      font-weight: 600;
+      color: #475569;
+      font-size: 12px;
+      border-bottom: 2px solid #e2e8f0;
+    }}
+    .footer-bar {{
+      background: #f8fafc;
+      padding: 18px 28px;
+      font-size: 11px;
+      color: #64748b;
+      text-align: center;
+      border-top: 1px solid #e2e8f0;
+      line-height: 1.6;
+    }}
+  </style>
+</head>
+<body>
+  <div class="email-container">
+    <div class="header-bar">
+      <div class="brand-title">Uniflow Academic Suite · Daily Schedule</div>
+      <h1 class="header-title">Today's Class Schedule</h1>
+    </div>
+    <div class="content-body">
+      <div class="status-badge">DAILY SCHEDULE · {date_str.upper()}</div>
+      
+      <p style="margin:0 0 16px 0; font-size:14px; color:#334155;">
+        Good morning, <strong>{student_name}</strong>! Here is your class schedule for <strong>{day_of_week}</strong>, <strong>{date_str}</strong>.
+      </p>
+
+      <table class="schedule-table">
+        <thead>
+          <tr>
+            <th style="width:30%;">Time & Room</th>
+            <th>Course & Instructor</th>
+          </tr>
+        </thead>
+        <tbody>
+          {class_rows_html}
+        </tbody>
+      </table>
+
+      <div style="margin-top:20px; padding:12px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; font-size:12px; color:#166534;">
+        <strong>{classes_count} class{'es' if classes_count != 1 else ''} scheduled today.</strong>
+      </div>
+    </div>
+    <div class="footer-bar">
+      Dispatched daily at 07:00 AM by Uniflow Academic Suite.<br>
+      Air University Student Schedule Notifications.
+    </div>
+  </div>
+</body>
+</html>"""
+
+    # Plain text version
+    text_lines = [
+        f"[Uniflow] Today's Class Schedule ({date_str})",
+        "",
+        f"Good morning, {student_name}! Here is your class schedule for {day_of_week}, {date_str}.",
+        "",
+        "─" * 50,
+    ]
+
+    if classes_today:
+        for item in classes_today:
+            course = item.get("course", "")
+            time_str = item.get("time", "")
+            room = item.get("room") or "Main Campus"
+            teacher = item.get("teacher") or "Department Faculty"
+            text_lines.extend([
+                f"• {course}",
+                f"  Time: {time_str}",
+                f"  Room: {room}",
+                f"  Instructor: {teacher}",
+                "",
+            ])
+    else:
+        text_lines.append("No university classes scheduled for today. Enjoy your day!")
+        text_lines.append("")
+
+    text_lines.extend([
+        "─" * 50,
+        f"Total: {classes_count} class{'es' if classes_count != 1 else ''} scheduled today.",
+        "",
+        "---",
+        "Sent by Uniflow Academic Suite for Air University students."
+    ])
+    text = "\n".join(text_lines)
+
+    return html.strip(), text.strip()
+
+
 # ---------------------------------------------------------------------------
 # Core Alert Service with Comprehensive Student Edge Cases
 # ---------------------------------------------------------------------------
@@ -1563,6 +1767,104 @@ class AlertService:
             "classes_count": len(classes_data),
             "urgent_warnings": len(urgent_warnings),
             "upcoming_tasks": len(upcoming_tasks),
+            "recipient": recipient,
+            "status": notification.status.value,
+        }
+
+    def generate_daily_class_list_email(
+        self,
+        user_id: str = "dev_student_user",
+        target_date: Optional[date] = None,
+        send_immediately: bool = True,
+    ) -> Optional[Dict]:
+        """
+        Send a simple daily morning email containing just the list of all classes for the day.
+        Unlike the full digest, this only includes the class schedule without attendance metrics or tasks.
+        
+        Enforces idempotency: key 'daily-class-list:{user_id}:{today.isoformat()}'
+        """
+        tz = ZoneInfo(settings.timezone)
+        if not target_date:
+            target_date = datetime.now(tz).date()
+
+        idempotency_key = f"daily-class-list:{user_id}:{target_date.isoformat()}"
+        existing = (
+            self.db.query(Notification)
+            .filter(Notification.idempotency_key == idempotency_key)
+            .first()
+        )
+        if existing:
+            logger.info(f"Daily class list email already dispatched today for {user_id} ({target_date})")
+            return None
+
+        recipient = get_user_recipient_email(self.db, user_id)
+        if not recipient:
+            logger.warning(f"No notification email configured for user {user_id}")
+            return None
+
+        weekday_int = target_date.weekday()
+
+        # Fetch today's classes
+        scheduled_today = (
+            self.db.query(TimetableEntry)
+            .filter(TimetableEntry.weekday == weekday_int)
+            .order_by(TimetableEntry.start_time)
+            .all()
+        )
+
+        classes_data = []
+        for entry in scheduled_today:
+            classes_data.append({
+                "course": entry.subject,
+                "time": f"{entry.start_time} - {entry.end_time}",
+                "room": entry.room or "Main Campus",
+                "teacher": entry.teacher or "Department Faculty",
+            })
+
+        date_formatted = target_date.strftime("%A, %d %B %Y")
+        html_content, text_content = build_daily_class_list_email(
+            student_name="Student",
+            date_str=date_formatted,
+            classes_today=classes_data,
+        )
+
+        subject = f"[Uniflow] Today's Class Schedule ({date_formatted})"
+        notification = Notification(
+            notification_type="daily_class_list",
+            recipient=recipient,
+            subject=subject,
+            payload=text_content,
+            external_id=f"class-list-{target_date.isoformat()}",
+            idempotency_key=idempotency_key,
+            status=NotificationStatus.PENDING,
+        )
+        self.db.add(notification)
+        self.db.commit()
+        self.db.refresh(notification)
+
+        if send_immediately:
+            success = send_email(
+                to_email=recipient,
+                subject=subject,
+                html_content=html_content,
+                text_content=text_content,
+                from_name="Uniflow",
+                categories=["class-schedule", "daily-class-list"],
+                custom_args={"notification_id": str(notification.id), "user_id": user_id},
+            )
+            if success:
+                notification.status = NotificationStatus.SENT
+                notification.sent_at = func.now()
+            else:
+                notification.status = NotificationStatus.FAILED
+                notification.error = "Delivery failed via SendGrid and SMTP fallback"
+            self.db.commit()
+
+        return {
+            "notification_id": notification.id,
+            "type": "daily_class_list",
+            "date": target_date.isoformat(),
+            "classes_count": len(classes_data),
             "recipient": recipient,
             "status": notification.status.value,
         }
