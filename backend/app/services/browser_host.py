@@ -24,7 +24,29 @@ from pydantic import BaseModel
 import uvicorn
 
 
-PROFILE_ROOT = Path(os.environ.get("BROWSER_PROFILE_ROOT", "/data/profiles"))
+def _get_profile_root() -> Path:
+    env_root = os.environ.get("BROWSER_PROFILE_ROOT")
+    if env_root:
+        root = Path(env_root)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            return root
+        except (PermissionError, OSError):
+            pass
+    default_root = Path("/data/profiles")
+    try:
+        default_root.mkdir(parents=True, exist_ok=True)
+        return default_root
+    except (PermissionError, OSError):
+        fallback = Path.cwd() / "tmp" / "claude_browser_profiles"
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return fallback
+
+
+PROFILE_ROOT = _get_profile_root()
 MANAGEMENT_TOKEN = os.environ.get("BROWSER_SERVICE_TOKEN", "")
 VIEWER_SECRET = os.environ.get("BROWSER_VIEWER_SECRET", "")
 NOVNC_ROOT = Path(os.environ.get("NOVNC_ROOT", "/usr/share/novnc"))
@@ -50,11 +72,17 @@ class BrowserSessionHost:
     def __init__(self) -> None:
         self.sessions: dict[str, BrowserSession] = {}
         self.lock = threading.RLock()
-        PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
+        try:
+            PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as playwright:
-            self.chrome_executable = playwright.chromium.executable_path
+            try:
+                self.chrome_executable = playwright.chromium.executable_path
+            except Exception:
+                self.chrome_executable = "google-chrome"
 
     @staticmethod
     def _key(profile_key: str) -> str:
@@ -157,7 +185,10 @@ class BrowserSessionHost:
 
             cdp_port, vnc_port = self._reserve_ports(key)
             profile_dir = PROFILE_ROOT / key
-            profile_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                profile_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
             self._clean_stale_locks(profile_dir)
 
             processes: list[subprocess.Popen] = []
