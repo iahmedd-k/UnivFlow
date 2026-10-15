@@ -1,6 +1,6 @@
 """Add FK constraints, soft deletes, and materialized views
 
-Revision ID: add_fk_constraints_and_soft_deletes
+Revision ID: add_fk_and_soft_deletes
 Revises: add_missing_user_id
 Create Date: 2026-10-14
 """
@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "add_fk_constraints_and_soft_deletes"
+revision: str = "add_fk_and_soft_deletes"
 down_revision: Union[str, Sequence[str], None] = "add_missing_user_id"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -200,7 +200,7 @@ def upgrade() -> None:
                 LEFT JOIN exams e ON e.user_id = u.user_id AND e.deleted_at IS NULL AND e.date > NOW()
                 LEFT JOIN quizzes q ON q.user_id = u.user_id AND q.deleted_at IS NULL AND q.date > NOW()
             GROUP BY u.user_id
-            WITH NO DATA;
+            WITH DATA;
         """)
         
         # Create index for materialized view
@@ -221,7 +221,7 @@ def upgrade() -> None:
             FROM attendance_records ar
             JOIN courses c ON c.id = ar.course_id
             WHERE ar.deleted_at IS NULL AND c.deleted_at IS NULL
-            WITH NO DATA;
+            WITH DATA;
         """)
         
         op.execute("CREATE INDEX IF NOT EXISTS mv_attendance_summary_user_id_idx ON mv_attendance_summary (user_id);")
@@ -245,7 +245,7 @@ def upgrade() -> None:
             FROM assignments a
             JOIN courses c ON c.id = a.course_id
             WHERE a.deleted_at IS NULL AND c.deleted_at IS NULL
-            WITH NO DATA;
+            WITH DATA;
         """)
         
         op.execute("CREATE INDEX IF NOT EXISTS mv_assignment_summary_user_id_idx ON mv_assignment_summary (user_id);")
