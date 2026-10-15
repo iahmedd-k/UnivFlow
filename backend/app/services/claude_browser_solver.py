@@ -899,14 +899,49 @@ def solve_assignment_via_claude_browser(
             page.goto("https://claude.ai/new", wait_until="domcontentloaded", timeout=30000)
 
         # Allow SPA hydration
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(2000)
 
         # 3. Ensure Claude is signed in and a chat input is available.
-        #     The helper auto-dismisses onboarding, clicks "Continue with Google",
-        #     and selects the student account when possible.
         prompt_selector = 'div[contenteditable="true"]'
         student_email = meta.get("student_email") or ""
-        login_ok = _handle_claude_login_and_oauth(page, student_email=student_email, max_retries=4)
+
+        # Fast-path: if a sessionKey cookie was injected, check if Claude loaded
+        # the chat directly (valid cookie → skip the full OAuth dance).
+        login_ok = False
+        if claude_session_key:
+            try:
+                inp = page.locator('div[contenteditable="true"], div[contenteditable]').first
+                if inp.count() > 0 and inp.is_visible():
+                    logger.info("Claude sessionKey cookie is valid — chat input visible immediately for user %s", user_id)
+                    login_ok = True
+                else:
+                    # Give Claude a bit more time to finish React hydration
+                    page.wait_for_timeout(3000)
+                    inp2 = page.locator('div[contenteditable="true"], div[contenteditable]').first
+                    if inp2.count() > 0 and inp2.is_visible():
+                        logger.info("Claude sessionKey cookie valid (after extra wait) for user %s", user_id)
+                        login_ok = True
+                    else:
+                        cur = (page.url or "").lower()
+                        if "login" in cur or "signin" in cur or "auth" in cur:
+                            logger.warning(
+                                "Claude sessionKey cookie may be expired for user %s — landing on login page",
+                                user_id,
+                            )
+                            return {
+                                "status": "needs_login",
+                                "error": (
+                                    "Your Claude session key appears to be expired. "
+                                    "Please go to Settings → paste a fresh sessionKey from claude.ai and retry."
+                                ),
+                            }
+            except Exception as cookie_check_err:
+                logger.debug("Cookie fast-path check error: %s", cookie_check_err)
+
+        # Slow-path: full OAuth / login UI automation (hosted browser or headless without cookie)
+        if not login_ok:
+            login_ok = _handle_claude_login_and_oauth(page, student_email=student_email, max_retries=4)
+
         if not login_ok:
             return {
                 "status": "needs_login",
