@@ -63,12 +63,31 @@ class BrowserSessionHost:
         return profile_key
 
     @staticmethod
+    def _clean_stale_locks(profile_dir: Path) -> None:
+        """Remove leftover lock files that prevent Chromium from launching on container restarts."""
+        for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+            lock_path = profile_dir / lock_name
+            try:
+                if lock_path.is_symlink() or lock_path.exists():
+                    lock_path.unlink()
+            except Exception:
+                pass
+
+    @staticmethod
     def _cdp_is_ready(port: int) -> bool:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=0.5) as response:
-                return bool(json.loads(response.read()).get("webSocketDebuggerUrl"))
-        except (OSError, ValueError, json.JSONDecodeError):
-            return False
+        for host in ("127.0.0.1", "localhost"):
+            try:
+                req = urllib.request.Request(
+                    f"http://{host}:{port}/json/version",
+                    headers={"User-Agent": "Uniflow-HealthCheck"},
+                )
+                with urllib.request.urlopen(req, timeout=1.0) as response:
+                    data = json.loads(response.read().decode("utf-8", errors="replace"))
+                    if data.get("webSocketDebuggerUrl"):
+                        return True
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+        return False
 
     @staticmethod
     def _terminate(process: subprocess.Popen) -> None:
@@ -86,15 +105,17 @@ class BrowserSessionHost:
             self._terminate(process)
 
     @staticmethod
-    def _start_process(command: list[str], display: int, **kwargs) -> subprocess.Popen:
+    def _start_process(command: list[str], display: int, log_file=None, **kwargs) -> subprocess.Popen:
         environment = os.environ.copy()
         environment["DISPLAY"] = f":{display}"
+        stdout = log_file if log_file is not None else subprocess.DEVNULL
+        stderr = log_file if log_file is not None else subprocess.DEVNULL
         return subprocess.Popen(
             command,
             env=environment,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
             **kwargs,
         )
 
@@ -137,47 +158,101 @@ class BrowserSessionHost:
             cdp_port, vnc_port = self._reserve_ports(key)
             profile_dir = PROFILE_ROOT / key
             profile_dir.mkdir(parents=True, exist_ok=True)
+            self._clean_stale_locks(profile_dir)
+
             processes: list[subprocess.Popen] = []
+            chrome_log_handle = None
+            chrome_log_path = Path(f"/tmp/chrome_session_{display}.log")
+
             try:
+                # 1. Start Xvfb display server
                 processes.append(self._start_process(
                     ["Xvfb", f":{display}", "-screen", "0", "1440x1000x24", "-nolisten", "tcp"],
                     display,
                 ))
-                time.sleep(0.2)
+
+                # Wait up to 3 seconds for Xvfb socket to appear
+                x11_socket = Path(f"/tmp/.X11-unix/X{display}")
+                wait_x11_deadline = time.monotonic() + 3.0
+                while time.monotonic() < wait_x11_deadline:
+                    if x11_socket.exists():
+                        break
+                    time.sleep(0.05)
+
+                # 2. Window manager & VNC server
                 processes.append(self._start_process(["fluxbox"], display))
                 processes.append(self._start_process(
                     ["x11vnc", "-display", f":{display}", "-rfbport", str(vnc_port),
                      "-localhost", "-forever", "-shared", "-nopw", "-quiet"],
                     display,
                 ))
+
+                # 3. Start Chromium with robust container flags and logging
+                try:
+                    chrome_log_handle = open(chrome_log_path, "w", encoding="utf-8", errors="replace")
+                except Exception:
+                    chrome_log_handle = None
+
+                chrome_cmd = [
+                    self.chrome_executable,
+                    f"--user-data-dir={profile_dir}",
+                    f"--remote-debugging-port={cdp_port}",
+                    "--remote-debugging-address=0.0.0.0",
+                    "--remote-allow-origins=*",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-background-networking",
+                    "--disable-breakpad",
+                    "--disable-component-update",
+                    "--password-store=basic",
+                    "--use-mock-keychain",
+                    "--start-maximized",
+                    start_url,
+                ]
+
                 processes.append(self._start_process(
-                    [
-                        self.chrome_executable,
-                        f"--user-data-dir={profile_dir}",
-                        f"--remote-debugging-port={cdp_port}",
-                        "--remote-debugging-address=0.0.0.0",
-                        "--remote-allow-origins=*",
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--start-maximized",
-                        start_url,
-                    ],
+                    chrome_cmd,
                     display,
+                    log_file=chrome_log_handle,
                 ))
 
                 deadline = time.monotonic() + 25
                 while time.monotonic() < deadline:
                     if any(process.poll() is not None for process in processes):
-                        raise RuntimeError("A browser session process exited during startup.")
+                        exit_details = []
+                        if chrome_log_path.exists():
+                            try:
+                                exit_details = chrome_log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-10:]
+                            except Exception:
+                                pass
+                        err_tail = ("\nDetails: " + " | ".join(exit_details)) if exit_details else ""
+                        raise RuntimeError(f"A browser session process exited during startup.{err_tail}")
                     if self._cdp_is_ready(cdp_port):
                         session = BrowserSession(display, cdp_port, vnc_port, processes)
                         self.sessions[key] = session
                         return {"cdp_port": cdp_port, "active": True}
                     time.sleep(0.25)
-                raise TimeoutError("Chrome's remote debugging endpoint did not become ready.")
+
+                timeout_details = []
+                if chrome_log_path.exists():
+                    try:
+                        timeout_details = chrome_log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-10:]
+                    except Exception:
+                        pass
+                err_tail = ("\nLog output: " + " | ".join(timeout_details)) if timeout_details else ""
+                raise TimeoutError(f"Chrome's remote debugging endpoint did not become ready.{err_tail}")
             except Exception as error:
+                if chrome_log_handle and not chrome_log_handle.closed:
+                    try:
+                        chrome_log_handle.close()
+                    except Exception:
+                        pass
                 for process in reversed(processes):
                     self._terminate(process)
+                self._clean_stale_locks(profile_dir)
                 if isinstance(error, HTTPException):
                     raise
                 raise HTTPException(status_code=503, detail=f"Could not start the isolated Chrome profile: {error}") from error
@@ -200,13 +275,22 @@ class BrowserSessionHost:
             if session:
                 self._stop(session)
             profile_dir = PROFILE_ROOT / key
+            self._clean_stale_locks(profile_dir)
             if delete_profile and profile_dir.exists():
                 shutil.rmtree(profile_dir)
 
 
 host = BrowserSessionHost()
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-app.mount("/novnc", StaticFiles(directory=str(NOVNC_ROOT)), name="novnc")
+if not NOVNC_ROOT.exists():
+    try:
+        NOVNC_ROOT.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+if NOVNC_ROOT.is_dir():
+    app.mount("/novnc", StaticFiles(directory=str(NOVNC_ROOT)), name="novnc")
+else:
+    app.mount("/novnc", StaticFiles(directory=str(NOVNC_ROOT), check_dir=False), name="novnc")
 
 
 def require_management_token(authorization: Optional[str] = Header(None)) -> None:
