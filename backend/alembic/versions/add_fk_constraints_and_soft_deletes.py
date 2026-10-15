@@ -168,97 +168,99 @@ def upgrade() -> None:
     if "notification_preferences" in inspector.get_table_names() and "notification_templates" in inspector.get_table_names():
         pass  # No direct FK needed
     
-    # Create materialized views for dashboard performance
-    op.execute("""
-        CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_overview AS
-        SELECT 
-            u.user_id,
-            COUNT(DISTINCT c.id) as courses_count,
-            COUNT(DISTINCT a.id) as total_assignments,
-            COUNT(DISTINCT CASE 
-                WHEN a.status IN ('PENDING', 'DRAFT', 'READY_FOR_REVIEW') 
-                AND a.due_at > NOW() THEN a.id 
-            END) as pending_assignments,
-            COUNT(DISTINCT CASE 
-                WHEN a.status IN ('PENDING', 'DRAFT', 'READY_FOR_REVIEW') 
-                AND a.due_at < NOW() THEN a.id 
-            END) as overdue_assignments,
-            COUNT(DISTINCT CASE 
-                WHEN a.status IN ('SUBMITTED', 'APPROVED') THEN a.id 
-            END) as completed_assignments,
-            AVG(ar.percentage) as average_attendance,
-            COUNT(DISTINCT cs.id) as upcoming_classes,
-            COUNT(DISTINCT e.id) as upcoming_exams,
-            COUNT(DISTINCT q.id) as upcoming_quizzes
-        FROM 
-            (SELECT DISTINCT user_id FROM courses) u
-            LEFT JOIN courses c ON c.user_id = u.user_id AND c.deleted_at IS NULL
-            LEFT JOIN assignments a ON a.user_id = u.user_id AND a.deleted_at IS NULL
-            LEFT JOIN attendance_records ar ON ar.user_id = u.user_id AND ar.deleted_at IS NULL
-            LEFT JOIN class_schedules cs ON cs.user_id = u.user_id AND cs.deleted_at IS NULL AND cs.date > NOW()
-            LEFT JOIN exams e ON e.user_id = u.user_id AND e.deleted_at IS NULL AND e.date > NOW()
-            LEFT JOIN quizzes q ON q.user_id = u.user_id AND q.deleted_at IS NULL AND q.date > NOW()
-        GROUP BY u.user_id
-        WITH NO DATA;
-    """)
-    
-    # Create index for materialized view
-    op.execute("CREATE UNIQUE INDEX IF NOT EXISTS mv_dashboard_overview_user_id_idx ON mv_dashboard_overview (user_id);")
-    
-    # Create materialized view for attendance summary
-    op.execute("""
-        CREATE MATERIALIZED VIEW IF NOT EXISTS mv_attendance_summary AS
-        SELECT 
-            ar.user_id,
-            ar.course_id,
-            c.name as course_name,
-            ar.subject,
-            ar.attended,
-            ar.total,
-            ar.percentage,
-            ar.last_updated
-        FROM attendance_records ar
-        JOIN courses c ON c.id = ar.course_id
-        WHERE ar.deleted_at IS NULL AND c.deleted_at IS NULL
-        WITH NO DATA;
-    """)
-    
-    op.execute("CREATE INDEX IF NOT EXISTS mv_attendance_summary_user_id_idx ON mv_attendance_summary (user_id);")
-    
-    # Create materialized view for assignment summary
-    op.execute("""
-        CREATE MATERIALIZED VIEW IF NOT EXISTS mv_assignment_summary AS
-        SELECT 
-            a.user_id,
-            a.id as assignment_id,
-            a.title,
-            a.course_id,
-            c.name as course_name,
-            a.due_at,
-            a.status,
-            a.submission_state,
-            CASE 
-                WHEN a.due_at < NOW() AND a.status NOT IN ('SUBMITTED', 'APPROVED') THEN true 
-                ELSE false 
-            END as is_overdue
-        FROM assignments a
-        JOIN courses c ON c.id = a.course_id
-        WHERE a.deleted_at IS NULL AND c.deleted_at IS NULL
-        WITH NO DATA;
-    """)
-    
-    op.execute("CREATE INDEX IF NOT EXISTS mv_assignment_summary_user_id_idx ON mv_assignment_summary (user_id);")
-    op.execute("CREATE INDEX IF NOT EXISTS mv_assignment_summary_due_at_idx ON mv_assignment_summary (due_at);")
+    # Create materialized views for dashboard performance (PostgreSQL only)
+    if bind.dialect.name == "postgresql":
+        op.execute("""
+            CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_overview AS
+            SELECT 
+                u.user_id,
+                COUNT(DISTINCT c.id) as courses_count,
+                COUNT(DISTINCT a.id) as total_assignments,
+                COUNT(DISTINCT CASE 
+                    WHEN a.status::text IN ('PENDING', 'DRAFT', 'READY_FOR_REVIEW', 'pending', 'draft', 'ready_for_review') 
+                    AND a.due_at > NOW() THEN a.id 
+                END) as pending_assignments,
+                COUNT(DISTINCT CASE 
+                    WHEN a.status::text IN ('PENDING', 'DRAFT', 'READY_FOR_REVIEW', 'pending', 'draft', 'ready_for_review') 
+                    AND a.due_at < NOW() THEN a.id 
+                END) as overdue_assignments,
+                COUNT(DISTINCT CASE 
+                    WHEN a.status::text IN ('SUBMITTED', 'APPROVED', 'submitted', 'approved') THEN a.id 
+                END) as completed_assignments,
+                AVG(ar.percentage) as average_attendance,
+                COUNT(DISTINCT cs.id) as upcoming_classes,
+                COUNT(DISTINCT e.id) as upcoming_exams,
+                COUNT(DISTINCT q.id) as upcoming_quizzes
+            FROM 
+                (SELECT DISTINCT user_id FROM courses) u
+                LEFT JOIN courses c ON c.user_id = u.user_id AND c.deleted_at IS NULL
+                LEFT JOIN assignments a ON a.user_id = u.user_id AND a.deleted_at IS NULL
+                LEFT JOIN attendance_records ar ON ar.user_id = u.user_id AND ar.deleted_at IS NULL
+                LEFT JOIN class_schedules cs ON cs.user_id = u.user_id AND cs.deleted_at IS NULL AND cs.date > NOW()
+                LEFT JOIN exams e ON e.user_id = u.user_id AND e.deleted_at IS NULL AND e.date > NOW()
+                LEFT JOIN quizzes q ON q.user_id = u.user_id AND q.deleted_at IS NULL AND q.date > NOW()
+            GROUP BY u.user_id
+            WITH NO DATA;
+        """)
+        
+        # Create index for materialized view
+        op.execute("CREATE UNIQUE INDEX IF NOT EXISTS mv_dashboard_overview_user_id_idx ON mv_dashboard_overview (user_id);")
+        
+        # Create materialized view for attendance summary
+        op.execute("""
+            CREATE MATERIALIZED VIEW IF NOT EXISTS mv_attendance_summary AS
+            SELECT 
+                ar.user_id,
+                ar.course_id,
+                c.name as course_name,
+                ar.subject,
+                ar.attended,
+                ar.total,
+                ar.percentage,
+                ar.last_updated
+            FROM attendance_records ar
+            JOIN courses c ON c.id = ar.course_id
+            WHERE ar.deleted_at IS NULL AND c.deleted_at IS NULL
+            WITH NO DATA;
+        """)
+        
+        op.execute("CREATE INDEX IF NOT EXISTS mv_attendance_summary_user_id_idx ON mv_attendance_summary (user_id);")
+        
+        # Create materialized view for assignment summary
+        op.execute("""
+            CREATE MATERIALIZED VIEW IF NOT EXISTS mv_assignment_summary AS
+            SELECT 
+                a.user_id,
+                a.id as assignment_id,
+                a.title,
+                a.course_id,
+                c.name as course_name,
+                a.due_at,
+                a.status,
+                a.submission_state,
+                CASE 
+                    WHEN a.due_at < NOW() AND a.status::text NOT IN ('SUBMITTED', 'APPROVED', 'submitted', 'approved') THEN true 
+                    ELSE false 
+                END as is_overdue
+            FROM assignments a
+            JOIN courses c ON c.id = a.course_id
+            WHERE a.deleted_at IS NULL AND c.deleted_at IS NULL
+            WITH NO DATA;
+        """)
+        
+        op.execute("CREATE INDEX IF NOT EXISTS mv_assignment_summary_user_id_idx ON mv_assignment_summary (user_id);")
+        op.execute("CREATE INDEX IF NOT EXISTS mv_assignment_summary_due_at_idx ON mv_assignment_summary (due_at);")
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
     
-    # Drop materialized views
-    op.execute("DROP MATERIALIZED VIEW IF EXISTS mv_dashboard_overview;")
-    op.execute("DROP MATERIALIZED VIEW IF EXISTS mv_attendance_summary;")
-    op.execute("DROP MATERIALIZED VIEW IF EXISTS mv_assignment_summary;")
+    # Drop materialized views (PostgreSQL only)
+    if bind.dialect.name == "postgresql":
+        op.execute("DROP MATERIALIZED VIEW IF EXISTS mv_dashboard_overview;")
+        op.execute("DROP MATERIALIZED VIEW IF EXISTS mv_attendance_summary;")
+        op.execute("DROP MATERIALIZED VIEW IF EXISTS mv_assignment_summary;")
     
     # Drop FK constraints
     fk_constraints = [
