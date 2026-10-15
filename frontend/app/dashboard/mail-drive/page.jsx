@@ -35,7 +35,7 @@ export default function MailDrivePage() {
 
   const connect = async () => {
     setBusy(true); setError('');
-    try { const token = await getToken(); const result = await api.getGoogleAuthUrl(token); if (result.auth_url) window.location.assign(result.auth_url); else throw new Error('Google did not return a sign-in URL.'); }
+    try { const token = await getToken(); const result = await api.getGoogleAuthUrl(token, '/dashboard/mail-drive'); if (result.auth_url) window.location.assign(result.auth_url); else throw new Error('Google did not return a sign-in URL.'); }
     catch (err) { setError(err.message || 'Could not connect Google.'); setBusy(false); }
   };
   const disconnect = async () => {

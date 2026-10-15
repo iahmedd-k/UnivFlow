@@ -79,12 +79,17 @@ def get_notifications(
     repo = NotificationRepository(db)
     query = db.query(Notification)
     if status:
-        query = query.filter(Notification.status == status)
+        try:
+            status_enum = NotificationStatus[status.upper()]
+            query = query.filter(Notification.status == status_enum)
+        except (KeyError, ValueError):
+            query = query.filter(Notification.status == status)
     notifications = query.order_by(Notification.created_at.desc()).limit(limit).all()
     return [
         {
             "id": n.id,
             "notification_type": n.notification_type,
+            "channel": getattr(n, "channel", "email"),
             "recipient": n.recipient,
             "subject": n.subject,
             "payload": n.payload,
@@ -107,6 +112,7 @@ def get_pending_notifications(db: Session = Depends(get_db)):
         {
             "id": n.id,
             "notification_type": n.notification_type,
+            "channel": getattr(n, "channel", "email"),
             "recipient": n.recipient,
             "subject": n.subject,
             "payload": n.payload,
@@ -127,6 +133,7 @@ def get_notification(notification_id: int, db: Session = Depends(get_db)):
     return {
         "id": notification.id,
         "notification_type": notification.notification_type,
+        "channel": getattr(notification, "channel", "email"),
         "recipient": notification.recipient,
         "subject": notification.subject,
         "payload": notification.payload,

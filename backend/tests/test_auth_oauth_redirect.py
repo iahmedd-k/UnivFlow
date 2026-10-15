@@ -112,3 +112,47 @@ def test_oauth_redirect_rejects_external_destination(monkeypatch):
     )
 
     assert redirect_url == "https://uniflow.example?google_error=access_denied"
+
+
+def test_oauth_redirect_defaults_to_vercel_when_frontend_url_is_azure_vm(monkeypatch):
+    monkeypatch.setattr(
+        router.settings,
+        "frontend_url",
+        "https://univlfow.koreacentral.cloudapp.azure.com",
+    )
+
+    redirect_url = router._oauth_frontend_redirect(
+        "/dashboard/classroom",
+        google_connected="true",
+    )
+    parsed = urlsplit(redirect_url)
+
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "univ-flow-bt12.vercel.app"
+    assert parsed.path == "/dashboard/classroom"
+    assert parse_qs(parsed.query) == {"google_connected": ["true"]}
+
+
+def test_oauth_redirect_preserves_state_frontend_origin(monkeypatch):
+    monkeypatch.setattr(
+        router.settings,
+        "frontend_url",
+        "https://univlfow.koreacentral.cloudapp.azure.com",
+    )
+
+    redirect_url = router._oauth_frontend_redirect(
+        "/dashboard/classroom",
+        frontend_origin="https://univ-flow-bt12.vercel.app",
+        google_connected="true",
+    )
+    parsed = urlsplit(redirect_url)
+
+    assert parsed.netloc == "univ-flow-bt12.vercel.app"
+    assert parsed.path == "/dashboard/classroom"
+
+
+def test_safe_oauth_redirect_to_accepts_dashboard_root():
+    assert router._safe_oauth_redirect_to("/dashboard") == "/dashboard"
+    assert router._safe_oauth_redirect_to("/dashboard/classroom") == "/dashboard/classroom"
+    assert router._safe_oauth_redirect_to(None) is None
+

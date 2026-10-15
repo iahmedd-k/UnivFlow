@@ -117,6 +117,7 @@ class Settings(BaseSettings):
     clerk_signing_secret: str = ""
 
     frontend_url: str = "http://localhost:5173"
+    cors_origins: str = ""
 
     # Piston Configuration
     piston_base_url: str = "http://localhost:2000"

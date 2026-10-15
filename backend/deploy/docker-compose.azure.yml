@@ -7,7 +7,7 @@ services:
     environment:
       ENVIRONMENT: production
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env.production}
-      FRONTEND_URL: https://${APP_DOMAIN:?Set APP_DOMAIN in .env.production}
+      FRONTEND_URL: ${FRONTEND_URL:-https://${APP_DOMAIN:-univ-flow-bt12.vercel.app}}
       BROWSER_SERVICE_URL: http://claude-browser-host:7900
       BROWSER_SERVICE_TOKEN: ${BROWSER_SERVICE_TOKEN:?Set BROWSER_SERVICE_TOKEN in .env.production}
       BROWSER_VIEWER_SECRET: ${BROWSER_VIEWER_SECRET:?Set BROWSER_VIEWER_SECRET in .env.production}

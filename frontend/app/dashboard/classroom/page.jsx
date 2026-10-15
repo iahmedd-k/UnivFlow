@@ -60,6 +60,21 @@ export default function ClassroomPage() {
 
   useEffect(() => {
     loadData();
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('google_connected') === 'true') {
+        setMessage('Google Classroom connected successfully!');
+      } else if (params.get('google_error')) {
+        const errType = params.get('google_error');
+        setError(
+          errType === 'token_exchange_failed'
+            ? 'Google sign-in token exchange failed. Please try again.'
+            : errType === 'invalid_oauth_state'
+            ? 'Google sign-in expired or invalid. Please try connecting again.'
+            : `Google sign-in was not completed: ${errType}`
+        );
+      }
+    }
   }, [loadData]);
 
   useEffect(() => {
@@ -130,7 +145,7 @@ export default function ClassroomPage() {
     setError('');
     try {
       const token = await getToken();
-      const result = await api.getGoogleAuthUrl(token);
+      const result = await api.getGoogleAuthUrl(token, '/dashboard/classroom');
       if (result.auth_url) window.location.assign(result.auth_url);
       else throw new Error('Google did not return an authorization URL.');
     } catch (err) {

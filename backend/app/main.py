@@ -62,26 +62,43 @@ app = FastAPI(
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
 
+extra_cors = [o.strip() for o in settings.cors_origins.split(",") if o.strip()] if getattr(settings, "cors_origins", None) else []
+
 cors_origins = list(dict.fromkeys([
-    o for o in [
+    o.rstrip("/") for o in [
         settings.frontend_url,
+        "https://univ-flow-bt12.vercel.app",
+        "https://univflow.vercel.app",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:3001",
         "http://127.0.0.1:3001",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        *extra_cors,
     ] if o
 ]))
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?|https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _cors_headers(request: Request) -> dict:
+    origin = request.headers.get("origin")
+    headers = {
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Allow-Headers": "*",
+    }
+    if origin:
+        headers["Access-Control-Allow-Origin"] = origin
+    return headers
 
 
 @app.exception_handler(OperationalError)
@@ -96,7 +113,7 @@ async def database_unavailable_handler(request: Request, exc: OperationalError):
     return JSONResponse(
         status_code=503,
         content={"detail": "The database is temporarily unavailable. Please try again shortly."},
-        headers={"Retry-After": "5"},
+        headers={"Retry-After": "5", **_cors_headers(request)},
     )
 
 
@@ -106,12 +123,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=500,
         content={"detail": str(exc) or "Internal server error occurred."},
-        headers={
-            "Access-Control-Allow-Origin": request.headers.get("origin") or "*",
-            "Access-Control-Allow-Credentials": "true",
-            "Access-Control-Allow-Methods": "*",
-            "Access-Control-Allow-Headers": "*",
-        }
+        headers=_cors_headers(request),
     )
 
 

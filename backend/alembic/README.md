@@ -12,6 +12,7 @@ f9eb2b17779e (initial)
   → d9f4c2a7b1e6 (merge_recurring_timetable_and_browser_jobs)
   → add_missing_user_id_columns (add user_id to all tables)
   → add_fk_and_soft_deletes (foreign keys, soft deletes, and dashboard materialized views)
+  → add_notification_tables (notification columns, preferences, templates, sync jobs)
 ```
 
 ## Applying Migrations
@@ -53,6 +54,7 @@ alembic downgrade <revision_id>
 | `d9f4c2a7b1e6` | Merge migration | Empty merge of two branch heads |
 | `add_missing_user_id_columns` | Multi-user isolation | Adds `user_id` to 15 remaining tables with unique constraints and indexes |
 | `add_fk_and_soft_deletes` | Data integrity and dashboard views | Adds foreign keys and soft-delete columns, then creates PostgreSQL materialized views |
+| `add_notification_tables` | Notification schema & sync tables | Adds missing notification columns, preferences, templates, sync jobs, and assignment templates |
 
 ## Important Notes
 

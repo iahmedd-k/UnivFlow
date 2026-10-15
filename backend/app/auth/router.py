@@ -68,19 +68,72 @@ def _check_rate_limit(key: str, limit: int = 20, window_sec: int = 60) -> None:
         raise HTTPException(status_code=429, detail="Too many requests. Please try again in a moment.")
 
 
+def _upsert_setting(db: Session, key: str, value: str, description: str = "") -> Setting:
+    """Safely insert or update a Setting row without risking UniqueViolation or merge issues."""
+    try:
+        setting = db.query(Setting).filter(Setting.key == key).first()
+        if setting:
+            setting.value = value
+            if description:
+                setting.description = description
+        else:
+            setting = Setting(key=key, value=value, description=description)
+            db.add(setting)
+        db.commit()
+        return setting
+    except Exception:
+        db.rollback()
+        raise
+
+
 def _safe_oauth_redirect_to(redirect_to: Optional[str]) -> Optional[str]:
     """Accept only same-site dashboard paths for the post-OAuth return destination."""
     if not redirect_to or not redirect_to.startswith("/") or redirect_to.startswith("//") or "\\" in redirect_to:
         return None
     parsed = urlsplit(redirect_to)
-    if parsed.scheme or parsed.netloc or not parsed.path.startswith("/dashboard/"):
+    if parsed.scheme or parsed.netloc:
         return None
-    return urlunsplit(("", "", parsed.path, parsed.query, parsed.fragment))
+    if parsed.path == "/dashboard" or parsed.path.startswith("/dashboard/"):
+        return urlunsplit(("", "", parsed.path, parsed.query, parsed.fragment))
+    return None
 
 
-def _oauth_frontend_redirect(redirect_to: Optional[str] = None, **query_params: str) -> str:
+def _get_frontend_origin(request: Optional[Request] = None, state_origin: Optional[str] = None) -> str:
+    """Determine the valid frontend origin (Vercel) to redirect the user to."""
+    canonical_origin = "https://univ-flow-bt12.vercel.app"
+
+    # 1. State origin saved during auth initialization
+    if state_origin and "azure.com" not in state_origin and "localhost:8000" not in state_origin:
+        return state_origin.rstrip("/")
+
+    # 2. Origin or Referer header from current request
+    if request:
+        origin = request.headers.get("origin")
+        if origin and "azure.com" not in origin and "localhost:8000" not in origin:
+            return origin.rstrip("/")
+        referer = request.headers.get("referer")
+        if referer:
+            parsed = urlsplit(referer)
+            if parsed.scheme and parsed.netloc and "azure.com" not in parsed.netloc and "localhost:8000" not in parsed.netloc:
+                return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+
+    # 3. Settings frontend_url if valid and not pointing to the API VM itself
+    if settings.frontend_url:
+        parsed_fe = urlsplit(settings.frontend_url)
+        if parsed_fe.netloc and "azure.com" not in parsed_fe.netloc and "localhost:8000" not in parsed_fe.netloc:
+            return settings.frontend_url.rstrip("/")
+
+    return canonical_origin
+
+
+def _oauth_frontend_redirect(
+    redirect_to: Optional[str] = None,
+    frontend_origin: Optional[str] = None,
+    **query_params: str
+) -> str:
     """Build a frontend callback URL without allowing an external redirect."""
-    frontend = urlsplit(settings.frontend_url)
+    origin = _get_frontend_origin(state_origin=frontend_origin)
+    frontend = urlsplit(origin)
     destination = _safe_oauth_redirect_to(redirect_to)
     destination_parts = urlsplit(destination) if destination else None
     path = destination_parts.path if destination_parts else ""
@@ -124,9 +177,7 @@ def get_auth_status(
                 google_email = userinfo.get("email")
                 if google_email:
                     _cached_google_emails[user_id] = google_email
-                    setting = Setting(key=setting_key, value=google_email, description="Google OAuth Account Email")
-                    db.merge(setting)
-                    db.commit()
+                    _upsert_setting(db, key=setting_key, value=google_email, description="Google OAuth Account Email")
             except Exception as e:
                 logger.warning(f"Could not fetch Google userinfo: {e}")
                 google_email = "connected"
@@ -199,21 +250,23 @@ def google_auth(
     _check_rate_limit(f"google-auth:{client_ip}", limit=20, window_sec=60)
 
     user_id = _google_owner_id(clerk_user, required=True)
+    frontend_origin = _get_frontend_origin(request)
+    dest_path = _safe_oauth_redirect_to(redirect_to) or "/dashboard/classroom"
 
     # Generate a cryptographically secure CSRF state token
     csrf_token = secrets.token_urlsafe(32)
     state_key = f"oauth_csrf_state_{csrf_token}"
-    state_setting = Setting(
+    _upsert_setting(
+        db,
         key=state_key,
         value=json.dumps({
             "created_at": time.time(),
-            "redirect_to": _safe_oauth_redirect_to(redirect_to),
+            "redirect_to": dest_path,
             "user_id": user_id,
+            "frontend_origin": frontend_origin,
         }),
-        description="OAuth CSRF State Token"
+        description="OAuth CSRF State Token",
     )
-    db.merge(state_setting)
-    db.commit()
 
     flow = Flow.from_client_config(
         {
@@ -243,82 +296,68 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
     code = request.query_params.get("code")
     error = request.query_params.get("error")
     state = request.query_params.get("state")
-    redirect_to = None
+    redirect_to = "/dashboard/classroom"
     user_id = None
+    frontend_origin = None
 
-    if error:
-        logger.error(f"Google OAuth error received: {error}")
+    try:
         if state:
             state_key = f"oauth_csrf_state_{state}"
             try:
                 state_record = db.query(Setting).filter(Setting.key == state_key).first()
-            except (KeyError, SQLAlchemyError):
-                logger.exception("Google OAuth callback could not read its CSRF state.")
+                if state_record:
+                    try:
+                        oauth_state = json.loads(state_record.value)
+                        redirect_to = _safe_oauth_redirect_to(oauth_state.get("redirect_to")) or "/dashboard/classroom"
+                        user_id = str(oauth_state.get("user_id") or "")
+                        frontend_origin = oauth_state.get("frontend_origin")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        pass
+                    try:
+                        db.delete(state_record)
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+            except (KeyError, SQLAlchemyError) as e:
+                logger.warning(f"Could not read or clean up OAuth state record: {e}")
                 db.rollback()
                 return RedirectResponse(
-                    url=_oauth_frontend_redirect(google_error="callback_failed"),
+                    url=_oauth_frontend_redirect(
+                        redirect_to=redirect_to,
+                        frontend_origin=frontend_origin,
+                        google_error="callback_failed",
+                    ),
                     status_code=302,
                 )
-            if state_record:
-                try:
-                    oauth_state = json.loads(state_record.value)
-                    redirect_to = _safe_oauth_redirect_to(oauth_state.get("redirect_to"))
-                    user_id = oauth_state.get("user_id")
-                except (TypeError, json.JSONDecodeError):
-                    pass
-                db.delete(state_record)
-                db.commit()
-        return RedirectResponse(
-            url=_oauth_frontend_redirect(
-                redirect_to,
-                google_error=error if user_id else "invalid_oauth_state",
-            ),
-            status_code=302
-        )
+            except Exception as e:
+                logger.warning(f"Unexpected error reading OAuth state record: {e}")
+                db.rollback()
 
-    if not code:
-        raise HTTPException(status_code=400, detail="Missing authorization code")
+        if error:
+            logger.error(f"Google OAuth error received: {error}")
+            return RedirectResponse(
+                url=_oauth_frontend_redirect(
+                    redirect_to=redirect_to,
+                    frontend_origin=frontend_origin,
+                    google_error=error if user_id else "invalid_oauth_state",
+                ),
+                status_code=302,
+            )
 
-    if not state:
-        return RedirectResponse(
-            url=_oauth_frontend_redirect(google_error="invalid_oauth_state"),
-            status_code=302,
-        )
-    state_key = f"oauth_csrf_state_{state}"
-    try:
-        state_record = db.query(Setting).filter(Setting.key == state_key).first()
-    except (KeyError, SQLAlchemyError):
-        logger.exception("Google OAuth callback could not read its CSRF state.")
-        db.rollback()
-        return RedirectResponse(
-            url=_oauth_frontend_redirect(google_error="callback_failed"),
-            status_code=302,
-        )
-    if not state_record:
-        logger.warning("Google OAuth state was missing or expired.")
-        return RedirectResponse(
-            url=_oauth_frontend_redirect(google_error="invalid_oauth_state"),
-            status_code=302,
-        )
-    try:
-        oauth_state = json.loads(state_record.value)
-        redirect_to = _safe_oauth_redirect_to(oauth_state.get("redirect_to"))
-        user_id = str(oauth_state.get("user_id") or "")
-        created_at = float(oauth_state.get("created_at") or 0)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        user_id = ""
-        created_at = 0
-    db.delete(state_record)
-    db.commit()
-    if not user_id or time.time() - created_at > 900:
-        logger.warning("Google OAuth state was invalid or expired.")
-        return RedirectResponse(
-            url=_oauth_frontend_redirect(redirect_to, google_error="invalid_oauth_state"),
-            status_code=302,
-        )
+        if not code or not state or not user_id:
+            logger.warning(
+                f"Google OAuth callback missing required data (code={bool(code)}, state={bool(state)}, user_id={bool(user_id)})"
+            )
+            return RedirectResponse(
+                url=_oauth_frontend_redirect(
+                    redirect_to=redirect_to,
+                    frontend_origin=frontend_origin,
+                    google_error="invalid_oauth_state",
+                ),
+                status_code=302,
+            )
 
-    try:
-        # Direct, resilient token exchange with Google
+        # Exchange code for tokens directly with Google
         token_url = "https://oauth2.googleapis.com/token"
         token_payload = {
             "code": code,
@@ -334,8 +373,12 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
         if token_resp.status_code != 200:
             logger.error(f"Token exchange failed from Google: {token_resp.status_code} - {token_resp.text}")
             return RedirectResponse(
-                url=_oauth_frontend_redirect(redirect_to, google_error="token_exchange_failed"),
-                status_code=302
+                url=_oauth_frontend_redirect(
+                    redirect_to=redirect_to,
+                    frontend_origin=frontend_origin,
+                    google_error="token_exchange_failed",
+                ),
+                status_code=302,
             )
 
         token_data = token_resp.json()
@@ -345,19 +388,17 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
         scopes = token_data.get("scope", "")
         expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
 
-        # Get existing credential if any to retain refresh token if not in response
         repo = GoogleCredentialRepository(db)
         existing_cred = repo.get(user_id)
         if not refresh_token and existing_cred:
             refresh_token = existing_cred.refresh_token
 
-        # Fetch user info using access token
         user_email = ""
         try:
             with httpx.Client(timeout=10.0) as client:
                 userinfo_resp = client.get(
                     "https://www.googleapis.com/oauth2/v2/userinfo",
-                    headers={"Authorization": f"Bearer {access_token}"}
+                    headers={"Authorization": f"Bearer {access_token}"},
                 )
                 if userinfo_resp.status_code == 200:
                     userinfo = userinfo_resp.json()
@@ -365,40 +406,43 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
         except Exception as e:
             logger.warning(f"Failed to fetch userinfo in callback: {e}")
 
-        # Save credentials to database without leaking client_secret to DB table
         cred_data = {
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_uri": "https://oauth2.googleapis.com/token",
             "client_id": settings.google_client_id,
-            "client_secret": None,  # Secrets stay in env
+            "client_secret": None,
             "scopes": json.dumps(scopes.split()) if isinstance(scopes, str) else json.dumps(scopes),
             "expiry": expiry,
         }
         repo.create_or_update(user_id, cred_data)
         if user_email:
             email_key = f"google_connected_email_{user_id}"
-            db.merge(Setting(key=email_key, value=user_email, description="Google OAuth Account Email"))
-            db.commit()
+            _upsert_setting(db, key=email_key, value=user_email, description="Google OAuth Account Email")
             _cached_google_emails[user_id] = user_email
 
-        logger.info(f"Google OAuth connected successfully for {user_email or 'User'}")
+        logger.info(f"Google OAuth connected successfully for user {user_id} ({user_email})")
 
-        # Clean redirect to frontend
         return RedirectResponse(
             url=_oauth_frontend_redirect(
-                redirect_to,
+                redirect_to=redirect_to,
+                frontend_origin=frontend_origin,
                 google_connected="true",
                 email=user_email,
             ),
-            status_code=302
+            status_code=302,
         )
 
-    except Exception as e:
-        logger.error(f"Error during Google OAuth callback: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(f"Error during Google OAuth callback: {exc}", exc_info=True)
+        db.rollback()
         return RedirectResponse(
-            url=_oauth_frontend_redirect(redirect_to, google_error="token_exchange_failed"),
-            status_code=302
+            url=_oauth_frontend_redirect(
+                redirect_to=redirect_to,
+                frontend_origin=frontend_origin,
+                google_error="callback_failed",
+            ),
+            status_code=302,
         )
 
 
