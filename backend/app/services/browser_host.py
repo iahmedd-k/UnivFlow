@@ -196,11 +196,14 @@ class BrowserSessionHost:
             chrome_log_path = Path(f"/tmp/chrome_session_{display}.log")
 
             try:
-                # 1. Start Xvfb display server
-                processes.append(self._start_process(
-                    ["Xvfb", f":{display}", "-screen", "0", "1280x800x24", "-nolisten", "tcp"],
-                    display,
-                ))
+                # 1. Start Xvfb display server if available; otherwise run Chrome headless
+                xvfb_path = shutil.which("Xvfb")
+                headless_mode = xvfb_path is None
+                if not headless_mode:
+                    processes.append(self._start_process(
+                        ["Xvfb", f":{display}", "-screen", "0", "1280x800x24", "-nolisten", "tcp"],
+                        display,
+                    ))
 
                 # Wait up to 3 seconds for Xvfb socket to appear
                 x11_socket = Path(f"/tmp/.X11-unix/X{display}")
@@ -211,13 +214,14 @@ class BrowserSessionHost:
                     time.sleep(0.05)
 
                 # 2. Window manager & VNC server
-                processes.append(self._start_process(["fluxbox"], display))
-                processes.append(self._start_process(
-                    ["x11vnc", "-display", f":{display}", "-rfbport", str(vnc_port),
-                     "-localhost", "-forever", "-shared", "-nopw", "-quiet",
-                     "-wait", "20", "-defer", "20", "-noxdamage", "-ncache", "10", "-cursor", "arrow"],
-                    display,
-                ))
+                if not headless_mode:
+                    processes.append(self._start_process(["fluxbox"], display))
+                    processes.append(self._start_process(
+                        ["x11vnc", "-display", f":{display}", "-rfbport", str(vnc_port),
+                         "-localhost", "-forever", "-shared", "-nopw", "-quiet",
+                         "-wait", "20", "-defer", "20", "-noxdamage", "-ncache", "10", "-cursor", "arrow"],
+                        display,
+                    ))
 
                 # 3. Start Chromium with container-safe defaults and logging
                 try:
@@ -250,6 +254,8 @@ class BrowserSessionHost:
                     "--start-maximized",
                     start_url,
                 ]
+                if headless_mode:
+                    chrome_cmd.insert(0, "--headless")
 
                 processes.append(self._start_process(
                     chrome_cmd,
