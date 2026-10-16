@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 import re
@@ -8,6 +9,12 @@ from app.integrations.google_drive import get_drive_service
 from app.core.config import settings
 from app.services.ai_solution import _call_groq
 from app.db.models import AssignmentMaterial, Assignment, Course
+
+logger = logging.getLogger(__name__)
+
+# Per selected document we load the FULL text (lazily, only when the user
+# selects/attaches it). We never pre-chunk or pre-process all documents upfront.
+MAX_DOC_CHARS = 30000
 
 router = APIRouter(prefix="/rag", tags=["RAG"])
 
@@ -42,7 +49,7 @@ def get_classroom_materials(limit: int = 100, db=Depends(get_db)):
     return result
 
 
-def _read_materials(db, document_ids: list[str]) -> list[dict]:
+def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS) -> list[dict]:
     if not document_ids:
         return []
     
@@ -86,10 +93,10 @@ def _read_materials(db, document_ids: list[str]) -> list[dict]:
             if mat_row:
                 title = mat_row.title or title
                 url = mat_row.url or url
-                content = f"Material: {mat_row.title}\nLink: {mat_row.url}"
+                content = mat_row.content or f"Material: {mat_row.title}\nLink: {mat_row.url}"
 
         if title or content:
-            materials.append({"id": document_id, "title": title, "url": url, "content": content[:7000]})
+            materials.append({"id": document_id, "title": title, "url": url, "content": content[:max_chars]})
 
     return materials
 
@@ -131,25 +138,39 @@ async def create_study_plan(request: StudyPlanRequest, db=Depends(get_db)):
 
 @router.post("/chat")
 async def rag_chat(request: ChatRequest, db=Depends(get_db)):
-    """Retrieve a Google Drive document and answer the user's query.
-    This implementation performs a simple full‑text retrieval (no vector store) and
-    leverages the Groq LLM via the existing `_call_groq` helper.
+    """Answer a user's query from the documents they selected/attached.
+
+    Documents are only read (and chunked at query time) when the user selects
+    them - we never pre-chunk or pre-process all documents upfront. The LLM
+    receives the FULL text of every selected document so it can answer with
+    complete information, supplemented by the most relevant retrieved passages.
     """
     try:
         if not request.query.strip():
             raise HTTPException(status_code=422, detail="Enter a question to start the chat.")
-        drive_service = get_drive_service(db)
         document_ids = request.document_ids or ([request.document_id] if request.document_id else [])
+        # Only read / chunk the documents the user selected - never all documents.
         materials = _read_materials(db, document_ids)
-        # Build a prompt for the LLM
+        # Build context: full text of each selected document first, then
+        # top retrieved passages for precise grounding.
         context_parts = []
         if request.academic_context:
             context_parts.append(f"User academic context: {request.academic_context}")
         if request.syllabus:
             context_parts.append(f"Exam syllabus: {request.syllabus[:12000]}")
-        context_parts.extend(_retrieve_passages(materials, request.query))
-        system_prompt = "You are a helpful academic assistant. Answer from the supplied syllabus and course materials. Say when they do not contain enough evidence."
-        user_prompt = f"Query: {request.query}\n\nContext:\n" + "\n".join(context_parts)
+        for item in materials:
+            context_parts.append(
+                f"SOURCE DOCUMENT: {item['title']} ({item['id']})\n"
+                f"FULL CONTENT:\n{item['content']}"
+            )
+        context_parts.extend(_retrieve_passages(materials, request.query, limit=8))
+        system_prompt = (
+            "You are a helpful academic assistant. Answer from the supplied syllabus and course materials. "
+            "You have the FULL text of each selected source document available above - use it to answer "
+            "completely and accurately. Say when the materials do not contain enough evidence, and do not "
+            "invent sources or citations."
+        )
+        user_prompt = f"Query: {request.query}\n\nContext:\n" + "\n\n".join(context_parts)
         # Call Groq LLM (use chat model defined in settings)
         answer = _call_groq(
             prompt=user_prompt,

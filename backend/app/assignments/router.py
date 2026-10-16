@@ -1,3 +1,4 @@
+import io
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timezone
@@ -423,13 +424,53 @@ def ask_assignment_tutor(
         Course.user_id == user_id,
     ).first()
     materials = db.query(AssignmentMaterial).filter(AssignmentMaterial.assignment_id == assignment.id).all()
+
+    # RAG: load the FULL text of each attached document lazily (only the
+    # documents attached to this assignment, never all documents upfront).
     mat_summary = "\n".join(f"- {m.title} ({m.material_type})" for m in materials) or "None"
+    mat_context_parts = []
+    if materials:
+        try:
+            from app.integrations.google_drive import get_drive_service
+            drive_service = get_drive_service(db)
+        except Exception as e:
+            drive_service = None
+            logger.warning(f"Tutor RAG: could not load Google Drive service: {e}")
+
+        for m in materials:
+            content = None
+            source_label = m.title or f"Material {m.id}"
+            if drive_service and m.drive_file_id:
+                try:
+                    mime = m.mime_type or ""
+                    if mime == "application/vnd.google-apps.document":
+                        data = drive_service.files().export_media(fileId=m.drive_file_id, mimeType="text/plain").execute()
+                        content = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+                    elif mime == "application/pdf":
+                        data = drive_service.files().get_media(fileId=m.drive_file_id).execute()
+                        from pypdf import PdfReader
+                        pdf = PdfReader(io.BytesIO(data if isinstance(data, bytes) else bytes(data)))
+                        content = "\n".join(page.extract_text() or "" for page in pdf.pages)
+                    elif mime.startswith("text/"):
+                        data = drive_service.files().get_media(fileId=m.drive_file_id).execute()
+                        content = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+                except Exception as e:
+                    logger.warning(f"Tutor RAG: Drive fetch failed for {m.drive_file_id}: {e}")
+            if not content and m.content:
+                content = m.content
+            if content:
+                mat_context_parts.append(f"ATTACHED DOCUMENT: {source_label}\nFULL CONTENT:\n{content[:25000]}")
+
+    mat_context = "\n\n".join(mat_context_parts) or "No readable attached document content."
 
     context_prompt = f"""ASSIGNMENT CONTEXT:
 Course: {course.name if course else 'General'}
 Title: {assignment.title}
 Instructions: {assignment.description or 'No explicit instructions provided.'}
 Materials Attached: {mat_summary}
+
+ATTACHED DOCUMENT CONTENT (FULL TEXT):
+{mat_context}
 
 STUDENT MESSAGE: {payload.message}
 """

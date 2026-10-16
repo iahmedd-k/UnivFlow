@@ -46,10 +46,20 @@ BROWSER_LAUNCH_TIMEOUT = 30  # seconds
 CLAUDE_RESPONSE_TIMEOUT = 300  # seconds (5 minutes for complex responses)
 
 def _has_display() -> bool:
-    """Check if an X11, Wayland, or Windows desktop display is available."""
+    """Check if an X11, Wayland, or Windows desktop display is available and actually running."""
     if os.name == "nt":
         return True
-    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    display = os.environ.get("DISPLAY")
+    if display and display.startswith(":"):
+        try:
+            disp_num = display.lstrip(":").split(".")[0]
+            if Path(f"/tmp/.X11-unix/X{disp_num}").exists():
+                return True
+        except Exception:
+            pass
+        return False
+    return bool(os.environ.get("WAYLAND_DISPLAY"))
+
 
 
 def _get_headless_mode() -> bool:
