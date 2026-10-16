@@ -527,6 +527,76 @@ export default function SettingsPage() {
         </div>
       </section>
 
+      {/* University Portal Session Key Section */}
+      <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm">
+        <header className="border-b border-[#f0f0f3] px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">UNIVERSITY PORTAL CONNECTION</p>
+            <h2 className="text-[13px] font-semibold text-[#343746]">Air University Session & Fast Attendance Sync</h2>
+          </div>
+          {portalStatus?.has_session_cookies ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#f3fbf7] px-2.5 py-1 text-xs font-semibold text-[#3a8369] border border-[#d8eee4]">
+              <span className="h-1.5 w-1.5 rounded-full bg-[#3a8369]" /> Connected (ASP.NET Session)
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#f8f8fb] px-2.5 py-1 text-xs font-medium text-[#747887] border border-[#ebebf0]">
+              Not Connected
+            </span>
+          )}
+        </header>
+
+        <div className="flex flex-col gap-5 p-5">
+          <div className="rounded-lg border border-[#e8e7f8] bg-[#faf9fe] p-4 flex flex-col gap-3">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div>
+                <h3 className="text-xs font-semibold text-[#483ba6]">⚡ Instant Portal Sync (Session Key / ASP.NET_SessionId)</h3>
+                <p className="mt-1 text-xs leading-relaxed text-[#686c80] max-w-2xl">
+                  Connect your Air University student portal session. Our server communicates with the portal directly in milliseconds to sync course attendance, schedules, and class updates.
+                </p>
+              </div>
+              {portalStatus?.has_session_cookies && (
+                <button
+                  type="button"
+                  className="rounded-md border border-[#e0c4c4] bg-white px-3 py-1.5 text-xs font-semibold text-[#a04a4a] hover:bg-[#fff5f5] disabled:opacity-55"
+                  onClick={handleDisconnectPortalCookie}
+                  disabled={syncingPortalCookie || browserBusy}
+                >
+                  {syncingPortalCookie ? 'Disconnecting…' : 'Disconnect Portal Session'}
+                </button>
+              )}
+            </div>
+
+            <form onSubmit={handleSyncPortalCookie} className="mt-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <input
+                type="text"
+                placeholder="Paste portal session key (ASP.NET_SessionId or cookie header)"
+                className="flex-1 rounded-md border border-[#d6d4f0] bg-white px-3 py-2 text-xs font-mono text-[#292d3a] placeholder:text-[#9fa3b5] focus:border-[#6657d9] focus:outline-none"
+                value={portalCookieInput}
+                onChange={(e) => setPortalCookieInput(e.target.value)}
+                disabled={syncingPortalCookie || browserBusy}
+              />
+              <button
+                type="submit"
+                className="inline-flex min-h-9 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-4 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55"
+                disabled={syncingPortalCookie || browserBusy || !portalCookieInput.trim()}
+              >
+                {syncingPortalCookie ? 'Syncing…' : portalStatus?.has_session_cookies ? 'Update Session' : 'Connect & Sync Portal'}
+              </button>
+            </form>
+
+            <div className="rounded-md border border-[#ececf4] bg-white p-3 text-xs text-[#6e7284]">
+              <p className="font-semibold text-[#4b4e60]">How to copy your portal session key in 5 seconds:</p>
+              <ol className="mt-1.5 list-decimal pl-4 space-y-1">
+                <li>Log in to <a href="https://portals.au.edu.pk/students/" target="_blank" rel="noreferrer" className="text-[#6657d9] underline font-medium">portals.au.edu.pk/students/</a> in your browser.</li>
+                <li>Press <kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">F12</kbd> (Inspect) → click <strong>Application</strong> (or <strong>Storage</strong> in Firefox).</li>
+                <li>On the left panel, click <strong>Cookies</strong> → <strong>https://portals.au.edu.pk</strong>.</li>
+                <li>Copy the value of <strong>ASP.NET_SessionId</strong> and paste it above!</li>
+              </ol>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm">
         <header className="flex items-center justify-between gap-3.5 border-b border-[#f0f0f3] px-5 py-4">
           <div>
