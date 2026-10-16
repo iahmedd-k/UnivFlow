@@ -217,6 +217,42 @@ export default function SolutionPanel({ assignment }) {
   const crewAgents = solution?.crew_progress?.agents || [];
   const state = solution?.status || 'not_started';
 
+  const crewProgress = solution?.crew_progress;
+  const isGenerating = state === 'generating' || starting;
+  const activeStep = crewProgress?.current_step || (starting ? 1 : 2);
+  const totalSteps = crewProgress?.total_steps || 5;
+  const stepTitle = crewProgress?.step_title || (starting ? 'Connecting to Solver' : 'Synthesizing Solution');
+  const stepDetail = crewProgress?.detail || (starting ? 'Initializing browser and preparing materials...' : 'Claude is generating solution code and analysis...');
+
+  const getStepStyle = (stepNum) => {
+    let isDone = false;
+    let isActive = false;
+    if (state === 'completed') {
+      isDone = true;
+    } else if (isGenerating) {
+      if (stepNum === 1) {
+        isDone = activeStep > 1;
+        isActive = activeStep === 1;
+      } else if (stepNum === 2) {
+        isDone = activeStep > 3;
+        isActive = activeStep === 2 || activeStep === 3;
+      } else if (stepNum === 3) {
+        isDone = activeStep > 4;
+        isActive = activeStep === 4;
+      } else if (stepNum === 4) {
+        isDone = false;
+        isActive = activeStep >= 5;
+      }
+    }
+    return {
+      bg: isDone ? '#eaf7f1' : isActive ? '#eeeafe' : '#f4f4f7',
+      color: isDone ? '#438a71' : isActive ? '#6657d9' : '#9a9cab',
+      boxShadow: isActive ? '0 0 0 2px #6657d9' : 'none',
+      isDone,
+      isActive,
+    };
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* Alert Notices */}
@@ -322,13 +358,13 @@ export default function SolutionPanel({ assignment }) {
           <div>
             {loading ? (
               <span className="inline-flex items-center rounded-full border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-muted">Checking status…</span>
-            ) : state === 'generating' ? (
+            ) : isGenerating ? (
               <span
                 className="inline-flex items-center gap-2 rounded-full border border-amber-border bg-amber-bg px-3 py-1.5 text-xs font-semibold text-amber"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
               >
                 <span className="size-2 animate-spin rounded-full border-2 border-amber-border border-t-amber" />
-                <span>Generating Solution…</span>
+                <span>{stepTitle ? `${stepTitle}…` : 'Generating Solution…'}</span>
               </span>
             ) : state === 'completed' ? (
               <span
@@ -359,103 +395,133 @@ export default function SolutionPanel({ assignment }) {
             gap: 12,
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span
-              style={{
-                width: 28,
-                height: 28,
-                borderRadius: 8,
-                background: state !== 'not_started' ? '#f0edff' : '#f4f4f7',
-                color: state !== 'not_started' ? '#6657d9' : '#9a9cab',
-                display: 'grid',
-                placeItems: 'center',
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              1
-            </span>
-            <div>
-              <strong style={{ display: 'block', fontSize: 11, color: '#2c2f3b' }}>
-                Rubric Analysis
-              </strong>
-              <small style={{ fontSize: 10, color: '#858998' }}>Decompose tasks</small>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span
-              style={{
-                width: 28,
-                height: 28,
-                borderRadius: 8,
-                background:
-                  state === 'completed' || state === 'generating' ? '#f0edff' : '#f4f4f7',
-                color: state === 'completed' || state === 'generating' ? '#6657d9' : '#9a9cab',
-                display: 'grid',
-                placeItems: 'center',
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              2
-            </span>
-            <div>
-              <strong style={{ display: 'block', fontSize: 11, color: '#2c2f3b' }}>
-                Code Synthesis
-              </strong>
-              <small style={{ fontSize: 10, color: '#858998' }}>Generate solution</small>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span
-              style={{
-                width: 28,
-                height: 28,
-                borderRadius: 8,
-                background: state === 'completed' ? '#f0edff' : '#f4f4f7',
-                color: state === 'completed' ? '#6657d9' : '#9a9cab',
-                display: 'grid',
-                placeItems: 'center',
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              3
-            </span>
-            <div>
-              <strong style={{ display: 'block', fontSize: 11, color: '#2c2f3b' }}>
-                Sandbox Run
-              </strong>
-              <small style={{ fontSize: 10, color: '#858998' }}>Terminal verification</small>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span
-              style={{
-                width: 28,
-                height: 28,
-                borderRadius: 8,
-                background: state === 'completed' ? '#eaf7f1' : '#f4f4f7',
-                color: state === 'completed' ? '#438a71' : '#9a9cab',
-                display: 'grid',
-                placeItems: 'center',
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              4
-            </span>
-            <div>
-              <strong style={{ display: 'block', fontSize: 11, color: '#2c2f3b' }}>
-                Report Build
-              </strong>
-              <small style={{ fontSize: 10, color: '#858998' }}>Docs & Word report</small>
-            </div>
-          </div>
+          {[
+            { num: 1, title: 'Rubric Analysis', sub: 'Decompose tasks' },
+            { num: 2, title: 'Code Synthesis', sub: 'Generate solution' },
+            { num: 3, title: 'Sandbox Run', sub: 'Terminal verification' },
+            { num: 4, title: 'Report Build', sub: 'Docs & Word report' },
+          ].map(({ num, title, sub }) => {
+            const style = getStepStyle(num);
+            return (
+              <div
+                key={num}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '6px 8px',
+                  borderRadius: 8,
+                  boxShadow: style.boxShadow,
+                  background: style.isActive ? '#faf9ff' : 'transparent',
+                  transition: 'all 0.3s ease',
+                }}
+              >
+                <span
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: 8,
+                    background: style.bg,
+                    color: style.color,
+                    display: 'grid',
+                    placeItems: 'center',
+                    fontSize: 12,
+                    fontWeight: 700,
+                  }}
+                >
+                  {style.isDone ? <Icon name="check" size={14} /> : num}
+                </span>
+                <div>
+                  <strong style={{ display: 'block', fontSize: 11, color: style.isActive ? '#5b4cc6' : '#2c2f3b' }}>
+                    {title}
+                  </strong>
+                  <small style={{ fontSize: 10, color: style.isActive ? '#6657d9' : '#858998' }}>
+                    {style.isActive ? 'In progress…' : sub}
+                  </small>
+                </div>
+              </div>
+            );
+          })}
         </div>
+
+        {/* Real-time Solver Progress Indicator with Live Step Subtext */}
+        {isGenerating && (
+          <div
+            style={{
+              marginTop: 18,
+              padding: '16px 20px',
+              background: 'linear-gradient(135deg, #fbfaff 0%, #f4f1fe 100%)',
+              border: '1px solid #dcd7fa',
+              borderRadius: 10,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              boxShadow: '0 2px 8px rgba(102, 87, 217, 0.06)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 10,
+                    height: 10,
+                    borderRadius: '50%',
+                    background: '#7c3aed',
+                    boxShadow: '0 0 0 3px rgba(124, 58, 237, 0.2)',
+                  }}
+                />
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#312e81' }}>
+                  Step {activeStep} of {totalSteps}: {stepTitle}
+                </span>
+              </div>
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: '#6d28d9',
+                  background: '#ede9fe',
+                  padding: '2px 8px',
+                  borderRadius: 6,
+                }}
+              >
+                Live Solver Pipeline
+              </span>
+            </div>
+
+            {/* Progress Track */}
+            <div
+              style={{
+                width: '100%',
+                height: 6,
+                background: '#e0e7ff',
+                borderRadius: 99,
+                overflow: 'hidden',
+              }}
+            >
+              <div
+                style={{
+                  height: '100%',
+                  width: `${Math.min(100, Math.max(15, (activeStep / totalSteps) * 100))}%`,
+                  background: 'linear-gradient(90deg, #6366f1, #8b5cf6)',
+                  borderRadius: 99,
+                  transition: 'width 0.5s ease',
+                }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <p style={{ margin: 0, fontSize: 12, color: '#4b5563', lineHeight: 1.4, fontWeight: 500 }}>
+                {stepDetail}
+              </p>
+              <span style={{ fontSize: 11, color: '#9ca3af', whiteSpace: 'nowrap' }}>
+                Auto-updating
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* State: Not Started Launch Hub */}
         {state === 'not_started' && (

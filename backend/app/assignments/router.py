@@ -1,7 +1,11 @@
 import io
+import logging
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
+
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session

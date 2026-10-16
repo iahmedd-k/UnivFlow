@@ -542,7 +542,12 @@ def test_has_display_and_get_headless_mode():
         assert _has_display() is False
         assert _get_headless_mode() is True
 
-    # When on Linux with DISPLAY set
-    with patch("os.name", "posix"), patch.dict(os.environ, {"DISPLAY": ":0"}):
+    # When on Linux with DISPLAY set and X11 socket exists
+    with patch("os.name", "posix"), patch.dict(os.environ, {"DISPLAY": ":0"}), patch("pathlib.Path.exists", return_value=True):
         assert _has_display() is True
+
+    # When on Linux with DISPLAY set but X11 socket missing (e.g. docker container without Xvfb)
+    with patch("os.name", "posix"), patch.dict(os.environ, {"DISPLAY": ":0"}), patch("pathlib.Path.exists", return_value=False):
+        assert _has_display() is False
+        assert _get_headless_mode() is True
 

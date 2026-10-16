@@ -791,6 +791,34 @@ def remove_heavy_ml_code_fences(markdown: str) -> str:
     )
 
 
+def _update_solver_progress(
+    db: Session,
+    assignment_id: int,
+    step_num: int,
+    total_steps: int,
+    step_title: str,
+    detail: str = "",
+) -> None:
+    try:
+        from app.db.models import Setting
+        key = f"assignment_crew_progress_{assignment_id}"
+        row = db.query(Setting).filter(Setting.key == key).first()
+        if not row:
+            row = Setting(key=key, description="Assignment solver live progress")
+            db.add(row)
+        progress_data = {
+            "current_step": step_num,
+            "total_steps": total_steps,
+            "step_title": step_title,
+            "detail": detail,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        row.value = json.dumps(progress_data)
+        db.commit()
+    except Exception as err:
+        logger.debug("Failed to record solver progress: %s", err)
+
+
 def solve_assignment_via_claude_browser(
     db: Session,
     assignment_id: int,
@@ -827,6 +855,15 @@ def solve_assignment_via_claude_browser(
     meta = get_student_metadata(db, course, user_id=user_id)
     attachment_paths = prepare_assignment_materials(db, assignment, course)
     extracted_text = extract_assignment_question_text(db, assignment)
+
+    _update_solver_progress(
+        db,
+        assignment_id,
+        1,
+        5,
+        "Reading Materials & Rubric",
+        f"Analyzing assignment instructions and {len(attachment_paths)} attachment(s)..." if attachment_paths else "Analyzing assignment instructions and rubric...",
+    )
 
     # Resolve headless mode from config if not explicitly provided
     if headless is None:
@@ -877,6 +914,14 @@ def solve_assignment_via_claude_browser(
             endpoint = f"http://127.0.0.1:{USER_CDP_PORT}"
 
     logger.info("Connecting to the private Claude browser for assignment %s (user: %s).", assignment_id, user_id)
+    _update_solver_progress(
+        db,
+        assignment_id,
+        2,
+        5,
+        "Connecting to Claude",
+        "Establishing connection to isolated browser session for Claude...",
+    )
 
     # Set Playwright bypass for context-management errors on attached Chromium instances
     os.environ["PW_CHROMIUM_ATTACH_TO_OTHER"] = "1"
@@ -1211,6 +1256,14 @@ def solve_assignment_via_claude_browser(
             page.keyboard.press("Enter")
 
         logger.info(f"Prompt sent to Claude for assignment {assignment_id}. Waiting for completion...")
+        _update_solver_progress(
+            db,
+            assignment_id,
+            3,
+            5,
+            "Synthesizing Solution",
+            "Prompt submitted. Claude is actively writing code and detailed explanations...",
+        )
 
         # 7. Wait for Claude response generation to complete
         start_time = time.monotonic()
@@ -1253,6 +1306,17 @@ def solve_assignment_via_claude_browser(
                 if not still_going:
                     logger.info("Claude finished generating response.")
                     break
+            
+            elapsed_wait = int(time.monotonic() - start_time)
+            if elapsed_wait > 0 and elapsed_wait % 6 == 0:
+                _update_solver_progress(
+                    db,
+                    assignment_id,
+                    3,
+                    5,
+                    "Synthesizing Solution",
+                    f"Claude is generating response ({elapsed_wait}s elapsed, streaming output)...",
+                )
             page.wait_for_timeout(2000)
 
         # 8. Extract Claude's response
@@ -1286,6 +1350,15 @@ def solve_assignment_via_claude_browser(
                 "status": "error",
                 "error": "Claude generation was submitted, but response text could not be extracted from the page."
             }
+
+        _update_solver_progress(
+            db,
+            assignment_id,
+            4,
+            5,
+            "Executing Code & Sandboxing",
+            "Executing code deliverables in isolated sandbox and capturing terminal screenshots...",
+        )
 
         # 9. Format final deliverable with Air University cover page
         cover_md = build_academic_cover_markdown(meta, assignment.title or "Assignment Solution")
@@ -1494,6 +1567,14 @@ def solve_assignment_via_claude_browser(
             db.add(solution)
 
         doc_result = None
+        _update_solver_progress(
+            db,
+            assignment_id,
+            5,
+            5,
+            "Compiling Google Docs",
+            "Formatting academic submission report with cover page and terminal images...",
+        )
         try:
             doc_result = export_solution_to_google_doc(
                 db,
@@ -1541,6 +1622,15 @@ def solve_assignment_via_claude_browser(
         solution.validated_at = datetime.now(timezone.utc)
         assignment.status = AssignmentStatus.READY_FOR_REVIEW
         db.commit()
+
+        _update_solver_progress(
+            db,
+            assignment_id,
+            5,
+            5,
+            "Completed",
+            "Assignment solution and Google Doc ready for review.",
+        )
 
         return {
             "status": "completed",
