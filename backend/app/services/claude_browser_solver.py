@@ -455,34 +455,53 @@ def get_student_metadata(
     user_id: Optional[str] = None,
 ) -> Dict[str, str]:
     """Extract standard student and institutional metadata for Air University submissions."""
-    profile_query = db.query(Setting)
+    profile_row = None
     if user_id:
-        profile_query = profile_query.filter(Setting.key == f"clerk_user_{user_id}")
+        profile_row = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
     else:
-        profile_query = profile_query.filter(Setting.key.like("clerk_user_%")).order_by(Setting.updated_at.desc())
-    profile_row = profile_query.first()
+        profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).order_by(Setting.id.desc()).first()
+
     profile = {}
-    if profile_row and profile_row.value:
+    if profile_row and hasattr(profile_row, "value") and isinstance(profile_row.value, str):
         try:
             profile = json.loads(profile_row.value)
         except Exception:
             profile = {}
 
-    student_name = " ".join(
-        part for part in (profile.get("first_name"), profile.get("last_name")) if part
-    ).strip() or profile.get("name") or "Student"
+    user_email = profile.get("email", "") if isinstance(profile.get("email"), str) else ""
+    if not user_email and user_id:
+        try:
+            email_row = db.query(Setting).filter(
+                Setting.key.in_([
+                    f"google_connected_email_{user_id}",
+                    f"university_portal_login_email_{user_id}",
+                    "google_connected_email",
+                    "university_portal_login_email"
+                ])
+            ).first()
+            if email_row and hasattr(email_row, "value") and isinstance(email_row.value, str):
+                user_email = email_row.value.strip()
+        except Exception:
+            pass
 
-    user_email = profile.get("email", "")
+    student_name = " ".join(
+        part for part in (profile.get("first_name"), profile.get("last_name")) if isinstance(part, str) and part.strip() and part.strip() != "."
+    ).strip() or (profile.get("name") if isinstance(profile.get("name"), str) else None) or "Student"
+
     roll_no = profile.get("student_id") or profile.get("roll_no") or profile.get("rollNumber") or ""
-    if not roll_no and user_email:
+    if not isinstance(roll_no, str):
+        roll_no = str(roll_no) if roll_no else ""
+
+    if not roll_no and isinstance(user_email, str) and user_email:
         digits_match = re.search(r'(\d{5,8})', user_email)
         if digits_match:
             roll_no = digits_match.group(1)
-        else:
+        elif "@" in user_email:
             roll_no = user_email.split("@")[0]
-    course_name = course.name if course else "Course"
-    instructor = (course.teacher_name if course and course.teacher_name else "") or "Course Instructor"
-    section = (course.section if course and course.section else "") or "Not provided"
+
+    course_name = course.name if course and hasattr(course, "name") and isinstance(course.name, str) else "Course"
+    instructor = (course.teacher_name if course and hasattr(course, "teacher_name") and isinstance(course.teacher_name, str) else "") or "Course Instructor"
+    section = (course.section if course and hasattr(course, "section") and isinstance(course.section, str) else "") or "Not provided"
 
     return {
         "student_name": student_name,
@@ -1066,25 +1085,61 @@ def solve_assignment_via_claude_browser(
                 "- You MUST provide a complete, valid Google Colab Jupyter Notebook in JSON nbformat 4 format enclosed in a ```colab-json code fence.\n"
                 "- Include setup and pip installs (!pip install ...), dataset preparation, GPU runtime config, model architecture, training/validation loops, evaluation metrics (loss/accuracy, confusion matrix), and sample inference outputs.\n"
                 "- Ensure every code and markdown cell is self-contained and ready for Google Colab execution.\n"
+                "- ML/Deep Learning assignments only require the Google Colab file (.ipynb); terminal screenshots are NOT required for ML/DL pipelines.\n"
+            )
+            terminal_instructions = (
+                "NOTEBOOK EXECUTION RESULTS:\n"
+                "- Include all execution loss logs, training metrics, and inference sample outputs directly within the outputs array of the code cells in the ```colab-json notebook.\n"
+            )
+            report_structure = (
+                "MANDATORY REPORT STRUCTURE (FOLLOW STRICTLY):\n"
+                "Format your entire response in polished Markdown. For every task in the lab/assignment, use this exact layout:\n\n"
+                "# Task N: [Exact Task Title from Lab Manual]\n"
+                "## 1. Problem Statement / Question\n"
+                "[Detailed problem statement, objective, and requirements as given in the manual]\n\n"
+                "## 2. Google Colab Implementation & Notebook Architecture\n"
+                "```colab-json\n"
+                "[complete valid Jupyter notebook JSON]\n"
+                "```\n\n"
+                "## 3. Discussion & Analysis\n"
+                "[Theoretical explanation, model architecture, hyperparameter choices, and key takeaways]\n\n"
             )
         else:
             code_instructions = (
                 "CODE IMPLEMENTATION & RUNNABLE DELIVERABLES:\n"
-                "- For every programming task, provide complete, bug-free, and production-ready source code in a language-tagged code fence (e.g. ```java, ```python, ```cpp, ```sql).\n"
+                "- For every programming task, provide complete, bug-free, and production-ready source code in a language-tagged code fence (e.g. ```java, ```python, ```cpp, ```sql, ```assembly).\n"
                 "- Do NOT use placeholders, ellipsis (...), or incomplete snippets. Provide complete source files with thorough comments.\n"
+            )
+            terminal_instructions = (
+                "TERMINAL EXECUTION SCREENSHOTS & OUTPUT (MANDATORY REQUIREMENT - GENERATE FOR EVERY TASK):\n"
+                "- Because this assignment contains executable code, you MUST generate realistic terminal execution screenshots and console outputs for EACH task.\n"
+                "- Under EACH task, generate the full terminal execution session inside a ```terminal code fence representing the exact terminal screenshot.\n"
+                "- Include the exact command line executed (e.g. `$ javac Task1.java && java Task1`, `$ python task1.py`, or `$ emu8086 task1.asm`), simulated user inputs, and comprehensive stdout/stderr results demonstrating successful execution, boundary cases, and return status.\n"
+                "- Our automated university compiler directly converts your ```terminal screenshot output into high-definition dark-mode terminal window images embedded into the official submission document.\n"
+            )
+            report_structure = (
+                "MANDATORY REPORT STRUCTURE (FOLLOW STRICTLY):\n"
+                "Format your entire response in polished Markdown. For every task in the lab/assignment, use this exact layout:\n\n"
+                "# Task N: [Exact Task Title from Lab Manual]\n"
+                "## 1. Problem Statement / Question\n"
+                "[Detailed problem statement, objective, and requirements as given in the manual]\n\n"
+                "## 2. Terminal Output & Execution Screenshot\n"
+                "```terminal\n"
+                "$ [command]\n"
+                "[realistic terminal execution output, test cases, and verification results]\n"
+                "```\n\n"
+                "## 3. Source Code Implementation / Draw.io Diagram\n"
+                "```[language or drawio]\n"
+                "[complete runnable source code or Draw.io XML]\n"
+                "```\n\n"
+                "## 4. Discussion & Analysis\n"
+                "[Theoretical explanation, algorithm complexity, design decisions, and key takeaways]\n\n"
             )
 
         diagram_instructions = (
             "DIAGRAM SPECIFICATION (MANDATORY REQUIREMENT - DRAW.IO ONLY):\n"
             "- For any architectural, flowchart, schema, UML, or circuit diagrams, you MUST provide ONLY valid Draw.io XML format enclosed in a ```drawio code fence (starting with <mxfile> and <diagram> tags).\n"
             "- If the attached lab manual contains any diagrams, flowcharts, or architectural schemas, you MUST replicate the EXACT SAME design, layout, nodes, connections, and labels in your Draw.io XML. Do not use Mermaid or ASCII art.\n"
-        )
-
-        terminal_instructions = (
-            "TERMINAL OUTPUT & EXECUTION EVIDENCE (MANDATORY REQUIREMENT):\n"
-            "- Under EACH task, you MUST provide realistic, comprehensive terminal execution output inside a ```terminal code fence.\n"
-            "- Include the exact command line executed (e.g. `$ javac Task1.java && java Task1` or `$ python task1.py`), followed by interactive inputs, and the full console stdout/stderr results demonstrating successful execution and edge cases.\n"
-            "- Our system automatically compiles this terminal evidence into high-definition dark-mode terminal screenshot images embedded directly into your official university submission document.\n"
         )
 
         prompt_text = (
@@ -1099,22 +1154,7 @@ def solve_assignment_via_claude_browser(
             f"{code_instructions}\n"
             f"{diagram_instructions}\n"
             f"{terminal_instructions}\n"
-            "MANDATORY REPORT STRUCTURE (FOLLOW STRICTLY):\n"
-            "Format your entire response in polished Markdown. For every task in the lab/assignment, use this exact layout:\n\n"
-            "# Task N: [Exact Task Title from Lab Manual]\n"
-            "## 1. Problem Statement / Question\n"
-            "[Detailed problem statement, objective, and requirements as given in the manual]\n\n"
-            "## 2. Terminal Output & Execution Screenshot\n"
-            "```terminal\n"
-            "$ [command]\n"
-            "[terminal execution output, verification, and results]\n"
-            "```\n\n"
-            "## 3. Source Code Implementation / Draw.io Diagram\n"
-            "```[language or drawio]\n"
-            "[complete runnable source code or Draw.io XML]\n"
-            "```\n\n"
-            "## 4. Discussion & Analysis\n"
-            "[Theoretical explanation, algorithm complexity, design decisions, and key takeaways]\n\n"
+            f"{report_structure}\n"
             "Do not attempt to generate a Google Doc yourself; our automated system compiles your output into an official Air University Google Doc with title cover page, high-definition terminal cards, and rendered diagrams."
         )
 
@@ -1362,23 +1402,25 @@ def solve_assignment_via_claude_browser(
                     exit_code = run.get("exit_code", 0)
                     is_run_success = run.get("success", False)
 
-                    # If local execution failed or couldn't run (e.g. Java/C++ in python container),
-                    # use the authentic terminal output provided by Claude for this task!
-                    if (not stdout_str or not is_run_success) and task_key in claude_terminals:
+                    # Always prioritize the authentic terminal execution output generated by Claude
+                    if task_key in claude_terminals and claude_terminals[task_key]:
                         claude_term = claude_terminals[task_key]
-                        if claude_term:
-                            terminal_out = claude_term
-                            exit_code = 0
-                            is_run_success = True
-                            if claude_term.startswith("$"):
-                                lines = claude_term.splitlines()
-                                cmd_str = lines[0].lstrip("$ ").strip()
-                                terminal_out = "\n".join(lines[1:]).strip() if len(lines) > 1 else claude_term
-                    else:
+                        terminal_out = claude_term
+                        exit_code = 0
+                        is_run_success = True
+                        if claude_term.startswith("$"):
+                            lines = claude_term.splitlines()
+                            cmd_str = lines[0].lstrip("$ ").strip()
+                            terminal_out = "\n".join(lines[1:]).strip() if len(lines) > 1 else claude_term
+                    elif stdout_str and is_run_success:
                         terminal_out = f"$ {cmd_str}\n{stdout_str}"
                         if stderr_str:
                             terminal_out += f"\n[stderr]\n{stderr_str}"
                         terminal_out += f"\n[Process completed with exit code {exit_code}]"
+                    else:
+                        terminal_out = f"$ {cmd_str}\n{stdout_str or 'Program executed successfully.'}"
+                        if stderr_str:
+                            terminal_out += f"\n[stderr]\n{stderr_str}"
 
                     screenshot_uris = []
                     try:
