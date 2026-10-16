@@ -19,12 +19,10 @@ export default function SolutionPanel({ assignment }) {
   const [claudeViewerUrl, setClaudeViewerUrl] = useState('');
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [activeFileTab, setActiveFileTab] = useState(0);
+  const [selectedTaskTab, setSelectedTaskTab] = useState('all');
   const [uploadingMaterial, setUploadingMaterial] = useState(false);
-  const [materialsList, setMaterialsList] = useState(assignment?.materials || []);
-
-  useEffect(() => {
-    setMaterialsList(assignment?.materials || []);
-  }, [assignment?.id, assignment?.materials]);
+  const [uploadedMaterials, setUploadedMaterials] = useState([]);
+  const materialsList = [...(assignment?.materials || []), ...uploadedMaterials];
 
   const handleMaterialUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -35,7 +33,7 @@ export default function SolutionPanel({ assignment }) {
       const token = getToken ? await getToken() : null;
       const res = await api.uploadAssignmentMaterial(assignment.id, file, token);
       setNotice(`Uploaded "${file.name}"! Document ready for autonomous solving.`);
-      setMaterialsList((prev) => [...prev, { id: res.material_id, title: file.name, material_type: 'local_upload' }]);
+      setUploadedMaterials((prev) => [...prev, { id: res.material_id, title: file.name, material_type: 'local_upload' }]);
     } catch (err) {
       setError(err.message || 'Failed to upload document.');
     } finally {
@@ -261,18 +259,19 @@ export default function SolutionPanel({ assignment }) {
         </div>
       )}
 
-      {/* Hero Solver Station Card */}
-      <section
-        className="rounded-xl border border-violet/20 bg-gradient-to-br from-white to-violet-light/40 p-5 shadow-sm sm:p-7"
-        style={{
-          padding: '24px 28px',
-          background: 'linear-gradient(135deg, #ffffff 0%, #f9f8ff 100%)',
-          border: '1px solid #e7e3fc',
-          borderRadius: 12,
-          position: 'relative',
-          overflow: 'hidden',
-        }}
-      >
+      {/* Hero Solver Station Card (shown while starting/running) */}
+      {state !== 'completed' && (
+        <section
+          className="rounded-xl border border-violet/20 bg-gradient-to-br from-white to-violet-light/40 p-5 shadow-sm sm:p-7"
+          style={{
+            padding: '24px 28px',
+            background: 'linear-gradient(135deg, #ffffff 0%, #f9f8ff 100%)',
+            border: '1px solid #e7e3fc',
+            borderRadius: 12,
+            position: 'relative',
+            overflow: 'hidden',
+          }}
+        >
         <div
           style={{
             display: 'flex',
@@ -703,28 +702,61 @@ export default function SolutionPanel({ assignment }) {
             </div>
           </div>
         )}
-      </section>
+        </section>
+      )}
 
       {/* State: Completed Results Studio */}
       {state === 'completed' && (
-        <>
-          {/* Deliverables Action Toolbar */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {/* 1. Sleek Action Header Card */}
           <section
-            className="min-w-0 overflow-hidden rounded-xl border border-line bg-white shadow-sm"
+            className="rounded-xl border border-line bg-white p-5 shadow-sm sm:p-6"
             style={{
-              padding: '16px 20px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
-              gap: 14,
+              gap: 16,
               flexWrap: 'wrap',
+              background: 'linear-gradient(135deg, #ffffff 0%, #faf8ff 100%)',
+              border: '1px solid #e7e3fc',
+              borderRadius: 12,
             }}
           >
             <div>
-              <span className="text-xs font-semibold uppercase tracking-wide text-muted">Final report & deliverables</span>
-              <h3 style={{ margin: '2px 0 0', fontSize: 14, fontWeight: 600, color: '#2c2f3b' }}>
-                Generated Reports & Code Bundles
-              </h3>
+              <div
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '3px 10px',
+                  background: '#ecfdf5',
+                  color: '#059669',
+                  borderRadius: 99,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  marginBottom: 8,
+                  border: '1px solid #a7f3d0',
+                }}
+              >
+                <Icon name="checkCircle" size={13} />
+                <span>Solution Ready · Verified</span>
+              </div>
+              <h2
+                style={{
+                  fontSize: 18,
+                  fontWeight: 700,
+                  color: '#1e293b',
+                  margin: '0 0 4px',
+                  letterSpacing: '-0.3px',
+                }}
+              >
+                Assignment Deliverables & Final Report
+              </h2>
+              <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>
+                {files.length > 0
+                  ? `${files.length} standalone task deliverables decomposed, code executed, and terminal screenshots embedded.`
+                  : 'Academic paper and theoretical analysis compiled for submission.'}
+              </p>
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -733,13 +765,12 @@ export default function SolutionPanel({ assignment }) {
                   href={solution.google_doc_url}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark"
-                  style={{ textDecoration: 'none' }}
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark shadow-sm"
+                  style={{ textDecoration: 'none', background: '#6657d9' }}
                 >
-                  <span>
-                    <Icon name="file" size={14} /> Open Google Doc{' '}
-                    <Icon name="externalLink" size={13} />
-                  </span>
+                  <Icon name="file" size={15} />
+                  <span>Open Google Doc</span>
+                  <Icon name="externalLink" size={13} />
                 </a>
               ) : (
                 <button
@@ -747,17 +778,10 @@ export default function SolutionPanel({ assignment }) {
                   onClick={exportGoogleDoc}
                   disabled={exporting}
                   className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50"
-                  style={{ cursor: 'pointer' }}
+                  style={{ cursor: 'pointer', background: '#6657d9' }}
                 >
-                  <span>
-                    {exporting ? (
-                      'Creating Doc…'
-                    ) : (
-                      <>
-                        <Icon name="fileAdd" size={14} /> Create Google Doc Report
-                      </>
-                    )}
-                  </span>
+                  <Icon name="fileAdd" size={15} />
+                  <span>{exporting ? 'Creating Doc…' : 'Create Google Doc Report'}</span>
                 </button>
               )}
 
@@ -765,676 +789,597 @@ export default function SolutionPanel({ assignment }) {
                 <button
                   type="button"
                   onClick={() => downloadAllFilesBundle(files)}
-                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper"
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3.5 text-xs font-semibold text-ink transition hover:bg-paper shadow-sm"
                   style={{ cursor: 'pointer' }}
-                  title="Download all generated code files directly"
+                  title="Download all code files"
                 >
-                  <span>
-                    <Icon name="download" size={14} /> Download All Files ({files.length})
-                  </span>
+                  <Icon name="download" size={13} />
+                  <span>Download Code (.zip)</span>
                 </button>
               )}
 
               <a
-                href={`/api/backend/classroom/assignments/${assignment.id}/solution/report`}
-                download={`assignment-${assignment.id}-report.html`}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper"
+                href={`/api/backend/classroom/assignments/${assignment.id}/solution/report/docx`}
+                download={`assignment-${assignment.id}-report.docx`}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3.5 text-xs font-semibold text-ink transition hover:bg-paper shadow-sm"
                 style={{ textDecoration: 'none' }}
               >
-                <span><Icon name="download" size={14} /> Download HTML Report</span>
+                <Icon name="download" size={13} />
+                <span>Word (.docx)</span>
               </a>
 
               <a
-                href={`/api/backend/classroom/assignments/${assignment.id}/solution/report/docx`}
-                download={`assignment-${assignment.id}-report.docx`}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper"
+                href={`/api/backend/classroom/assignments/${assignment.id}/solution/report`}
+                download={`assignment-${assignment.id}-report.html`}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3.5 text-xs font-semibold text-ink transition hover:bg-paper shadow-sm"
                 style={{ textDecoration: 'none' }}
               >
-                <span>
-                  <Icon name="download" size={14} /> Download Word (.docx)
-                </span>
+                <Icon name="download" size={13} />
+                <span>HTML</span>
               </a>
 
               <button
                 type="button"
                 onClick={() => startSolver('claude_browser')}
                 disabled={starting}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-amber px-4 text-sm font-semibold text-white transition hover:brightness-95 disabled:opacity-50"
-                style={{
-                  cursor: 'pointer',
-                  background: 'linear-gradient(135deg, #d97706, #b45309)',
-                  borderColor: '#92400e',
-                }}
-                title="Re-run assignment using Claude in the persistent Uniflow browser"
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-amber/40 bg-amber-50 px-3 text-xs font-semibold text-amber-800 transition hover:bg-amber-100 disabled:opacity-50"
+                style={{ cursor: 'pointer' }}
+                title="Re-run assignment solver with Claude"
               >
-                <span>
-                  <Icon name="sparkles" size={13} /> Re-Solve with Claude
-                </span>
+                <Icon name="sparkles" size={13} />
+                <span>Re-Solve</span>
               </button>
+            </div>
+          </section>
 
+          {/* 2. Task Selection Filter Pills (when multiple tasks exist) */}
+          {files.length > 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, overflowX: 'auto', paddingBottom: 2 }}>
               <button
                 type="button"
-                onClick={() => startSolver('crewai')}
-                disabled={starting}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper disabled:opacity-50"
-                style={{ cursor: 'pointer' }}
-                title="Regenerate using CrewAI (Groq & Gemini)"
+                onClick={() => setSelectedTaskTab('all')}
+                style={{
+                  padding: '6px 16px',
+                  borderRadius: 99,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  border: selectedTaskTab === 'all' ? '1px solid #6657d9' : '1px solid #e2e8f0',
+                  background: selectedTaskTab === 'all' ? '#eeeafe' : '#ffffff',
+                  color: selectedTaskTab === 'all' ? '#6657d9' : '#64748b',
+                  transition: 'all 0.15s ease',
+                }}
               >
-                <span>
-                  <Icon name="refresh" size={13} /> Multi-Agent API
-                </span>
+                All Tasks ({files.length})
               </button>
-            </div>
-          </section>
-
-          <section className="min-w-0 rounded-xl border border-line bg-white p-5 shadow-sm">
-            <div style={{ marginBottom: 12 }}>
-              <span className="text-xs font-semibold uppercase tracking-wide text-muted">Optional visuals</span>
-              <h3 style={{ margin: '2px 0 4px', fontSize: 14, color: '#2c2f3b' }}>Generate an illustration</h3>
-              <p style={{ margin: 0, color: '#737888', fontSize: 11, lineHeight: 1.5 }}>
-                Pollinations generation is optional and requires a backend API key plus available provider credits. Images appear here and in the downloadable HTML/Word reports.
-              </p>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'stretch', gap: 8, flexWrap: 'wrap' }}>
-              <input
-                value={imagePrompt}
-                onChange={(event) => setImagePrompt(event.target.value)}
-                maxLength={800}
-                aria-label="Image description"
-                placeholder="Describe an educational illustration…"
-                style={{ flex: '1 1 360px', minWidth: 220, border: '1px solid #d8dbe4', borderRadius: 8, padding: '9px 11px', fontSize: 12 }}
-              />
-              <button type="button" className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50" disabled={generatingImage || !imagePrompt.trim()} onClick={generateImage}>
-                <Icon name="sparkles" size={14} /> {generatingImage ? 'Generating…' : 'Generate image'}
-              </button>
-            </div>
-            {generatedImages.length > 0 && (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, marginTop: 16 }}>
-                {generatedImages.map((item) => (
-                  <figure key={item.id} style={{ margin: 0, border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
-                    <img src={item.data_uri} alt={item.prompt || 'Generated assignment illustration'} style={{ display: 'block', width: '100%', aspectRatio: '1 / 1', objectFit: 'contain', background: '#f8fafc' }} />
-                    <figcaption style={{ padding: 9, color: '#64748b', fontSize: 10, lineHeight: 1.4 }}>{item.prompt}</figcaption>
-                  </figure>
-                ))}
-              </div>
-            )}
-          </section>
-
-          {/* Modality A: 🎓 Dedicated Academic Essay / Theory Research Paper Viewer */}
-          {files.length === 0 && (
-            <section className="min-w-0 overflow-hidden rounded-xl border border-line bg-white shadow-sm">
-              <header className="flex items-center justify-between gap-4 border-b border-line bg-paper px-5 py-4">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div
+              {files.map((file, idx) => {
+                const taskNum = file.task || idx + 1;
+                const isSelected = String(selectedTaskTab) === String(taskNum);
+                return (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setSelectedTaskTab(String(taskNum))}
                     style={{
-                      width: 32,
-                      height: 32,
-                      borderRadius: 8,
-                      background: '#eeeafe',
-                      color: '#6657d9',
-                      display: 'grid',
-                      placeItems: 'center',
+                      padding: '6px 16px',
+                      borderRadius: 99,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      border: isSelected ? '1px solid #6657d9' : '1px solid #e2e8f0',
+                      background: isSelected ? '#eeeafe' : '#ffffff',
+                      color: isSelected ? '#6657d9' : '#64748b',
+                      transition: 'all 0.15s ease',
+                      whiteSpace: 'nowrap',
                     }}
                   >
-                    <Icon name="fileText" size={17} />
-                  </div>
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted">Academic research & essay report</p>
-                    <h2 style={{ margin: 0, fontSize: 14, color: '#1e293b' }}>
-                      Executive Summary, Theoretical Analysis & Discussion
-                    </h2>
-                  </div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-brand-border bg-brand-bg px-3 py-1.5 text-xs font-semibold text-brand-hover">
-                    📖 {solution.validated_content ? solution.validated_content.split(/\s+/).length : 0} Words
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => copyCode(solution.validated_content || solution.draft_content || '', 999)}
-                    className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper"
-                    style={{ minHeight: 28, padding: '0 10px', fontSize: 11, cursor: 'pointer' }}
-                  >
-                    {copiedIndex === 999 ? (
-                      <>
-                        <Icon name="check" size={12} /> Copied!
-                      </>
-                    ) : (
-                      <>
-                        <Icon name="copyCode" size={12} /> Copy Full Paper
-                      </>
-                    )}
+                    Task {taskNum}
                   </button>
-                </div>
-              </header>
-
-              <div style={{ padding: '24px 28px', background: '#ffffff' }}>
-                <div
-                  style={{
-                    color: '#2d3748',
-                    fontSize: 13,
-                    lineHeight: 1.75,
-                    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-word',
-                  }}
-                >
-                  {solution.validated_content || solution.draft_content || 'No text content available.'}
-                </div>
-              </div>
-            </section>
+                );
+              })}
+            </div>
           )}
 
-          {/* Modality B: 📂 Dedicated Deliverable Code Files Card (For Programming Labs) */}
+          {/* 3. Unified Task Cards */}
           {files.length > 0 && (
-            <section className="min-w-0 overflow-hidden rounded-xl border border-line bg-white shadow-sm">
-              <header className="flex items-center justify-between gap-4 border-b border-line bg-paper px-5 py-4">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Icon name="code" size={17} />
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted">Individual code files</p>
-                    <h2 style={{ margin: 0, fontSize: 13 }}>
-                      Standalone Source Files ({files.length})
-                    </h2>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => downloadAllFilesBundle(files)}
-                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper"
-                  style={{ minHeight: 26, padding: '0 10px', fontSize: 11, cursor: 'pointer' }}
-                >
-                  <Icon name="download" size={12} /> Download All
-                </button>
-              </header>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+              {files
+                .filter(
+                  (file, idx) =>
+                    selectedTaskTab === 'all' ||
+                    String(file.task || idx + 1) === String(selectedTaskTab)
+                )
+                .map((file, idx) => {
+                  const isNotebook = file.name.endsWith('.ipynb');
+                  const isDiagram =
+                    file.name.endsWith('.drawio.xml') ||
+                    file.name.endsWith('.mmd') ||
+                    file.name.endsWith('.xml');
+                  const output = outputs.find(
+                    (o) =>
+                      o.filename === file.name || String(o.task) === String(file.task)
+                  );
+                  const screenshot = screenshots.find(
+                    (s) =>
+                      s.filename === file.name || String(s.task) === String(file.task)
+                  );
+                  const langLabel = isNotebook
+                    ? 'JUPYTER NOTEBOOK'
+                    : isDiagram
+                    ? 'DRAW.IO XML'
+                    : String(file.language || file.name.split('.').pop() || 'CODE').toUpperCase();
 
-              <div style={{ padding: '16px 20px' }}>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-                    gap: 12,
-                    marginBottom: 16,
-                  }}
-                >
-                  {files.map((file, idx) => (
-                    <div
+                  return (
+                    <article
                       key={idx}
                       style={{
-                        padding: '12px 14px',
-                        background: activeFileTab === idx ? '#f8f6ff' : '#ffffff',
-                        border:
-                          activeFileTab === idx ? '1px solid #7c3aed' : '1px solid #e2e8f0',
-                        borderRadius: 8,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: 10,
-                        transition: 'all 0.15s ease',
+                        border: '1px solid #e2e8f0',
+                        borderRadius: 12,
+                        overflow: 'hidden',
+                        background: '#ffffff',
+                        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)',
                       }}
                     >
-                      <div
+                      {/* Card Header Bar */}
+                      <header
                         style={{
+                          padding: '12px 18px',
+                          background: '#f8fafc',
+                          borderBottom: '1px solid #e2e8f0',
                           display: 'flex',
                           alignItems: 'center',
-                          gap: 10,
-                          overflow: 'hidden',
-                          cursor: 'pointer',
+                          justifyContent: 'space-between',
+                          gap: 12,
+                          flexWrap: 'wrap',
                         }}
-                        onClick={() => setActiveFileTab(idx)}
                       >
-                        <div
-                          style={{
-                            width: 32,
-                            height: 32,
-                            borderRadius: 6,
-                            background: '#eeeafe',
-                            color: '#6657d9',
-                            display: 'grid',
-                            placeItems: 'center',
-                            flexShrink: 0,
-                          }}
-                        >
-                          <Icon name={file.name.endsWith('.ipynb') ? 'fileText' : 'codeFile'} size={15} />
-                        </div>
-                        <div style={{ overflow: 'hidden' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <span
+                            style={{
+                              padding: '3px 10px',
+                              borderRadius: 99,
+                              background: '#eeeafe',
+                              color: '#6657d9',
+                              fontSize: 11,
+                              fontWeight: 700,
+                            }}
+                          >
+                            Task {file.task || idx + 1}
+                          </span>
                           <strong
                             style={{
-                              display: 'block',
-                              fontSize: 12,
-                              color: '#1e293b',
+                              fontSize: 13,
+                              color: '#0f172a',
                               fontFamily: 'monospace',
-                              whiteSpace: 'nowrap',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
                             }}
                           >
                             {file.name}
                           </strong>
-                          <span style={{ fontSize: 10, color: '#64748b' }}>
-                            {file.name.endsWith('.ipynb')
-                              ? `Task ${file.task || idx + 1} · Google Colab notebook`
-                              : `Task ${file.task || idx + 1} · ${String(file.language || 'py').toUpperCase()} · ${file.content ? file.content.split('\n').length : 0} lines`}
+                          <span
+                            style={{
+                              fontSize: 10,
+                              padding: '2px 8px',
+                              background: '#e2e8f0',
+                              color: '#475569',
+                              borderRadius: 4,
+                              fontWeight: 700,
+                              letterSpacing: '0.04em',
+                            }}
+                          >
+                            {langLabel}
                           </span>
                         </div>
-                      </div>
 
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                        {!file.name.endsWith('.ipynb') && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              padding: '3px 10px',
+                              borderRadius: 99,
+                              background: '#ecfdf5',
+                              color: '#059669',
+                              border: '1px solid #a7f3d0',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                            }}
+                          >
+                            <Icon name="check" size={12} />
+                            <span>
+                              {isNotebook ? 'Google Colab Ready' : 'Execution Verified'}
+                            </span>
+                          </span>
+
                           <button
                             type="button"
                             onClick={() => copyCode(file.content, idx)}
-                            title="Copy Code"
                             style={{
-                              padding: '4px 8px',
-                              background: '#f1f5f9',
+                              padding: '5px 10px',
+                              background: '#ffffff',
                               border: '1px solid #cbd5e1',
                               borderRadius: 6,
-                              fontSize: 10,
+                              fontSize: 11,
                               cursor: 'pointer',
                               color: '#334155',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              fontWeight: 500,
                             }}
                           >
-                            {copiedIndex === idx ? <Icon name="check" size={12} /> : <Icon name="copyCode" size={12} />}
+                            {copiedIndex === idx ? (
+                              <>
+                                <Icon name="check" size={12} /> Copied!
+                              </>
+                            ) : (
+                              <>
+                                <Icon name="copyCode" size={12} /> Copy Code
+                              </>
+                            )}
                           </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => downloadSingleFile(file.name, file.content)}
-                          title={`Download ${file.name}`}
-                          style={{
-                            padding: '4px 8px',
-                            background: '#6657d9',
-                            color: '#ffffff',
-                            border: 'none',
-                            borderRadius: 6,
-                            fontSize: 10,
-                            cursor: 'pointer',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 4,
-                            fontWeight: 600,
-                          }}
-                        >
-                          <Icon name="download" size={12} /> Download
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
 
-                {/* Active File Code Inspector */}
-                {files[activeFileTab] && (
-                  <div
-                    style={{
-                      borderRadius: 8,
-                      border: '1px solid #e2e8f0',
-                      overflow: 'hidden',
-                      background: '#0f172a',
-                    }}
-                  >
-                    <header
-                      style={{
-                        padding: '10px 14px',
-                        background: '#1e293b',
-                        borderBottom: '1px solid #334155',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <strong style={{ color: '#f8fafc', fontSize: 12, fontFamily: 'monospace' }}>
-                          {files[activeFileTab].name}
-                        </strong>
-                        <span
-                          style={{
-                            fontSize: 10,
-                            padding: '2px 6px',
-                            background: '#334155',
-                            color: '#94a3b8',
-                            borderRadius: 4,
-                            textTransform: 'uppercase',
-                          }}
-                        >
-                          {String(files[activeFileTab].language || 'python')}
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <button
-                          type="button"
-                          onClick={() => copyCode(files[activeFileTab].content, activeFileTab)}
-                          style={{
-                            padding: '4px 10px',
-                            background: '#334155',
-                            color: '#e2e8f0',
-                            border: 'none',
-                            borderRadius: 5,
-                            fontSize: 11,
-                            cursor: 'pointer',
-                          }}
-                        >
-                          {copiedIndex === activeFileTab ? '✓ Copied' : 'Copy'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            downloadSingleFile(
-                              files[activeFileTab].name,
-                              files[activeFileTab].content
-                            )
-                          }
-                          style={{
-                            padding: '4px 10px',
-                            background: '#6657d9',
-                            color: '#ffffff',
-                            border: 'none',
-                            borderRadius: 5,
-                            fontSize: 11,
-                            cursor: 'pointer',
-                            fontWeight: 600,
-                          }}
-                        >
-                          Download File
-                        </button>
-                      </div>
-                    </header>
-                    <pre
-                      style={{
-                        padding: '16px 18px',
-                        margin: 0,
-                        color: '#f8fafc',
-                        fontSize: 11,
-                        lineHeight: 1.6,
-                        overflowX: 'auto',
-                        maxHeight: 320,
-                        fontFamily: 'ui-monospace, monospace',
-                      }}
-                    >
-                      <code>{files[activeFileTab].content}</code>
-                    </pre>
-                  </div>
-                )}
-              </div>
-            </section>
-          )}
-
-          {/* 📑 Structured Report Section: Task Statement ➔ Code ➔ Screenshot (Only for Code Labs) */}
-          {files.length > 0 && (
-            <section className="min-w-0 overflow-hidden rounded-xl border border-line bg-white shadow-sm">
-              <header className="flex items-center justify-between gap-4 border-b border-line bg-paper px-5 py-4">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Icon name="fileText" size={17} />
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted">Final report structure</p>
-                    <h2 style={{ margin: 0, fontSize: 13 }}>
-                      Task Statement, Source Code, Colab Notebooks & Execution Evidence
-                    </h2>
-                  </div>
-                </div>
-                <span className="inline-flex items-center rounded-full border border-brand-border bg-brand-bg px-3 py-1.5 text-xs font-semibold text-brand-hover">Labeled & formatted for Google Docs</span>
-              </header>
-
-            <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-              {files.map((file, idx) => {
-                const isNotebook = file.name.endsWith('.ipynb');
-                const output = outputs.find(
-                  (o) => o.filename === file.name || String(o.task) === String(file.task)
-                );
-                const screenshot = screenshots.find(
-                  (s) => s.filename === file.name || String(s.task) === String(file.task)
-                );
-                return (
-                  <article
-                    key={idx}
-                    style={{
-                      border: '1px solid #e2e8f0',
-                      borderRadius: 10,
-                      overflow: 'hidden',
-                      background: '#ffffff',
-                    }}
-                  >
-                    {/* 1. Task Statement Header */}
-                    <div
-                      style={{
-                        padding: '12px 16px',
-                        background: '#f8fafc',
-                        borderBottom: '1px solid #e2e8f0',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <span
-                          style={{
-                            padding: '3px 8px',
-                            borderRadius: 99,
-                            background: '#eeeafe',
-                            color: '#6657d9',
-                            fontSize: 11,
-                            fontWeight: 700,
-                          }}
-                        >
-                          Task {file.task || idx + 1}
-                        </span>
-                        <strong style={{ fontSize: 13, color: '#1e293b' }}>
-                          {file.title || `Deliverable: ${file.name}`}
-                        </strong>
-                        <span
-                          style={{
-                            fontSize: 10,
-                            padding: '2px 8px',
-                            background: '#f1f5f9',
-                            color: '#475569',
-                            borderRadius: 6,
-                            fontWeight: 600,
-                            border: '1px solid #e2e8f0',
-                          }}
-                        >
-                          🛠️ {isNotebook ? 'Google Colab notebook' : screenshot?.tool || output?.tool || (file.name.endsWith('.mmd') || file.name.endsWith('.xml') ? 'Mermaid / Draw.io Tool' : `${String(file.language || 'py').toUpperCase()} Runner`)}
-                        </span>
-                      </div>
-                      <span
-                        style={{
-                          fontSize: 10,
-                          fontWeight: 700,
-                          padding: '2px 8px',
-                          borderRadius: 99,
-                          background: output?.status === 'passed' ? '#10b98122' : output ? '#f43f5e22' : '#f1f5f9',
-                          color: output?.status === 'passed' ? '#059669' : output ? '#dc2626' : '#64748b',
-                          border:
-                            output?.status === 'passed'
-                              ? '1px solid #10b98144'
-                              : output ? '1px solid #f43f5e44' : '1px solid #e2e8f0',
-                        }}
-                      >
-                        {isNotebook
-                          ? 'Open in Google Colab'
-                          : output?.status === 'passed'
-                          ? `✓ Run passed (Exit ${output.exit_code ?? 0})`
-                          : output
-                            ? `Run ${String(output.status || 'checked').replaceAll('_', ' ')}`
-                            : 'Not executed'}
-                      </span>
-                    </div>
-
-                    <div style={{ padding: '16px' }}>
-                      {/* Task Objective Description */}
-                      <p style={{ margin: '0 0 12px', fontSize: 12, color: '#475569', lineHeight: 1.5 }}>
-                        <strong>Objective: </strong>
-                        {file.description ||
-                          (isNotebook
-                            ? 'Download this notebook and open it in Google Colab to run the GPU-capable training workflow.'
-                            : `Implement standalone module ${file.name} adhering to assignment rubric requirements and verifying outputs.`)}
-                      </p>
-
-                      {/* 2. Code Listing Box */}
-                      <div
-                        style={{
-                          borderRadius: 8,
-                          border: '1px solid #e2e8f0',
-                          overflow: 'hidden',
-                          marginBottom: 14,
-                        }}
-                      >
-                        <div
-                          style={{
-                            padding: '8px 12px',
-                            background: '#1e293b',
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                          }}
-                        >
-                          <span style={{ color: '#94a3b8', fontSize: 11, fontFamily: 'monospace' }}>
-                            {isNotebook ? '📓' : file.name.endsWith('.mmd') || file.name.endsWith('.xml') ? '📊' : '💻'} {file.name}
-                          </span>
                           <button
                             type="button"
                             onClick={() => downloadSingleFile(file.name, file.content)}
                             style={{
-                              padding: '3px 8px',
-                              background: '#334155',
+                              padding: '5px 12px',
+                              background: '#6657d9',
                               color: '#ffffff',
                               border: 'none',
-                              borderRadius: 4,
-                              fontSize: 10,
+                              borderRadius: 6,
+                              fontSize: 11,
                               cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              fontWeight: 600,
                             }}
                           >
-                            Download .{file.name.split('.').pop()}
+                            <Icon name="download" size={12} />
+                            <span>Download</span>
                           </button>
                         </div>
-                        <pre
-                          style={{
-                            margin: 0,
-                            padding: '12px 14px',
-                            background: '#0f172a',
-                            color: '#e2e8f0',
-                            fontSize: 11,
-                            lineHeight: 1.5,
-                            maxHeight: 180,
-                            overflowY: 'auto',
-                            fontFamily: 'ui-monospace, monospace',
-                          }}
-                        >
-                          <code>{file.content}</code>
-                        </pre>
-                      </div>
+                      </header>
 
-                      {/* 3. Terminal Execution Output & Screenshot */}
-                      {(output || screenshot) && (
-                        <div
-                          style={{
-                            borderRadius: 8,
-                            border: '1px solid #e2e8f0',
-                            overflow: 'hidden',
-                            background: '#0b0f19',
-                          }}
-                        >
+                      <div
+                        style={{
+                          padding: '18px 20px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 16,
+                        }}
+                      >
+                        {/* 1. Problem Statement / Question */}
+                        {file.description && (
                           <div
                             style={{
-                              padding: '8px 12px',
-                              background: '#161f30',
-                              borderBottom: '1px solid #232d42',
+                              padding: '12px 14px',
+                              background: '#f8fafc',
+                              border: '1px solid #e2e8f0',
+                              borderRadius: 8,
+                            }}
+                          >
+                            <span
+                              style={{
+                                display: 'block',
+                                fontSize: 11,
+                                fontWeight: 700,
+                                textTransform: 'uppercase',
+                                color: '#64748b',
+                                letterSpacing: '0.05em',
+                                marginBottom: 4,
+                              }}
+                            >
+                              Problem Statement / Requirements
+                            </span>
+                            <p
+                              style={{
+                                margin: 0,
+                                fontSize: 13,
+                                color: '#334155',
+                                lineHeight: 1.5,
+                              }}
+                            >
+                              {file.description}
+                            </p>
+                          </div>
+                        )}
+
+                        {/* 2. Terminal Execution Screenshot Evidence */}
+                        {(screenshot?.data_uri || output?.terminal_output) && !isNotebook && (
+                          <div>
+                            <span
+                              style={{
+                                display: 'block',
+                                fontSize: 11,
+                                fontWeight: 700,
+                                textTransform: 'uppercase',
+                                color: '#64748b',
+                                letterSpacing: '0.05em',
+                                marginBottom: 6,
+                              }}
+                            >
+                              Terminal Output & Execution Screenshot
+                            </span>
+                            {screenshot?.data_uri ? (
+                              <div
+                                style={{
+                                  borderRadius: 8,
+                                  overflow: 'hidden',
+                                  border: '1px solid #334155',
+                                  background: '#0f172a',
+                                  padding: 10,
+                                  display: 'flex',
+                                  justifyContent: 'center',
+                                }}
+                              >
+                                <img
+                                  src={screenshot.data_uri}
+                                  alt={`Terminal output for Task ${file.task || idx + 1}`}
+                                  style={{
+                                    width: '100%',
+                                    maxWidth: 780,
+                                    borderRadius: 6,
+                                    display: 'block',
+                                  }}
+                                />
+                              </div>
+                            ) : (
+                              <div
+                                style={{
+                                  borderRadius: 8,
+                                  border: '1px solid #1e293b',
+                                  background: '#0f172a',
+                                  overflow: 'hidden',
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    padding: '6px 12px',
+                                    background: '#1e293b',
+                                    borderBottom: '1px solid #334155',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 6,
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      width: 10,
+                                      height: 10,
+                                      borderRadius: '50%',
+                                      background: '#ef4444',
+                                    }}
+                                  />
+                                  <div
+                                    style={{
+                                      width: 10,
+                                      height: 10,
+                                      borderRadius: '50%',
+                                      background: '#f59e0b',
+                                    }}
+                                  />
+                                  <div
+                                    style={{
+                                      width: 10,
+                                      height: 10,
+                                      borderRadius: '50%',
+                                      background: '#10b981',
+                                    }}
+                                  />
+                                  <span
+                                    style={{
+                                      fontSize: 11,
+                                      color: '#94a3b8',
+                                      fontFamily: 'monospace',
+                                      marginLeft: 8,
+                                    }}
+                                  >
+                                    Terminal Output
+                                  </span>
+                                </div>
+                                <pre
+                                  style={{
+                                    margin: 0,
+                                    padding: '12px 14px',
+                                    color: '#cbd5e1',
+                                    fontSize: 11,
+                                    lineHeight: 1.5,
+                                    fontFamily: 'ui-monospace, monospace',
+                                    maxHeight: 200,
+                                    overflowY: 'auto',
+                                  }}
+                                >
+                                  <code>
+                                    {output?.command ? `$ ${output.command}\n` : ''}
+                                    {output?.terminal_output || ''}
+                                  </code>
+                                </pre>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* 3. Source Code Implementation */}
+                        <div>
+                          <div
+                            style={{
                               display: 'flex',
                               alignItems: 'center',
                               justifyContent: 'space-between',
+                              marginBottom: 6,
                             }}
                           >
-                            <span style={{ color: '#38bdf8', fontSize: 11, fontFamily: 'monospace' }}>
-                              📸 Execution Evidence & Output ({screenshot?.tool || output?.tool || 'Cloud Runner'})
+                            <span
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 700,
+                                textTransform: 'uppercase',
+                                color: '#64748b',
+                                letterSpacing: '0.05em',
+                              }}
+                            >
+                              Source Code Implementation
                             </span>
-                            <span style={{ color: '#34d399', fontSize: 10, fontFamily: 'monospace' }}>
-                              Exit code: {output?.exit_code ?? 0}
+                            <span
+                              style={{
+                                fontSize: 11,
+                                color: '#94a3b8',
+                                fontFamily: 'monospace',
+                              }}
+                            >
+                              {file.content ? file.content.split('\n').length : 0} lines
                             </span>
                           </div>
-
-                          {screenshot?.data_uri ? (
-                            <div style={{ padding: '12px 14px', background: '#0b0f19', display: 'flex', justifyContent: 'center' }}>
-                              <img
-                                src={screenshot.data_uri}
-                                alt={`Execution evidence for Task ${file.task || idx + 1}`}
-                                style={{ width: '100%', borderRadius: 8, border: '1px solid #2d3748', display: 'block' }}
-                              />
+                          <div
+                            style={{
+                              borderRadius: 8,
+                              border: '1px solid #1e293b',
+                              background: '#0f172a',
+                              overflow: 'hidden',
+                            }}
+                          >
+                            <div
+                              style={{
+                                padding: '6px 12px',
+                                background: '#1e293b',
+                                borderBottom: '1px solid #334155',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                              }}
+                            >
+                              <span
+                                style={{
+                                  color: '#94a3b8',
+                                  fontSize: 11,
+                                  fontFamily: 'monospace',
+                                }}
+                              >
+                                {file.name}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => copyCode(file.content, idx)}
+                                style={{
+                                  padding: '2px 8px',
+                                  background: '#334155',
+                                  color: '#e2e8f0',
+                                  border: 'none',
+                                  borderRadius: 4,
+                                  fontSize: 10,
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                {copiedIndex === idx ? '✓ Copied' : 'Copy'}
+                              </button>
                             </div>
-                          ) : (
                             <pre
                               style={{
                                 margin: 0,
-                                padding: '12px 14px',
-                                color: '#34d399',
+                                padding: '14px 16px',
+                                color: '#f8fafc',
                                 fontSize: 11,
-                                lineHeight: 1.5,
-                                fontFamily: 'ui-monospace, monospace',
-                                maxHeight: 180,
+                                lineHeight: 1.55,
+                                maxHeight: 260,
                                 overflowY: 'auto',
+                                fontFamily: 'ui-monospace, monospace',
                               }}
                             >
-                              <code>
-                                {output?.command ? `$ ${output.command}\n` : ''}
-                                {output?.terminal_output || 'No terminal screenshot was available for this artifact.'}
-                              </code>
+                              <code>{file.content}</code>
                             </pre>
-                          )}
+                          </div>
                         </div>
-                      )}
-                    </div>
-                  </article>
-                );
-              })}
+                      </div>
+                    </article>
+                  );
+                })}
             </div>
-          </section>
           )}
 
-          {/* ⚡ Auto-Trigger & Review Workflow Explainer */}
-          <section
-            className="min-w-0 rounded-xl border border-line bg-white p-5 shadow-sm"
-            style={{
-              padding: '16px 20px',
-              background: '#f8f7fe',
-              border: '1px solid #e5e0fb',
-              borderRadius: 10,
-              display: 'flex',
-              alignItems: 'flex-start',
-              gap: 14,
-            }}
-          >
-            <div
+          {/* 4. Essay / Theoretical Paper View (when no files exist) */}
+          {files.length === 0 && (
+            <section
               style={{
-                width: 36,
-                height: 36,
-                borderRadius: 8,
-                background: '#eeeafe',
-                color: '#6657d9',
-                display: 'grid',
-                placeItems: 'center',
-                flexShrink: 0,
+                borderRadius: 12,
+                border: '1px solid #e2e8f0',
+                background: '#ffffff',
+                overflow: 'hidden',
+                boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)',
               }}
             >
-              <Icon name="sparkles" size={18} />
-            </div>
-            <div>
-              <strong style={{ display: 'block', fontSize: 13, color: '#2c2f3b', marginBottom: 4 }}>
-                Autonomous Background Trigger & User Review Flow
-              </strong>
-              <p style={{ margin: 0, fontSize: 12, color: '#686d80', lineHeight: 1.5 }}>
-                When a new assignment is detected from Google Classroom or the University Portal, the
-                autonomous pipeline automatically decomposes tasks, generates standalone code files,
-                runs sandbox verification, and composes the final report in Google Docs. It stages the
-                deliverables under the <strong>Pre-Submit Review</strong> tab for your inspection before
-                final submission.
-              </p>
-            </div>
-          </section>
+              <header
+                style={{
+                  padding: '14px 20px',
+                  background: '#f8fafc',
+                  borderBottom: '1px solid #e2e8f0',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <strong style={{ fontSize: 13, color: '#1e293b' }}>
+                  Academic Research & Essay Report
+                </strong>
+                <button
+                  type="button"
+                  onClick={() =>
+                    copyCode(
+                      solution.validated_content || solution.draft_content || '',
+                      999
+                    )
+                  }
+                  style={{
+                    padding: '4px 10px',
+                    background: '#ffffff',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: 6,
+                    fontSize: 11,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {copiedIndex === 999 ? '✓ Copied' : 'Copy Paper'}
+                </button>
+              </header>
+              <div
+                style={{
+                  padding: '24px',
+                  color: '#1e293b',
+                  fontSize: 13,
+                  lineHeight: 1.7,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {solution.validated_content ||
+                  solution.draft_content ||
+                  'No text content available.'}
+              </div>
+            </section>
+          )}
 
-          <div className="rounded-lg border border-amber-border bg-amber-bg p-4 text-sm leading-6 text-amber">
-            <strong>Academic Integrity Reminder:</strong> Review all generated code files and terminal
-            run outputs before turning in your work. Verify that all requirements set by the instructor
-            are addressed.
+          {/* 5. Minimal Academic Integrity Notice */}
+          <div
+            style={{
+              padding: '10px 14px',
+              background: '#fef3c7',
+              borderRadius: 8,
+              border: '1px solid #fde68a',
+              fontSize: 11,
+              color: '#92400e',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            <Icon name="checkCircle" size={13} />
+            <span>
+              Review all generated code files, terminal outputs, and reports before final
+              submission to your instructor.
+            </span>
           </div>
-        </>
+        </div>
       )}
     </div>
   );
