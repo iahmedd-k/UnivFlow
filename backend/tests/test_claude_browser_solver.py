@@ -16,10 +16,17 @@ from app.services.claude_browser_solver import (
     solve_assignment_via_claude_browser,
     USER_CDP_PORT,
     connect_to_chrome,
-    is_heavy_ml_assignment,
     _is_assignment_already_solving,
     _has_display,
     _get_headless_mode,
+    is_heavy_ml_assignment,
+    classify_assignment_domain,
+    dismiss_claude_overlays_and_modals,
+    DOMAIN_HEAVY_ML,
+    DOMAIN_CODING_LAB,
+    DOMAIN_DIAGRAM_DESIGN,
+    DOMAIN_QUANTITATIVE_MATH,
+    DOMAIN_THEORY_ACADEMIC,
 )
 from app.services.ai_solution import (
     export_solution_to_google_doc,
@@ -550,4 +557,129 @@ def test_has_display_and_get_headless_mode():
     with patch("os.name", "posix"), patch.dict(os.environ, {"DISPLAY": ":0"}), patch("pathlib.Path.exists", return_value=False):
         assert _has_display() is False
         assert _get_headless_mode() is True
+
+
+def test_classify_assignment_domain():
+    """Verify intelligent assignment classification across academic domains."""
+    # 1. Theory / Essay / Humanities
+    domain = classify_assignment_domain(
+        title="Entrepreneurship Assignment: Business Model Canvas",
+        description="Discuss the key value propositions and customer segments for a startup.",
+        course_name="Entrepreneurship",
+    )
+    assert domain == DOMAIN_THEORY_ACADEMIC
+
+    domain = classify_assignment_domain(
+        title="Technical Writing Essay",
+        description="Explain the ethical considerations of artificial intelligence.",
+        course_name="Technical English",
+    )
+    assert domain == DOMAIN_THEORY_ACADEMIC
+
+    # 2. Coding Lab
+    domain = classify_assignment_domain(
+        title="Lab 05: Semaphore Synchronization in C",
+        description="Implement bounded buffer problem with mutex and semaphores.",
+        course_name="Operating Systems Lab",
+    )
+    assert domain == DOMAIN_CODING_LAB
+
+    domain = classify_assignment_domain(
+        title="Task 2: Binary Search Tree",
+        description="Write a Python script to insert, search, and delete nodes in a BST.",
+        course_name="Data Structures",
+    )
+    assert domain == DOMAIN_CODING_LAB
+
+    # 3. Heavy Machine Learning
+    domain = classify_assignment_domain(
+        title="Deep Learning Lab: ResNet18 Training on CIFAR-10",
+        description="Train a convolutional neural network with PyTorch on CUDA GPU and evaluate accuracy.",
+        course_name="Machine Learning",
+    )
+    assert domain == DOMAIN_HEAVY_ML
+
+    # 4. Diagram Design
+    domain = classify_assignment_domain(
+        title="Hospital Management ER Diagram",
+        description="Design a complete ER diagram with entities, attributes, and relationships in Draw.io.",
+        course_name="Database Systems",
+    )
+    assert domain == DOMAIN_DIAGRAM_DESIGN
+
+    # 5. Quantitative Math (Calculus / Physics / Linear Algebra)
+    domain = classify_assignment_domain(
+        title="Calculus II: Optimization and Definite Integrals",
+        description="Find the critical points of the function and evaluate its definite integral using substitution.",
+        course_name="Calculus II",
+    )
+    assert domain == DOMAIN_QUANTITATIVE_MATH
+
+    domain = classify_assignment_domain(
+        title="Linear Algebra Assignment 3",
+        description="Compute the eigenvalues and eigenvectors of the given matrix and prove orthogonality.",
+        course_name="Linear Algebra",
+    )
+    assert domain == DOMAIN_QUANTITATIVE_MATH
+
+
+def test_dismiss_claude_overlays_and_modals():
+    """Verify overlay and modal dismiss logic executes without errors."""
+    mock_page = MagicMock()
+    mock_btn = MagicMock()
+    mock_btn.is_visible.return_value = True
+    mock_page.locator().all.return_value = [mock_btn]
+
+    # Should press Escape, click dismiss buttons, and call page.evaluate to hide portal-root overlays
+    dismiss_claude_overlays_and_modals(mock_page)
+
+    assert mock_page.keyboard.press.called
+    assert mock_btn.click.called
+    assert mock_page.evaluate.called
+
+
+def test_extract_code_deliverables_with_numbered_sections():
+    """Verify code deliverables extraction handles diverse heading formats like '# 1. Code' and multiple blocks."""
+    markdown = """
+# 1. Insertion Sort Implementation
+```python
+def insertion_sort(arr):
+    for i in range(1, len(arr)):
+        key = arr[i]
+        j = i - 1
+        while j >= 0 and key < arr[j]:
+            arr[j + 1] = arr[j]
+            j -= 1
+        arr[j + 1] = key
+    return arr
+```
+
+```terminal
+$ python task1.py
+Sorted array: [1, 2, 3, 4, 5]
+```
+
+# 2. QuickSort Implementation
+```python
+def quicksort(arr):
+    if len(arr) <= 1:
+        return arr
+    pivot = arr[len(arr) // 2]
+    left = [x for x in arr if x < pivot]
+    middle = [x for x in arr if x == pivot]
+    right = [x for x in arr if x > pivot]
+    return quicksort(left) + middle + quicksort(right)
+```
+
+```terminal
+$ python task2.py
+QuickSort verified: [1, 2, 3, 4, 5]
+```
+"""
+    deliverables = extract_assignment_deliverables(markdown)
+    assert len(deliverables["files"]) == 2
+    assert deliverables["files"][0]["name"] == "task_1_solution.py"
+    assert deliverables["files"][1]["name"] == "task_2_solution.py"
+    assert len(deliverables["terminal_outputs"]) == 2
+
 

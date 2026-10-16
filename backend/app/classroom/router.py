@@ -1619,9 +1619,19 @@ def get_solution_status(
         crew_progress = None
 
     assignment = _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
-    is_failed = bool(solution.validation_errors)
-    is_completed = bool(solution.validated_content) and not is_failed
+    has_content = bool(solution.validated_content or solution.draft_content)
+    is_completed = bool(solution.validated_content)
+    is_failed = bool(solution.validation_errors) and not has_content
     is_generating = bool(assignment and assignment.status == AssignmentStatus.GENERATING) and not is_completed and not is_failed
+
+    user_id = _classroom_user_id(clerk_user)
+    rate_limit_row = db.query(Setting).filter(Setting.key == f"classroom:{user_id}:claude_rate_limit").first()
+    claude_rate_limit = None
+    if rate_limit_row and rate_limit_row.value:
+        try:
+            claude_rate_limit = json.loads(rate_limit_row.value)
+        except Exception:
+            claude_rate_limit = None
 
     return {
         "status": "completed" if is_completed else "failed" if is_failed else "generating" if is_generating else "not_started",
@@ -1634,6 +1644,7 @@ def get_solution_status(
         "crew_progress": crew_progress,
         "code_files_download_url": f"/api/v1/classroom/assignments/{assignment_id}/solution/files" if deliverables["files"] else None,
         "validation_errors": solution.validation_errors,
+        "claude_rate_limit": claude_rate_limit,
         "retry_count": solution.retry_count,
         "ai_provider": solution.ai_provider,
         "generated_at": solution.generated_at,

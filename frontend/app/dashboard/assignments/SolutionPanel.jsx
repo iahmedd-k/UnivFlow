@@ -24,6 +24,13 @@ export default function SolutionPanel({ assignment }) {
   const [uploadedMaterials, setUploadedMaterials] = useState([]);
   const materialsList = [...(assignment?.materials || []), ...uploadedMaterials];
 
+  const claudeRateLimit = solution?.claude_rate_limit || (
+    typeof solution?.validation_errors === 'string' &&
+    solution.validation_errors.toLowerCase().includes('claude free tier limit reached')
+      ? { is_limited: true, message: solution.validation_errors }
+      : null
+  );
+
   const handleMaterialUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -381,6 +388,48 @@ export default function SolutionPanel({ assignment }) {
             )}
           </div>
         </div>
+
+        {/* Claude Free Tier Rate Limit Banner */}
+        {claudeRateLimit && (
+          <div
+            style={{
+              marginTop: 18,
+              padding: '14px 20px',
+              borderRadius: 10,
+              background: '#fffbeb',
+              border: '1px solid #fde68a',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 16,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ fontSize: 22 }}>⏳</span>
+              <div>
+                <strong style={{ display: 'block', fontSize: 13, color: '#92400e' }}>
+                  Claude Free Tier Message Limit Reached
+                </strong>
+                <span style={{ fontSize: 12, color: '#b45309', lineHeight: 1.4 }}>
+                  {claudeRateLimit.message || 'Claude is temporarily at capacity. The limit will reset automatically.'}
+                </span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                type="button"
+                onClick={() => startSolver('crewai')}
+                disabled={starting}
+                className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg bg-violet px-3.5 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-dark"
+                style={{ cursor: 'pointer', background: '#6657d9' }}
+              >
+                <Icon name="code" size={13} />
+                <span>Solve with Multi-Agent (Groq/Gemini)</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* 4-Step Visual Workflow Pipeline */}
         <div
