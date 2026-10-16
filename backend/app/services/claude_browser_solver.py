@@ -800,8 +800,14 @@ def solve_assignment_via_claude_browser(
     endpoint = None
     use_direct_playwright = False
     try:
-        endpoint = BrowserSessionClient().cdp_endpoint(user_id)
-        logger.info("Using hosted Claude browser for user %s", user_id)
+        session_client = BrowserSessionClient()
+        try:
+            endpoint = session_client.cdp_endpoint(user_id)
+        except Exception:
+            logger.info("Hosted Claude browser session not active for user %s; starting session...", user_id)
+            session_client.open(user_id)
+            endpoint = session_client.cdp_endpoint(user_id)
+        logger.info("Using hosted Claude browser for user %s at %s", user_id, endpoint)
     except Exception as error:
         logger.warning("Hosted Claude browser unavailable for user %s: %s", user_id, error)
         if claude_session_key:
@@ -1080,15 +1086,36 @@ def solve_assignment_via_claude_browser(
         page.keyboard.insert_text(prompt_text)
         page.wait_for_timeout(1000)
 
+        # Dismiss any Claude banner/toast/dialog if present
+        for dismiss_sel in (
+            'button:has-text("Accept")',
+            'button:has-text("Acknowledge")',
+            'button:has-text("Got it")',
+            'button[aria-label="Close"]',
+            'button[aria-label*="Dismiss" i]',
+        ):
+            try:
+                btn = page.locator(dismiss_sel).first
+                if btn.count() > 0 and btn.is_visible():
+                    btn.click(timeout=1000)
+            except Exception:
+                pass
+
         # Wait until send button is enabled (in case file upload is finalizing)
-        send_btn = page.locator('button[aria-label*="Send" i], button[aria-label="Send Message" i]').first
+        send_btn = page.locator('button[aria-label*="Send" i], button[aria-label="Send Message" i], button[data-testid="chat-input-send"]').first
         for _ in range(8):
             if send_btn.is_visible() and send_btn.is_enabled():
                 break
             page.wait_for_timeout(1000)
 
         if send_btn.is_visible() and send_btn.is_enabled():
-            send_btn.click()
+            try:
+                send_btn.click(timeout=4000)
+            except Exception:
+                try:
+                    send_btn.click(force=True, timeout=2000)
+                except Exception:
+                    page.keyboard.press("Enter")
         else:
             page.keyboard.press("Enter")
 

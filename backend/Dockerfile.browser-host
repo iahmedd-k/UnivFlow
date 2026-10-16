@@ -6,7 +6,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/backend
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends xvfb fluxbox x11vnc novnc \
+    && apt-get install -y --no-install-recommends xvfb fluxbox x11vnc novnc socat \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python -m pip install --no-cache-dir --ignore-installed \

@@ -88,7 +88,13 @@ class BrowserSessionClient:
         port = state.get("cdp_port")
         if not state.get("active") or not port:
             raise RuntimeError("Your private Claude browser is not running. Connect Claude from settings and retry.")
-        return f"http://{settings.browser_cdp_host}:{port}"
+        host = settings.browser_cdp_host
+        try:
+            import socket
+            host_ip = socket.gethostbyname(host)
+        except Exception:
+            host_ip = host
+        return f"http://{host_ip}:{port}"
 
     def disconnect(self, user_id: str) -> None:
         self._request("DELETE", user_id, params={"delete_profile": "true"})

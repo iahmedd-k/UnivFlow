@@ -195,6 +195,9 @@ class BrowserSessionHost:
             chrome_log_handle = None
             chrome_log_path = Path(f"/tmp/chrome_session_{display}.log")
 
+            socat_path = shutil.which("socat")
+            target_cdp_port = cdp_port + 5000 if socat_path else cdp_port
+
             try:
                 # 1. Start Xvfb display server if available; otherwise run Chrome headless
                 xvfb_path = shutil.which("Xvfb")
@@ -232,7 +235,7 @@ class BrowserSessionHost:
                 chrome_cmd = [
                     self.chrome_executable,
                     f"--user-data-dir={profile_dir}",
-                    f"--remote-debugging-port={cdp_port}",
+                    f"--remote-debugging-port={target_cdp_port}",
                     "--remote-debugging-address=0.0.0.0",
                     "--remote-allow-origins=*",
                     "--no-sandbox",
@@ -263,6 +266,12 @@ class BrowserSessionHost:
                     log_file=chrome_log_handle,
                 ))
 
+                if socat_path:
+                    processes.append(self._start_process(
+                        ["socat", f"TCP-LISTEN:{cdp_port},fork,reuseaddr", f"TCP:127.0.0.1:{target_cdp_port}"],
+                        display,
+                    ))
+
                 deadline = time.monotonic() + 25
                 while time.monotonic() < deadline:
                     if any(process.poll() is not None for process in processes):
@@ -274,7 +283,7 @@ class BrowserSessionHost:
                                 pass
                         err_tail = ("\nDetails: " + " | ".join(exit_details)) if exit_details else ""
                         raise RuntimeError(f"A browser session process exited during startup.{err_tail}")
-                    if self._cdp_is_ready(cdp_port):
+                    if self._cdp_is_ready(target_cdp_port) or self._cdp_is_ready(cdp_port):
                         session = BrowserSession(display, cdp_port, vnc_port, processes)
                         self.sessions[key] = session
                         return {"cdp_port": cdp_port, "active": True}
