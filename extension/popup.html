@@ -187,6 +187,30 @@
       <span id="sessionStatus" class="badge badge-warn">Checking…</span>
     </div>
     <div id="cookieBox" class="cookie-preview">Searching for sessionKey cookie…</div>
+    <div style="display: flex; gap: 6px; margin-top: 8px;">
+      <button id="syncBtn" class="btn" style="flex: 1; padding: 8px;" disabled>
+        <span>⚡ Sync Claude</span>
+      </button>
+      <button id="copyBtn" class="btn btn-secondary" style="margin-top: 0; padding: 8px 12px;" title="Copy key">
+        <span>📋 Copy</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="status-row">
+      <span class="status-label">University Portal:</span>
+      <span id="portalSessionStatus" class="badge badge-warn">Checking…</span>
+    </div>
+    <div id="portalCookieBox" class="cookie-preview">Searching for portal cookies…</div>
+    <div style="display: flex; gap: 6px; margin-top: 8px;">
+      <button id="syncPortalBtn" class="btn" style="flex: 1; padding: 8px; background: #2d7a52;" disabled>
+        <span>⚡ Sync Portal</span>
+      </button>
+      <button id="copyPortalBtn" class="btn btn-secondary" style="margin-top: 0; padding: 8px 12px;" title="Copy cookie">
+        <span>📋 Copy</span>
+      </button>
+    </div>
   </div>
 
   <div class="card">
@@ -200,14 +224,8 @@
     </div>
   </div>
 
-  <button id="syncBtn" class="btn" disabled>
-    <span>⚡ Sync Session to Uniflow</span>
-  </button>
-  <button id="copyBtn" class="btn btn-secondary">
-    <span>📋 Copy sessionKey to Clipboard</span>
-  </button>
-
   <div id="noticeBox" class="notice"></div>
+
 
   <div class="footer">
     Zero VNC latency · No Cloudflare Captchas · 100% Private

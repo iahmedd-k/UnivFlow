@@ -204,6 +204,15 @@ export const api = {
     method: 'PUT', body: JSON.stringify({ url, ...options }),
   }),
 
+  syncPortalCookies: async (cookies, portalUrl = null, token = null) => fetchFromApi('/portal/sync-cookies', token, {
+    method: 'POST', body: JSON.stringify({ cookies, portal_url: portalUrl }),
+  }),
+
+  disconnectPortalCookies: async (token = null) => fetchFromApi('/portal/cookies', token, {
+    method: 'DELETE',
+  }),
+
+
   openPortalBrowser: async (token = null) => fetchFromApi('/portal/open', token, { method: 'POST' }),
   getPortalConnectionStatus: async (token = null) => fetchFromApi('/portal/connection-status', token, { noCache: true }),
 

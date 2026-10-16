@@ -31,8 +31,21 @@ export default function SettingsPage() {
   }, [getToken]);
 
   useEffect(() => {
-    loadEmail();
-  }, [loadEmail]);
+    let active = true;
+    const fetchEmail = async () => {
+      try {
+        const token = await getToken();
+        const result = await api.getNotificationEmail(token);
+        if (active) setNotificationEmail(result?.email || '');
+      } catch (err) {
+        console.error('Failed to load notification email:', err);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    fetchEmail();
+    return () => { active = false; };
+  }, [getToken]);
 
   const loadBrowserStatus = useCallback(async () => {
     try {
@@ -46,8 +59,90 @@ export default function SettingsPage() {
   }, [getToken]);
 
   useEffect(() => {
-    loadBrowserStatus();
-  }, [loadBrowserStatus]);
+    let active = true;
+    const fetchBrowser = async () => {
+      try {
+        const token = await getToken();
+        const result = await api.getClaudeBrowserStatus(token);
+        if (active) {
+          setBrowserStatus(result);
+          setBrowserError('');
+        }
+      } catch (err) {
+        if (active) setBrowserError(err.message || 'Could not load your private Claude browser status.');
+      }
+    };
+    fetchBrowser();
+    return () => { active = false; };
+  }, [getToken]);
+
+  const [portalStatus, setPortalStatus] = useState(null);
+  const [portalCookieInput, setPortalCookieInput] = useState('');
+  const [syncingPortalCookie, setSyncingPortalCookie] = useState(false);
+
+  const loadPortalStatus = useCallback(async () => {
+    try {
+      const token = await getToken();
+      const res = await api.getPortalSettings(token);
+      setPortalStatus(res);
+    } catch (err) {
+      console.error('Failed to load portal status:', err);
+    }
+  }, [getToken]);
+
+  useEffect(() => {
+    let active = true;
+    const fetchPortal = async () => {
+      try {
+        const token = await getToken();
+        const res = await api.getPortalSettings(token);
+        if (active) setPortalStatus(res);
+      } catch (err) {
+        console.error('Failed to load portal status:', err);
+      }
+    };
+    fetchPortal();
+    return () => { active = false; };
+  }, [getToken]);
+
+  const handleSyncPortalCookie = async (e) => {
+    if (e) e.preventDefault();
+    if (!portalCookieInput.trim()) {
+      setBrowserError('Please enter your portal session cookie.');
+      return;
+    }
+    setSyncingPortalCookie(true);
+    setBrowserError('');
+    setBrowserNotice('');
+    try {
+      const token = await getToken();
+      const res = await api.syncPortalCookies(portalCookieInput.trim(), null, token);
+      setBrowserNotice(res?.message || 'Portal session cookie connected successfully!');
+      setPortalCookieInput('');
+      await loadPortalStatus();
+    } catch (err) {
+      setBrowserError(err.message || 'Could not sync portal session cookie.');
+    } finally {
+      setSyncingPortalCookie(false);
+    }
+  };
+
+  const handleDisconnectPortalCookie = async () => {
+    if (!window.confirm('Disconnect your university portal session cookie?')) return;
+    setSyncingPortalCookie(true);
+    setBrowserError('');
+    setBrowserNotice('');
+    try {
+      const token = await getToken();
+      await api.disconnectPortalCookies(token);
+      setBrowserNotice('Portal session cookies disconnected.');
+      await loadPortalStatus();
+    } catch (err) {
+      setBrowserError(err.message || 'Could not disconnect portal session cookies.');
+    } finally {
+      setSyncingPortalCookie(false);
+    }
+  };
 
   const startClaudeBrowser = async () => {
     setBrowserBusy(true);
@@ -293,7 +388,7 @@ export default function SettingsPage() {
               <div>
                 <h3 className="text-xs font-semibold text-[#483ba6]">⚡ 1-Click Fast Sync (No Captchas, No VNC Lag)</h3>
                 <p className="mt-1 text-xs leading-relaxed text-[#686c80] max-w-2xl">
-                  Sync your Claude session directly. Eliminates Google OAuth "Insecure browser" blocks, avoids Cloudflare captchas, and requires zero remote browser streaming.
+                  Sync your Claude session directly. Eliminates Google OAuth &quot;Insecure browser&quot; blocks, avoids Cloudflare captchas, and requires zero remote browser streaming.
                 </p>
               </div>
               {browserStatus?.has_session_key && (
@@ -548,13 +643,53 @@ export default function SettingsPage() {
               </span>
               <span className="inline-flex rounded-full bg-[#eaf7f1] px-2 py-1 text-xs font-semibold text-[#438a71]">Connected</span>
             </article>
-            <article className="flex min-h-[60px] items-center gap-3 py-3">
-              <span className="grid h-[30px] w-[30px] place-items-center rounded-lg bg-[#f0edff] text-[#6657d9]"><Icon name="globe" size={18} /></span>
-              <span className="flex min-w-0 flex-1 flex-col gap-1">
-                <strong className="text-xs font-semibold text-[#414553]">University Portal</strong>
-                <small className="text-xs text-[#9295a2]">Access grades, schedules, and announcements</small>
-              </span>
-              <span className="inline-flex rounded-full bg-[#fff4e4] px-2 py-1 text-xs font-semibold text-[#a87936]">Configure in Portal</span>
+            <article className="flex flex-col gap-2 py-3">
+              <div className="flex min-h-[50px] items-center gap-3">
+                <span className="grid h-[30px] w-[30px] place-items-center rounded-lg bg-[#f0edff] text-[#6657d9]"><Icon name="globe" size={18} /></span>
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <strong className="text-xs font-semibold text-[#414553]">University Portal</strong>
+                  <small className="text-xs text-[#9295a2]">Sync course attendance and schedules via fast session cookies</small>
+                </span>
+                {portalStatus?.has_session_cookies || portalStatus?.session_status === 'ACTIVE' ? (
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-[#eaf7f1] px-2.5 py-1 text-xs font-semibold text-[#438a71]">
+                      <span className="h-1.5 w-1.5 rounded-full bg-[#438a71]" /> Connected
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleDisconnectPortalCookie}
+                      disabled={syncingPortalCookie}
+                      className="text-xs text-[#a04a4a] hover:underline"
+                    >
+                      Disconnect
+                    </button>
+                  </div>
+                ) : (
+                  <span className="inline-flex rounded-full bg-[#fff4e4] px-2.5 py-1 text-xs font-semibold text-[#a87936]">
+                    Not Connected
+                  </span>
+                )}
+              </div>
+
+              {!(portalStatus?.has_session_cookies || portalStatus?.session_status === 'ACTIVE') && (
+                <form onSubmit={handleSyncPortalCookie} className="mt-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:pl-[42px]">
+                  <input
+                    type="password"
+                    placeholder="Paste ASP.NET_SessionId (or full cookie string)"
+                    className="flex-1 rounded-md border border-[#d6d4f0] bg-white px-3 py-1.5 text-xs font-mono text-[#292d3a] placeholder:text-[#9fa3b5] focus:border-[#6657d9] focus:outline-none"
+                    value={portalCookieInput}
+                    onChange={(e) => setPortalCookieInput(e.target.value)}
+                    disabled={syncingPortalCookie}
+                  />
+                  <button
+                    type="submit"
+                    className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-3 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55 whitespace-nowrap"
+                    disabled={syncingPortalCookie || !portalCookieInput.trim()}
+                  >
+                    {syncingPortalCookie ? 'Connecting…' : 'Connect Portal'}
+                  </button>
+                </form>
+              )}
             </article>
           </div>
         </div>

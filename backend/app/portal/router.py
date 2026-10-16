@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from hashlib import sha256
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urljoin
 
 from typing import Optional, Dict, Any, Tuple
 
@@ -49,6 +49,12 @@ class PortalUrlInput(BaseModel):
     timetable_url: str | None = Field(default=None, max_length=1000)
     login_email: str | None = Field(default=None, max_length=320)
     auth_method: str = Field(default="google", pattern="^(google|password|either)$")
+
+
+class PortalCookieSyncRequest(BaseModel):
+    cookies: str
+    portal_url: Optional[str] = None
+
 
 
 def _find_system_browser() -> str:
@@ -217,14 +223,16 @@ def get_portal_settings(db: Session = Depends(get_db), user: dict = Depends(requ
     report = _portal_setting(db, uid, "portal_academic_summary")
     session_status = _portal_setting(db, uid, "portal_session_status")
     last_synced = _portal_setting(db, uid, "portal_last_synced_at")
+    cookie_setting = _portal_setting(db, uid, "portal_session_cookies")
 
     profile = _profile_dir(uid)
     has_saved_session = profile.exists() and any(profile.iterdir())
+    has_session_cookies = bool(cookie_setting and cookie_setting.value)
 
     status = "NOT_CONFIGURED"
     if session_status and session_status.value:
         status = session_status.value
-    elif has_saved_session:
+    elif has_session_cookies or has_saved_session:
         status = "ACTIVE"
 
     process = _portal_processes.get(uid)
@@ -240,6 +248,7 @@ def get_portal_settings(db: Session = Depends(get_db), user: dict = Depends(requ
         "report": json.loads(report.value) if report and report.value else None,
         "browser_open": is_open,
         "has_saved_session": has_saved_session,
+        "has_session_cookies": has_session_cookies,
         "session_status": status,
         "last_synced_at": last_synced.value if last_synced else None,
     }
@@ -260,6 +269,233 @@ def save_portal_settings(payload: PortalUrlInput, db: Session = Depends(get_db),
     _set_portal_setting(db, uid, "university_portal_auth_method", payload.auth_method, "Portal sign-in method selected by the student")
     db.commit()
     return {"url": url, "saved": True}
+
+
+def _parse_cookie_header(raw: str) -> dict[str, str]:
+    if not raw or not isinstance(raw, str):
+        return {}
+    raw = raw.strip()
+    if not raw:
+        return {}
+
+    # Check if JSON
+    if (raw.startswith("{") and raw.endswith("}")) or (raw.startswith("[") and raw.endswith("]")):
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return {str(k).strip(): str(v).strip() for k, v in data.items() if k and v}
+            elif isinstance(data, list):
+                res = {}
+                for item in data:
+                    if isinstance(item, dict) and "name" in item and "value" in item:
+                        res[str(item["name"]).strip()] = str(item["value"]).strip()
+                if res:
+                    return res
+        except Exception:
+            pass
+
+    cookie_attribute_names = {"path", "domain", "expires", "max-age", "samesite", "httponly", "secure"}
+    cookies = {}
+    parts = re.split(r"[;\r\n]+", raw)
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if "=" in part:
+            key, val = part.split("=", 1)
+            key = key.strip()
+            val = val.strip().strip('"\'')
+            if key and key.lower() not in cookie_attribute_names:
+                cookies[key] = val
+        else:
+            cleaned = part.strip().strip('"\'')
+            if cleaned.lower() not in cookie_attribute_names and len(cleaned) >= 8 and not cookies:
+                cookies["ASP.NET_SessionId"] = cleaned
+
+    return cookies
+
+
+def _fetch_and_sync_portal_http(db: Session, uid: str, cookies: dict, portal_base_url: Optional[str] = None) -> dict:
+    import httpx
+    from bs4 import BeautifulSoup
+
+    if not cookies:
+        raise HTTPException(status_code=400, detail="No portal session cookies provided.")
+
+    base = (portal_base_url or "https://portals.au.edu.pk/students/").rstrip("/")
+    if not base.startswith("http"):
+        base = "https://" + base
+
+    att_setting = _portal_setting(db, uid, "portal_attendance_url")
+    candidate_att_urls = []
+    if att_setting and att_setting.value:
+        candidate_att_urls.append(att_setting.value)
+    candidate_att_urls.extend([
+        f"{base}/Reports/Attendance",
+        f"{base}/attendance.aspx",
+        f"{base}/Reports/Attendance.aspx",
+    ])
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": base + "/",
+    }
+
+    attendance_rows = []
+    timetable_rows = []
+    summary = {}
+    successful_url = None
+
+    with httpx.Client(timeout=15.0, follow_redirects=False, headers=headers) as client:
+        last_resp = None
+        for cand_url in candidate_att_urls:
+            try:
+                resp = client.get(cand_url, cookies=cookies)
+                last_resp = resp
+
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    loc = resp.headers.get("Location", "")
+                    if any(k in loc.lower() for k in ("login", "signin", "auth", "accounts.google.com")):
+                        raise HTTPException(
+                            status_code=401,
+                            detail="Session cookie expired or unauthenticated. Please sign into the university portal and copy a fresh cookie.",
+                        )
+                    if loc.startswith("/") or base in loc:
+                        target = loc if loc.startswith("http") else urljoin(cand_url, loc)
+                        resp = client.get(target, cookies=cookies)
+                        last_resp = resp
+
+                if resp.status_code == 200:
+                    html = resp.text
+                    soup = BeautifulSoup(html, "html.parser")
+                    text_lower = soup.get_text().lower()
+
+                    if "enter your password" in text_lower or ("sign in with google" in text_lower and not soup.find_all("table")):
+                        raise HTTPException(
+                            status_code=401,
+                            detail="Portal session has expired. Please sign into the portal and copy fresh cookies.",
+                        )
+
+                    tables = []
+                    for t in soup.find_all("table"):
+                        rows = []
+                        for tr in t.find_all("tr"):
+                            cells = [td.get_text(separator=" ", strip=True) for td in tr.find_all(["th", "td"])]
+                            if cells:
+                                rows.append(cells)
+                        if rows:
+                            tables.append(rows)
+
+                    title = soup.title.string.strip() if soup.title and soup.title.string else "Attendance Report"
+                    parsed_att = _attendance_rows(tables, text_lower)
+                    if parsed_att:
+                        report = {"tables": tables, "text": text_lower, "title": title}
+                        attendance_rows, timetable_rows, summary = _ingest_report_data(db, report, cand_url, uid)
+                        successful_url = cand_url
+
+                        for k, v in resp.cookies.items():
+                            cookies[k] = v
+                        break
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.debug(f"Candidate URL {cand_url} error: {e}")
+                continue
+
+        if not attendance_rows and last_resp is not None and last_resp.status_code != 200:
+            raise HTTPException(
+                status_code=last_resp.status_code,
+                detail=f"University portal returned HTTP {last_resp.status_code}. Please verify your portal URL and cookies.",
+            )
+
+        # Optional timetable fetch
+        if successful_url:
+            tt_urls = [f"{base}/Reports/Timetable", f"{base}/timetable.aspx"]
+            for tt_url in tt_urls:
+                try:
+                    tt_resp = client.get(tt_url, cookies=cookies)
+                    if tt_resp.status_code == 200:
+                        tt_soup = BeautifulSoup(tt_resp.text, "html.parser")
+                        tt_tables = []
+                        for t in tt_soup.find_all("table"):
+                            rows = []
+                            for tr in t.find_all("tr"):
+                                cells = [td.get_text(separator=" ", strip=True) for td in tr.find_all(["th", "td"])]
+                                if cells:
+                                    rows.append(cells)
+                            if rows:
+                                tt_tables.append(rows)
+                        if tt_tables:
+                            _ingest_report_data(
+                                db,
+                                {"tables": tt_tables, "text": tt_soup.get_text().lower(), "title": "Timetable"},
+                                tt_url,
+                                uid,
+                            )
+                            break
+                except Exception:
+                    pass
+
+    if not attendance_rows:
+        raise HTTPException(
+            status_code=400,
+            detail="Connected to portal, but no course attendance records were found. Check your portal cookies or permissions.",
+        )
+
+    _set_portal_setting(db, uid, "portal_session_cookies", json.dumps(cookies), "Saved session cookies for portal HTTP sync")
+    _set_portal_setting(db, uid, "portal_session_status", "ACTIVE", "Active portal session via cookies")
+    if successful_url:
+        _set_portal_setting(db, uid, "portal_attendance_url", successful_url, "Verified attendance report URL")
+    db.commit()
+
+    return {
+        "status": "success",
+        "attendance_count": len(attendance_rows),
+        "attendance": attendance_rows,
+        "summary": summary,
+        "message": f"Successfully synced {len(attendance_rows)} course attendance records in milliseconds!",
+    }
+
+
+@router.post("/sync-cookies", response_model=dict)
+def sync_portal_cookies(
+    payload: PortalCookieSyncRequest,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_current_user),
+):
+    """Sync student's attendance instantly using HTTP session cookies (no browser needed)."""
+    uid = _user_id(user)
+    cookies = _parse_cookie_header(payload.cookies)
+    if not cookies:
+        raise HTTPException(status_code=400, detail="Invalid cookies. Please paste your portal cookie string (e.g., ASP.NET_SessionId=...).")
+
+    url = payload.portal_url
+    if not url:
+        stored_url = _portal_setting(db, uid, "university_portal_url")
+        url = stored_url.value if stored_url else "https://portals.au.edu.pk/students/"
+    else:
+        url = _validate_portal_url(url)
+        _set_portal_setting(db, uid, "university_portal_url", url, "Student-configured university portal URL")
+
+    return _fetch_and_sync_portal_http(db, uid, cookies, url)
+
+
+@router.delete("/cookies", response_model=dict)
+def disconnect_portal_cookies(
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_current_user),
+):
+    """Disconnect saved portal session cookies."""
+    uid = _user_id(user)
+    db.query(Setting).filter(
+        Setting.key == _user_setting_key(uid, "portal_session_cookies")
+    ).delete(synchronize_session=False)
+    _set_portal_setting(db, uid, "portal_session_status", "NOT_CONFIGURED", "Portal session cookies cleared")
+    db.commit()
+    return {"status": "disconnected", "has_session_cookies": False}
+
 
 
 def _portal_page_needs_login(page, portal_host: str) -> bool:
@@ -1969,6 +2205,19 @@ def _sync_portal_for_user(uid: str):
             item = _portal_setting(db, uid, key)
             if item and item.value and item.value not in target_urls:
                 target_urls.append(item.value)
+
+        # Fast-path: If student has saved session cookies, try fast HTTP sync first (zero browser overhead)
+        cookie_setting = _portal_setting(db, uid, "portal_session_cookies")
+        if cookie_setting and cookie_setting.value:
+            try:
+                cookies = _parse_cookie_header(cookie_setting.value)
+                if cookies:
+                    logger.info("Attempting fast HTTP portal sync with saved session cookies for user %s", uid)
+                    http_res = _fetch_and_sync_portal_http(db, uid, cookies, base.value)
+                    if http_res.get("status") == "success":
+                        return http_res
+            except Exception as http_err:
+                logger.warning("Fast HTTP portal sync failed or expired, falling back to browser: %s", http_err)
 
         result = _scrape_report_thread(target_urls, _profile_dir(uid), uid)
         if result.get("status") == "session_expired":
