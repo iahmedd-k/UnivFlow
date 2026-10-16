@@ -1244,7 +1244,7 @@ def solve_assignment_via_claude_browser(
                 logger.info(f"Attempting auto-repair for {len(validation_errors)} failed code files")
                 for error in validation_errors[:3]:  # Limit to 3 repairs
                     try:
-                        from app.services.ai_solution import repair_single_task_code
+                        from app.services.ai_solution import repair_single_task_code, replace_task_source
                         task_id = error.get("task")
                         filename = error.get("filename")
                         # Extract the failed code from the solution

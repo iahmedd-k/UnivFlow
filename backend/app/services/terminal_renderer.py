@@ -256,6 +256,22 @@ class TerminalCardRenderer:
         return f"data:image/svg+xml;base64,{b64}"
 
 
+class TerminalRenderer:
+    """Renderer interface for capturing and embedding code terminal execution output."""
+    @staticmethod
+    def render_terminal_screenshot(command: str = "", stdout: str = "", stderr: str = "", exit_code: int = 0) -> Optional[str]:
+        output = stdout or ""
+        if stderr:
+            output = f"{output}\n[stderr]\n{stderr}" if output else stderr
+        if not output.strip():
+            output = f"[Process completed with exit code {exit_code}]"
+        png_bytes = TerminalCardRenderer.generate_terminal_png(command=command, output_text=output)
+        if png_bytes:
+            b64 = base64.b64encode(png_bytes).decode("utf-8")
+            return f"data:image/png;base64,{b64}"
+        return None
+
+
 class DiagramRenderer:
     """
     Renders Mermaid.js and PlantUML diagrams into high-resolution images for lab report flowcharts.
