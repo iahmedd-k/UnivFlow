@@ -315,9 +315,87 @@ def _parse_cookie_header(raw: str) -> dict[str, str]:
     return cookies
 
 
+def _parse_html_report(html: str) -> tuple[str, str, list]:
+    """Extract (title, text_lower, tables) from HTML.
+    Uses BeautifulSoup if available, and gracefully falls back to built-in HTMLParser.
+    """
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        text_lower = soup.get_text(separator=" ").lower()
+        title = soup.title.string.strip() if soup.title and soup.title.string else "Attendance Report"
+        tables = []
+        for t in soup.find_all("table"):
+            rows = []
+            for tr in t.find_all("tr"):
+                cells = [td.get_text(separator=" ", strip=True) for td in tr.find_all(["th", "td"])]
+                if cells:
+                    rows.append(cells)
+            if rows:
+                tables.append(rows)
+        return title, text_lower, tables
+    except ImportError:
+        from html.parser import HTMLParser
+
+        class _TableParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.title = ""
+                self._in_title = False
+                self.text_parts = []
+                self.tables = []
+                self._curr_table = None
+                self._curr_row = None
+                self._curr_cell = None
+
+            def handle_starttag(self, tag, attrs):
+                t = tag.lower()
+                if t == "title":
+                    self._in_title = True
+                elif t == "table":
+                    self._curr_table = []
+                elif t == "tr" and self._curr_table is not None:
+                    self._curr_row = []
+                elif t in ("td", "th") and self._curr_row is not None:
+                    self._curr_cell = []
+
+            def handle_endtag(self, tag):
+                t = tag.lower()
+                if t == "title":
+                    self._in_title = False
+                elif t in ("td", "th") and self._curr_cell is not None:
+                    cell_text = " ".join(self._curr_cell).strip()
+                    if self._curr_row is not None:
+                        self._curr_row.append(cell_text)
+                    self._curr_cell = None
+                elif t == "tr" and self._curr_row is not None:
+                    if self._curr_row:
+                        self._curr_table.append(self._curr_row)
+                    self._curr_row = None
+                elif t == "table" and self._curr_table is not None:
+                    if self._curr_table:
+                        self.tables.append(self._curr_table)
+                    self._curr_table = None
+
+            def handle_data(self, data):
+                text = data.strip()
+                if not text:
+                    return
+                if self._in_title:
+                    self.title += " " + text
+                if self._curr_cell is not None:
+                    self._curr_cell.append(text)
+                self.text_parts.append(text)
+
+        parser = _TableParser()
+        parser.feed(html)
+        title = parser.title.strip() or "Attendance Report"
+        text_lower = " ".join(parser.text_parts).lower()
+        return title, text_lower, parser.tables
+
+
 def _fetch_and_sync_portal_http(db: Session, uid: str, cookies: dict, portal_base_url: Optional[str] = None) -> dict:
     import httpx
-    from bs4 import BeautifulSoup
 
     if not cookies:
         raise HTTPException(status_code=400, detail="No portal session cookies provided.")
@@ -369,26 +447,14 @@ def _fetch_and_sync_portal_http(db: Session, uid: str, cookies: dict, portal_bas
 
                 if resp.status_code == 200:
                     html = resp.text
-                    soup = BeautifulSoup(html, "html.parser")
-                    text_lower = soup.get_text().lower()
+                    title, text_lower, tables = _parse_html_report(html)
 
-                    if "enter your password" in text_lower or ("sign in with google" in text_lower and not soup.find_all("table")):
+                    if "enter your password" in text_lower or ("sign in with google" in text_lower and not tables):
                         raise HTTPException(
                             status_code=401,
                             detail="Portal session has expired. Please sign into the portal and copy fresh cookies.",
                         )
 
-                    tables = []
-                    for t in soup.find_all("table"):
-                        rows = []
-                        for tr in t.find_all("tr"):
-                            cells = [td.get_text(separator=" ", strip=True) for td in tr.find_all(["th", "td"])]
-                            if cells:
-                                rows.append(cells)
-                        if rows:
-                            tables.append(rows)
-
-                    title = soup.title.string.strip() if soup.title and soup.title.string else "Attendance Report"
                     parsed_att = _attendance_rows(tables, text_lower)
                     if parsed_att:
                         report = {"tables": tables, "text": text_lower, "title": title}
@@ -417,20 +483,11 @@ def _fetch_and_sync_portal_http(db: Session, uid: str, cookies: dict, portal_bas
                 try:
                     tt_resp = client.get(tt_url, cookies=cookies)
                     if tt_resp.status_code == 200:
-                        tt_soup = BeautifulSoup(tt_resp.text, "html.parser")
-                        tt_tables = []
-                        for t in tt_soup.find_all("table"):
-                            rows = []
-                            for tr in t.find_all("tr"):
-                                cells = [td.get_text(separator=" ", strip=True) for td in tr.find_all(["th", "td"])]
-                                if cells:
-                                    rows.append(cells)
-                            if rows:
-                                tt_tables.append(rows)
+                        tt_title, tt_text_lower, tt_tables = _parse_html_report(tt_resp.text)
                         if tt_tables:
                             _ingest_report_data(
                                 db,
-                                {"tables": tt_tables, "text": tt_soup.get_text().lower(), "title": "Timetable"},
+                                {"tables": tt_tables, "text": tt_text_lower, "title": tt_title or "Timetable"},
                                 tt_url,
                                 uid,
                             )
