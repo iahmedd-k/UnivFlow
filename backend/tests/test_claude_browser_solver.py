@@ -18,6 +18,8 @@ from app.services.claude_browser_solver import (
     connect_to_chrome,
     is_heavy_ml_assignment,
     _is_assignment_already_solving,
+    _has_display,
+    _get_headless_mode,
 )
 from app.services.ai_solution import (
     export_solution_to_google_doc,
@@ -531,3 +533,16 @@ def test_solve_assignment_via_claude_browser_completed_with_google_docs_warning(
         assert mock_solution.validated_content is not None
         assert "Google Docs" in mock_solution.validation_errors
         assert mock_db.commit.called
+
+
+def test_has_display_and_get_headless_mode():
+    """Verify headless mode enforces True when running in headless/container environments."""
+    # When on Linux with no DISPLAY or WAYLAND_DISPLAY
+    with patch("os.name", "posix"), patch.dict(os.environ, {}, clear=True):
+        assert _has_display() is False
+        assert _get_headless_mode() is True
+
+    # When on Linux with DISPLAY set
+    with patch("os.name", "posix"), patch.dict(os.environ, {"DISPLAY": ":0"}):
+        assert _has_display() is True
+

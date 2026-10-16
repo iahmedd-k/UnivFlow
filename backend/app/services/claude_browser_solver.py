@@ -44,13 +44,26 @@ CDP_CONNECT_ATTEMPTS = 2
 BROWSER_LAUNCH_TIMEOUT = 30  # seconds
 CLAUDE_RESPONSE_TIMEOUT = 300  # seconds (5 minutes for complex responses)
 
+def _has_display() -> bool:
+    """Check if an X11, Wayland, or Windows desktop display is available."""
+    if os.name == "nt":
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 def _get_headless_mode() -> bool:
-    """Get headless mode from settings. Default to False (headed) for Azure GPU acceleration via ANGLE."""
+    """
+    Get headless mode from settings.
+    Enforces True if no graphical display server ($DISPLAY / $WAYLAND_DISPLAY) is available
+    to prevent Playwright crashing on Linux / Docker environments.
+    """
+    if not _has_display():
+        return True
     try:
         from app.core.config import settings
-        return settings.playwright_headless
+        return bool(settings.playwright_headless)
     except Exception:
-        return False  # Safe default: HEADED for Azure GPU acceleration
+        return True
 
 _claude_processes: Dict[str, subprocess.Popen] = {}  # Per-user processes
 
@@ -768,6 +781,9 @@ def solve_assignment_via_claude_browser(
     # Resolve headless mode from config if not explicitly provided
     if headless is None:
         headless = _get_headless_mode()
+    elif not _has_display() and not headless:
+        logger.warning("No display server detected; enforcing headless=True for assignment %s", assignment_id)
+        headless = True
 
     # Try hosted browser service first, or direct Playwright if session key is synced
     from app.services.browser_sessions import BrowserSessionClient
@@ -814,8 +830,11 @@ def solve_assignment_via_claude_browser(
         browser = None
         context = None
         if use_direct_playwright:
+            direct_headless = True if headless is None else headless
+            if not _has_display():
+                direct_headless = True
             browser = p.chromium.launch(
-                headless=True if headless is None else headless,
+                headless=direct_headless,
                 args=[
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
@@ -833,8 +852,11 @@ def solve_assignment_via_claude_browser(
             except Exception as e:
                 if claude_session_key:
                     logger.warning("CDP connect failed (%s), falling back to direct headless Chromium with sessionKey", e)
+                    direct_headless = True if headless is None else headless
+                    if not _has_display():
+                        direct_headless = True
                     browser = p.chromium.launch(
-                        headless=True if headless is None else headless,
+                        headless=direct_headless,
                         args=[
                             "--no-sandbox",
                             "--disable-dev-shm-usage",

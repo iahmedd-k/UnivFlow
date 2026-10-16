@@ -77,7 +77,7 @@ class Settings(BaseSettings):
 
     google_doc_template_id: str = ""
 
-    playwright_headless: bool = False
+    playwright_headless: bool = True
     playwright_browsers_path: str = "~/.cache/ms-playwright"
     browser_service_url: str = "http://127.0.0.1:7900"
     browser_service_token: str = ""
