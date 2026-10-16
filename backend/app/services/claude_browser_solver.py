@@ -1169,12 +1169,11 @@ def solve_assignment_via_claude_browser(
 
         page.bring_to_front()
 
-        # Check current URL or navigate to new chat
-        current_url = page.url or ""
-        if "claude.ai" not in current_url:
+        # Always start in a clean, isolated new chat to prevent leftover files from other courses contaminating this solve
+        try:
             page.goto("https://claude.ai/new", wait_until="domcontentloaded", timeout=30000)
-        elif not current_url.endswith("/new"):
-            page.goto("https://claude.ai/new", wait_until="domcontentloaded", timeout=30000)
+        except Exception as nav_err:
+            logger.debug(f"Navigation to /new: {nav_err}")
 
         # Allow SPA hydration
         page.wait_for_timeout(2000)
@@ -1421,7 +1420,12 @@ def solve_assignment_via_claude_browser(
             f"{questions_block}\n"
             f"EXPERT PLANNING & EXECUTION INSTRUCTIONS:\n"
             f"1. PLANNING PHASE: Thoroughly examine the assignment title, questions, and attached reference materials. Identify every discrete task, exercise, or problem statement requested.\n"
-            f"2. MODALITY COMPLIANCE: Adhere strictly to the {domain.upper()} deliverable requirements below. Do not mix unrelated formats (e.g. never generate terminal commands or code blocks for theoretical essay questions).\n\n"
+            f"2. MODALITY COMPLIANCE: Adhere strictly to the {domain.upper()} deliverable requirements below. Do not mix unrelated formats (e.g. never generate terminal commands or code blocks for theoretical or quantitative hand calculation questions).\n"
+            f"3. STRICT SINGLE-ASSIGNMENT FOCUS & ZERO-QUESTION DIRECTIVE:\n"
+            f"   - You must solve ONLY this specific assignment: '{assignment.title}' for the course '{meta['course_name']}'.\n"
+            f"   - If any materials from previous sessions or other courses appear in context, IGNORE THEM COMPLETELY.\n"
+            f"   - DO NOT ask clarifying questions, DO NOT ask which task to start with, and DO NOT ask the user for preferences.\n"
+            f"   - Solve ALL questions for this assignment completely right now from start to finish in this single response.\n\n"
             f"{domain_instructions}\n\n"
             f"{report_structure}\n"
             "Do not attempt to generate a Google Doc yourself; our automated system compiles your output into an official Air University Google Doc with title cover page, high-definition terminal cards, and rendered diagrams."
