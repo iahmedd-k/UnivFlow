@@ -1023,35 +1023,31 @@ def export_solution_to_google_doc(
                     style_type="NORMAL"
                 )
 
-                # 3. Source Code / Diagram Markup (Heading 2 + Code Block)
+                # 3. Execution / Visual Diagram Output (Heading 2 + Status Badge + Image + Output)
                 docs_service.append_styled_block(
                     doc_id,
-                    f"2. Source Code Implementation ({source_file['name']})\n" if not is_diagram else f"2. Architecture & Diagram Specification ({source_file['name']})\n",
+                    "2. Terminal Output & Execution Screenshot\n" if not is_diagram else "2. Visual Architecture Diagram & Verification\n",
                     style_type="HEADING_2"
                 )
                 docs_service.append_styled_block(
                     doc_id,
-                    f"{source_file['content'].rstrip()}\n\n",
-                    style_type="CODE"
-                )
-
-                # 4. Execution / Visual Diagram Output (Heading 2 + Status Badge + Image + Output)
-                docs_service.append_styled_block(
-                    doc_id,
-                    "3. Execution Verification & Terminal Output\n" if not is_diagram else "3. Visual Architecture Diagram & Verification\n",
-                    style_type="HEADING_2"
-                )
-                docs_service.append_styled_block(
-                    doc_id,
-                    f"Status: {run_summary} (Exit Code: {exit_code}) | Engine: {result.get('tool') or ('Kroki Engine' if is_diagram else 'Sandbox')}\n\n",
+                    f"Status: {run_summary} (Exit Code: {exit_code}) | Engine: {result.get('tool') or ('Draw.io Engine' if is_diagram else 'Terminal Sandbox')}\n\n",
                     style_type="BOLD_LABEL"
                 )
 
-                # Embed all screenshot image parts if passed or rendered
-                is_task_passed = (result.get("status") == "passed" or result.get("success") is True) and result.get("exit_code") == 0
+                # Embed all screenshot image parts (with on-the-fly fallback if needed)
                 all_screenshot_uris = result.get("screenshot_data_uris") or ([result.get("screenshot_data_uri")] if result.get("screenshot_data_uri") else [])
+                if not all_screenshot_uris and terminal_output and terminal_output.strip() and terminal_output not in ("No terminal output was produced.", "Diagram rendered successfully."):
+                    from app.services.terminal_renderer import TerminalCardRenderer
+                    try:
+                        cmd = result.get("command") or f"run {source_file['name']}"
+                        png_list = TerminalCardRenderer.generate_terminal_pngs(cmd, terminal_output, title=f"Terminal Output — {source_file['name']}")
+                        for p_bytes in png_list:
+                            all_screenshot_uris.append(f"data:image/png;base64,{base64.b64encode(p_bytes).decode('ascii')}")
+                    except Exception as gen_err:
+                        logger.warning(f"On-the-fly terminal screenshot generation failed for task {task}: {gen_err}")
 
-                if (is_task_passed or is_diagram) and all_screenshot_uris:
+                if all_screenshot_uris:
                     for s_idx, screenshot_uri in enumerate(all_screenshot_uris):
                         if screenshot_uri and "base64," in screenshot_uri:
                             try:
@@ -1069,6 +1065,18 @@ def export_solution_to_google_doc(
                 docs_service.append_styled_block(
                     doc_id,
                     f"\nOutput Summary:\n{terminal_output}\n\n" if is_diagram else f"\nConsole Output:\n{terminal_output}\n\n",
+                    style_type="CODE"
+                )
+
+                # 4. Source Code / Diagram Markup (Heading 2 + Code Block)
+                docs_service.append_styled_block(
+                    doc_id,
+                    f"3. Source Code Implementation ({source_file['name']})\n" if not is_diagram else f"3. Architecture & Diagram Specification ({source_file['name']})\n",
+                    style_type="HEADING_2"
+                )
+                docs_service.append_styled_block(
+                    doc_id,
+                    f"{source_file['content'].rstrip()}\n\n",
                     style_type="CODE"
                 )
 

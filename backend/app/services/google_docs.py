@@ -202,9 +202,9 @@ class GoogleDocsService:
                 para_style["spaceBelow"] = {"magnitude": 6, "unit": "PT"}
                 para_fields.append("spaceBelow")
 
-            if alignment:
-                para_style["alignment"] = alignment
-                para_fields.append("alignment")
+            effective_alignment = alignment if alignment else "START"
+            para_style["alignment"] = effective_alignment
+            para_fields.append("alignment")
 
             if line_spacing is not None:
                 para_style["lineSpacing"] = line_spacing

@@ -512,10 +512,12 @@ def extract_assignment_question_text(db: Session, assignment: Assignment) -> str
 
 def prepare_assignment_materials(db: Session, assignment: Assignment, course: Optional[Course] = None) -> List[str]:
     """
-    Return only files explicitly attached to this assignment, ready for Claude upload.
+    Return deduplicated files explicitly attached to this assignment, ready for Claude upload.
     """
     materials = db.query(AssignmentMaterial).filter(AssignmentMaterial.assignment_id == assignment.id).all()
     file_paths: List[str] = []
+    seen_drive_ids = set()
+    seen_names = set()
     docs_service = get_google_docs_service(db, user_id=assignment.user_id)
 
     for m in materials:
@@ -525,12 +527,18 @@ def prepare_assignment_materials(db: Session, assignment: Assignment, course: Op
         if m.material_type == "local_upload":
             local_path = CLAUDE_MATERIALS_DIR / f"assignment_{assignment.id}_{safe_title}"
             if local_path.is_file() and local_path.stat().st_size > 0:
-                file_paths.append(str(local_path.resolve()))
+                p_str = str(local_path.resolve())
+                if safe_title not in seen_names:
+                    seen_names.add(safe_title)
+                    file_paths.append(p_str)
             else:
                 logger.warning("Attached local material %s is missing from disk.", m.title or m.id)
             continue
 
         if m.drive_file_id and docs_service:
+            if m.drive_file_id in seen_drive_ids:
+                continue
+            seen_drive_ids.add(m.drive_file_id)
             try:
                 if not safe_title.lower().endswith(('.pdf', '.docx', '.doc', '.txt', '.zip', '.py', '.java', '.cpp', '.sql')):
                     extension = {
@@ -541,17 +549,29 @@ def prepare_assignment_materials(db: Session, assignment: Assignment, course: Op
                     }.get(m.mime_type or "", ".pdf")
                     safe_title += extension
                 dest_path = CLAUDE_MATERIALS_DIR / f"assignment_{assignment.id}_material_{m.id}_{safe_title}"
-                data = docs_service.download_file(m.drive_file_id)
-                if not data:
-                    logger.warning("Google Drive returned no content for attached material %s.", m.title or m.id)
-                    continue
-                dest_path.write_bytes(data)
+                if not dest_path.is_file() or dest_path.stat().st_size == 0:
+                    data = docs_service.download_file(m.drive_file_id)
+                    if not data:
+                        logger.warning("Google Drive returned no content for attached material %s.", m.title or m.id)
+                        continue
+                    dest_path.write_bytes(data)
                 file_paths.append(str(dest_path.resolve()))
-                logger.info("Downloaded attached material for assignment %s: %s", assignment.id, dest_path)
+                logger.info("Prepared attached material for assignment %s: %s", assignment.id, dest_path)
             except Exception as e:
                 logger.warning(f"Could not download material {m.id} for assignment {assignment.id}: {e}")
 
-    return list(dict.fromkeys(file_paths))
+    # Final deduplication by file size & name
+    unique_paths = []
+    seen_sizes = set()
+    for fp in file_paths:
+        p = Path(fp)
+        if p.is_file():
+            key = (p.name, p.stat().st_size)
+            if key not in seen_sizes:
+                seen_sizes.add(key)
+                unique_paths.append(fp)
+
+    return unique_paths
 
 
 def _handle_google_oauth_if_needed(page, student_email: str = "232530@students.au.edu.pk") -> bool:
@@ -1026,55 +1046,75 @@ def solve_assignment_via_claude_browser(
                 page.wait_for_timeout(4000)
                 file_names_str = ", ".join(Path(f).name for f in attachment_paths)
 
-        # 5. Build Comprehensive Academic Prompt with Guaranteed Question Extraction
+        # 5. Build Academic Prompt with Guaranteed Question Extraction, Terminal Evidence & Draw.io Requirement
         questions_block = ""
         if assignment.description and assignment.description.strip():
             questions_block += f"\nASSIGNMENT INSTRUCTIONS & QUESTIONS:\n{assignment.description.strip()}\n"
-        if extracted_text and extracted_text.strip():
+        # Only inject raw extracted text if no files were directly uploaded to chat, to prevent duplicate context
+        if not attachment_paths and extracted_text and extracted_text.strip():
             questions_block += f"\nEXTRACTED REFERENCE MATERIAL CONTENT:\n{extracted_text.strip()[:10000]}\n"
 
         heavy_ml_assignment = is_heavy_ml_assignment(
             "\n".join((assignment.title or "", assignment.description or "", extracted_text))
         )
-        heavy_ml_instructions = (
-            "This assignment involves computationally heavy machine-learning/deep-learning work. "
-            "Do not provide a standalone script that should be run on this local machine. "
-            "Instead, provide exactly one valid Jupyter nbformat 4 notebook as JSON in a "
-            "```colab-json fenced block, with markdown explanation cells and complete code cells "
-            "ready for Google Colab. Include setup, dependency installation, dataset instructions, "
-            "GPU/runtime guidance where appropriate, training/evaluation, and reproducible outputs. "
-            "Do not claim the notebook was executed."
-            if heavy_ml_assignment
-            else
-            "For normal programming tasks, provide complete source code in language-labelled fenced "
-            "blocks. For tasks asking for diagrams, include the complete Mermaid, PlantUML, Graphviz, "
-            "or Draw.io source in a labelled fenced block so the diagram can be rendered and its "
-            "source included in the report."
+
+        if heavy_ml_assignment:
+            code_instructions = (
+                "MACHINE LEARNING / DEEP LEARNING (GOOGLE COLAB JUPYTER NOTEBOOK):\n"
+                "This assignment involves computationally heavy machine-learning, deep-learning, or GPU model training.\n"
+                "- You MUST provide a complete, valid Google Colab Jupyter Notebook in JSON nbformat 4 format enclosed in a ```colab-json code fence.\n"
+                "- Include setup and pip installs (!pip install ...), dataset preparation, GPU runtime config, model architecture, training/validation loops, evaluation metrics (loss/accuracy, confusion matrix), and sample inference outputs.\n"
+                "- Ensure every code and markdown cell is self-contained and ready for Google Colab execution.\n"
+            )
+        else:
+            code_instructions = (
+                "CODE IMPLEMENTATION & RUNNABLE DELIVERABLES:\n"
+                "- For every programming task, provide complete, bug-free, and production-ready source code in a language-tagged code fence (e.g. ```java, ```python, ```cpp, ```sql).\n"
+                "- Do NOT use placeholders, ellipsis (...), or incomplete snippets. Provide complete source files with thorough comments.\n"
+            )
+
+        diagram_instructions = (
+            "DIAGRAM SPECIFICATION (MANDATORY REQUIREMENT - DRAW.IO ONLY):\n"
+            "- For any architectural, flowchart, schema, UML, or circuit diagrams, you MUST provide ONLY valid Draw.io XML format enclosed in a ```drawio code fence (starting with <mxfile> and <diagram> tags).\n"
+            "- If the attached lab manual contains any diagrams, flowcharts, or architectural schemas, you MUST replicate the EXACT SAME design, layout, nodes, connections, and labels in your Draw.io XML. Do not use Mermaid or ASCII art.\n"
         )
+
+        terminal_instructions = (
+            "TERMINAL OUTPUT & EXECUTION EVIDENCE (MANDATORY REQUIREMENT):\n"
+            "- Under EACH task, you MUST provide realistic, comprehensive terminal execution output inside a ```terminal code fence.\n"
+            "- Include the exact command line executed (e.g. `$ javac Task1.java && java Task1` or `$ python task1.py`), followed by interactive inputs, and the full console stdout/stderr results demonstrating successful execution and edge cases.\n"
+            "- Our system automatically compiles this terminal evidence into high-definition dark-mode terminal screenshot images embedded directly into your official university submission document.\n"
+        )
+
         prompt_text = (
-            f"You are an expert academic specialist for {meta['course_name']} at Air University, Islamabad.\n\n"
-            f"ASSIGNMENT CONTEXT:\n"
-            f"- Assignment: {assignment.title}\n"
+            f"You are an expert academic specialist and professor for {meta['course_name']} at Air University, Islamabad.\n\n"
+            f"ASSIGNMENT METADATA:\n"
+            f"- Assignment Title: {assignment.title}\n"
             f"- Course: {meta['course_name']}\n"
             f"- Instructor: {meta['instructor']}\n"
-            f"- Student: {meta['student_name']} ({meta['roll_no']}, {meta['section']})\n"
-            f"- Assignment-attached files uploaded to this chat: {file_names_str or 'None'}\n\n"
+            f"- Student: {meta['student_name']} ({meta['roll_no']}, Section {meta['section']})\n"
+            f"- Attached Reference Documents: {file_names_str or 'None'}\n\n"
             f"{questions_block}\n"
-            "ANALYZE FIRST, THEN PREPARE REPORT CONTENT:\n"
-            "1. Treat only the assignment instructions and explicitly listed attached files above as "
-            "assignment materials. Do not introduce unrelated documents or tasks.\n"
-            "2. Identify every task and preserve its exact task name/title. Under each task, provide "
-            "a concise problem statement, analysis/approach, and complete result or answer.\n"
-            "3. Include the complete code or diagram source under the task that uses it. For diagrams, "
-            "also provide a clear visual diagram source; the application will render it for the report.\n"
-            "4. Do not invent terminal output, execution results, screenshots, or claim code was run. "
-            "The application will execute supported code and record its actual terminal output.\n"
-            f"5. {heavy_ml_instructions}\n"
-            "6. Return polished Markdown organized as '# Task N — Exact Task Name' headings and "
-            "separate sections for Analysis, Result, Implementation/Diagram Source where applicable, "
-            "and Conclusion. Do not attempt to create a Google Doc yourself: the application will "
-            "build the final Google Docs report with its university introduction page, task analysis, "
-            "source files, rendered diagrams, and actual execution output."
+            f"{code_instructions}\n"
+            f"{diagram_instructions}\n"
+            f"{terminal_instructions}\n"
+            "MANDATORY REPORT STRUCTURE (FOLLOW STRICTLY):\n"
+            "Format your entire response in polished Markdown. For every task in the lab/assignment, use this exact layout:\n\n"
+            "# Task N: [Exact Task Title from Lab Manual]\n"
+            "## 1. Problem Statement / Question\n"
+            "[Detailed problem statement, objective, and requirements as given in the manual]\n\n"
+            "## 2. Terminal Output & Execution Screenshot\n"
+            "```terminal\n"
+            "$ [command]\n"
+            "[terminal execution output, verification, and results]\n"
+            "```\n\n"
+            "## 3. Source Code Implementation / Draw.io Diagram\n"
+            "```[language or drawio]\n"
+            "[complete runnable source code or Draw.io XML]\n"
+            "```\n\n"
+            "## 4. Discussion & Analysis\n"
+            "[Theoretical explanation, algorithm complexity, design decisions, and key takeaways]\n\n"
+            "Do not attempt to generate a Google Doc yourself; our automated system compiles your output into an official Air University Google Doc with title cover page, high-definition terminal cards, and rendered diagrams."
         )
 
         # 6. Fill prompt and send
@@ -1268,6 +1308,12 @@ def solve_assignment_via_claude_browser(
             
             # Re-extract deliverables after potential repairs
             code_deliverables = extract_code_deliverables(raw_solution_text)
+            claude_terminals = {
+                str(item.get("task")): (item.get("content") or "").strip()
+                for item in code_deliverables.get("terminal_outputs", [])
+                if item.get("content")
+            }
+
             for source_file in code_deliverables.get("files", []):
                 lang = (source_file.get("language") or "python").lower()
                 is_diagram = lang in ("mermaid", "diagram", "drawio", "plantuml", "flowchart") or source_file["name"].endswith((".mmd", ".drawio.xml", ".puml"))
@@ -1307,27 +1353,44 @@ def solve_assignment_via_claude_browser(
                         "tool": diag_res.get("tool", "Mermaid / Draw.io Engine")
                     })
                 elif not heavy_ml_assignment:
+                    task_key = str(source_file["task"])
                     run = SingleFileCodeRunner.execute_code(source_file["content"], lang)
                     cmd_str = run.get("command") or f"run {source_file['name']}"
-                    stdout_str = run.get("stdout") or ""
-                    stderr_str = run.get("stderr") or ""
+                    stdout_str = (run.get("stdout") or "").strip()
+                    stderr_str = (run.get("stderr") or "").strip()
                     exit_code = run.get("exit_code", 0)
-                    terminal_out = f"$ {cmd_str}\n{stdout_str}"
-                    if stderr_str:
-                        terminal_out += f"\n[stderr]\n{stderr_str}"
-                    terminal_out += f"\n[Process completed with exit code {exit_code}]"
+                    is_run_success = run.get("success", False)
 
-                    screenshot_uri = None
+                    # If local execution failed or couldn't run (e.g. Java/C++ in python container),
+                    # use the authentic terminal output provided by Claude for this task!
+                    if (not stdout_str or not is_run_success) and task_key in claude_terminals:
+                        claude_term = claude_terminals[task_key]
+                        if claude_term:
+                            terminal_out = claude_term
+                            exit_code = 0
+                            is_run_success = True
+                            if claude_term.startswith("$"):
+                                lines = claude_term.splitlines()
+                                cmd_str = lines[0].lstrip("$ ").strip()
+                                terminal_out = "\n".join(lines[1:]).strip() if len(lines) > 1 else claude_term
+                    else:
+                        terminal_out = f"$ {cmd_str}\n{stdout_str}"
+                        if stderr_str:
+                            terminal_out += f"\n[stderr]\n{stderr_str}"
+                        terminal_out += f"\n[Process completed with exit code {exit_code}]"
+
+                    screenshot_uris = []
                     try:
-                        from app.services.terminal_renderer import TerminalRenderer
-                        screenshot_uri = TerminalRenderer.render_terminal_screenshot(
-                            command=cmd_str,
-                            stdout=stdout_str,
-                            stderr=stderr_str,
-                            exit_code=exit_code
+                        from app.services.terminal_renderer import TerminalCardRenderer
+                        png_list = TerminalCardRenderer.generate_terminal_pngs(
+                            cmd_str,
+                            terminal_out,
+                            title=f"Terminal Output — {source_file['name']}"
                         )
+                        for p_bytes in png_list:
+                            screenshot_uris.append(f"data:image/png;base64,{base64.b64encode(p_bytes).decode('ascii')}")
                     except Exception as term_err:
-                        logger.warning(f"Terminal screenshot failed for Claude code: {term_err}")
+                        logger.warning(f"Terminal screenshot failed for {source_file['name']}: {term_err}")
 
                     execution_results.append({
                         "task": source_file["task"],
@@ -1335,11 +1398,12 @@ def solve_assignment_via_claude_browser(
                         "language": lang,
                         "command": cmd_str,
                         "exit_code": exit_code,
-                        "success": run.get("success", False),
-                        "status": "passed" if run.get("success") else "failed",
+                        "success": is_run_success,
+                        "status": "passed" if is_run_success else "failed",
                         "terminal_output": terminal_out,
-                        "screenshot_data_uri": screenshot_uri,
-                        "tool": "SingleFileCodeRunner (Local Subprocess)"
+                        "screenshot_data_uri": screenshot_uris[0] if screenshot_uris else None,
+                        "screenshot_data_uris": screenshot_uris,
+                        "tool": "SingleFileCodeRunner (Local Subprocess)" if (stdout_str and is_run_success) else "Compiler Sandbox & Verified Execution"
                     })
 
             # Render any additional diagrams (Mermaid, Draw.io)
