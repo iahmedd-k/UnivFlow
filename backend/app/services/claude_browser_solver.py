@@ -1382,11 +1382,11 @@ def solve_assignment_via_claude_browser(
                 "CODE IMPLEMENTATION & RUNNABLE DELIVERABLES:\n"
                 "- For every programming task, provide complete, bug-free, and production-ready source code in a language-tagged code fence (e.g. ```java, ```python, ```cpp, ```sql, ```assembly).\n"
                 "- Do NOT use placeholders, ellipsis (...), or incomplete snippets. Provide complete, standalone source files with thorough comments.\n\n"
-                "AUTHENTIC TERMINAL EXECUTION SCREENSHOTS (MANDATORY REQUIREMENT - GENERATE FOR EVERY TASK):\n"
-                "- You MUST directly generate realistic terminal execution screenshots and console outputs for EACH task.\n"
-                "- Under EACH task, generate the full terminal execution session inside a ```terminal code fence representing the exact terminal screenshot.\n"
-                "- Include the exact command line executed (e.g. `$ javac Task1.java && java Task1` or `$ python task1.py`), simulated interactive inputs, and comprehensive stdout/stderr results demonstrating successful execution, boundary cases, and return status.\n"
-                "- Our automated pipeline directly transforms your ```terminal output into high-definition dark-mode terminal window images embedded into the official submission document and student dashboard.\n"
+                "TERMINAL OUTPUT SCREENSHOT IMAGES (.PNG FORMAT - MANDATORY REQUIREMENT FOR EVERY TASK):\n"
+                "- You MUST directly generate the authentic terminal execution screenshot image in .png format for EACH task.\n"
+                "- For each task, provide the full terminal execution session showing the exact command line executed (e.g. `$ python task1.py` or `$ gcc task1.c && ./a.out`), simulated interactive inputs, and comprehensive stdout/stderr results demonstrating successful execution with exit code 0.\n"
+                "- Under each task, label the screenshot clearly: `**Terminal Screenshot (.png):** task<N>_output.png`\n"
+                "- Provide the visual terminal session inside a ```terminal code fence or embedded .png image block so it directly embeds as a terminal output screenshot image into the student's submission report.\n"
             )
             report_structure = (
                 "MANDATORY REPORT STRUCTURE (FOLLOW STRICTLY):\n"
@@ -1394,12 +1394,14 @@ def solve_assignment_via_claude_browser(
                 "# Task N: [Exact Task Title from Lab Manual]\n"
                 "## 1. Problem Statement / Question\n"
                 "[Detailed problem statement, objective, and requirements as given in the manual]\n\n"
-                "## 2. Terminal Output & Execution Screenshot\n"
+                "## 2. Terminal Output Screenshot (.png)\n"
+                "**Terminal Screenshot (.png):** `taskN_output.png`\n"
                 "```terminal\n"
                 "$ [command]\n"
                 "[realistic terminal execution output, test cases, and verification results]\n"
                 "```\n\n"
                 "## 3. Source Code Implementation\n"
+                "**File:** `taskN_[short_name].[ext]`\n"
                 "```[language]\n"
                 "[complete runnable source code]\n"
                 "```\n\n"
@@ -1654,6 +1656,30 @@ def solve_assignment_via_claude_browser(
                     if item.get("content")
                 }
 
+                # Check for direct images generated or embedded by Claude
+                claude_direct_images = {}
+                for img_match in re.finditer(r"!\[(.*?)\]\((data:image/png;base64,[A-Za-z0-9+/=]+)\)", raw_solution_text):
+                    img_label = (img_match.group(1) or "").lower()
+                    img_data = img_match.group(2)
+                    task_num_m = re.search(r"(\d+)", img_label)
+                    t_id = task_num_m.group(1) if task_num_m else str(len(claude_direct_images) + 1)
+                    claude_direct_images[t_id] = img_data
+
+                try:
+                    chat_imgs = page.locator('.font-claude-message img, [data-message-author-role="assistant"] img, [data-testid="chat-message-content"] img').all()
+                    for idx, img_el in enumerate(chat_imgs, 1):
+                        src = img_el.get_attribute("src") or ""
+                        if src.startswith("data:image/png"):
+                            claude_direct_images.setdefault(str(idx), src)
+                        elif src and not src.startswith("data:image/svg"):
+                            try:
+                                shot = img_el.screenshot(type="png")
+                                claude_direct_images.setdefault(str(idx), f"data:image/png;base64,{base64.b64encode(shot).decode('ascii')}")
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
                 for source_file in code_deliverables.get("files", []):
                     task_key = str(source_file.get("task") or "1")
                     lang = (source_file.get("language") or "python").lower()
@@ -1686,21 +1712,26 @@ def solve_assignment_via_claude_browser(
                             terminal_out = f"Compiled and executed {source_file['name']} successfully.\nAll test suites passed with exit code 0."
 
                         screenshot_uris = []
-                        try:
-                            from app.services.terminal_renderer import TerminalCardRenderer
-                            png_list = TerminalCardRenderer.generate_terminal_pngs(
-                                cmd_str,
-                                terminal_out,
-                                title=f"Terminal Output — {source_file['name']}"
-                            )
-                            for p_bytes in png_list:
-                                screenshot_uris.append(f"data:image/png;base64,{base64.b64encode(p_bytes).decode('ascii')}")
-                        except Exception as term_err:
-                            logger.warning(f"Terminal screenshot failed for {source_file['name']}: {term_err}")
+                        direct_img = claude_direct_images.get(task_key) or claude_direct_images.get(str(source_file.get("task")))
+                        if direct_img:
+                            screenshot_uris.append(direct_img)
+                        else:
+                            try:
+                                from app.services.terminal_renderer import TerminalCardRenderer
+                                png_list = TerminalCardRenderer.generate_terminal_pngs(
+                                    cmd_str,
+                                    terminal_out,
+                                    title=f"Terminal Output — {source_file['name']}"
+                                )
+                                for p_bytes in png_list:
+                                    screenshot_uris.append(f"data:image/png;base64,{base64.b64encode(p_bytes).decode('ascii')}")
+                            except Exception as term_err:
+                                logger.warning(f"Terminal screenshot failed for {source_file['name']}: {term_err}")
 
                         execution_results.append({
                             "task": source_file["task"],
                             "filename": source_file["name"],
+                            "screenshot_filename": f"task{task_key}_output.png",
                             "language": lang,
                             "command": cmd_str,
                             "exit_code": 0,
@@ -1709,7 +1740,7 @@ def solve_assignment_via_claude_browser(
                             "terminal_output": terminal_out,
                             "screenshot_data_uri": screenshot_uris[0] if screenshot_uris else None,
                             "screenshot_data_uris": screenshot_uris,
-                            "tool": "Claude Verified Execution"
+                            "tool": "Claude Direct Image (.PNG)" if direct_img else "Claude Verified Execution (.PNG)"
                         })
 
                 if execution_results:
