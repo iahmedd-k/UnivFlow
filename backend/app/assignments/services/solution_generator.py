@@ -54,7 +54,7 @@ class BaseAgent:
 class PlannerAgent(BaseAgent):
     """Breaks down requirements into executable subtasks."""
     
-    PLANNING_PROMPT = """You are a planning agent. Break down the requirement into specific, actionable subtasks.
+    PLANNING_PROMPT = """You are an expert academic curriculum planning agent. Break down the university assignment requirements into specific, actionable subtasks with clear domain classification.
 
 REQUIREMENT:
 {requirement}
@@ -65,8 +65,14 @@ CONTEXT:
 - Other Requirements: {other_requirements}
 - Available Tools: {available_tools}
 
+Classify the assignment into:
+- domain_type: "theory_academic" | "coding_lab" | "diagram_design" | "heavy_ml" | "quantitative_math"
+- deliverable_format: "academic_essay_report" | "runnable_code_with_terminal_output" | "drawio_diagram_xml" | "jupyter_colab_notebook"
+
 Create a detailed execution plan as JSON:
 {{
+  "domain_type": "theory_academic",
+  "deliverable_format": "academic_essay_report",
   "subtasks": [
     {{
       "id": "sub_1",

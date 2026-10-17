@@ -9,8 +9,8 @@ import MarkdownRenderer from '../MarkdownRenderer';
 /**
  * Tutor tab: shows the assignment broken into requirements, then a chat
  * where the student can ask for explanations or paste their own draft for
- * feedback. Calls api.askTutor(...), which is server-side wired to
- * TUTOR_SYSTEM_PROMPT in lib/prompts.js.
+ * feedback. Conversations are persisted so the student can see previous
+ * questions and responses.
  */
 export default function TutorPanel({ assignment }) {
   const { getToken } = useAuth();
@@ -20,7 +20,10 @@ export default function TutorPanel({ assignment }) {
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState(null);
+  const [conversations, setConversations] = useState([]);
+  const [activeConversationId, setActiveConversationId] = useState(null);
   const scrollRef = useRef(null);
+  const initializedConversation = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,8 +43,50 @@ export default function TutorPanel({ assignment }) {
   }, [assignment.id, getToken]);
 
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = getToken ? await getToken() : null;
+        const rows = await api.getTutorConversations(assignment.id, token);
+        if (!cancelled) setConversations(rows || []);
+        if (!initializedConversation.current) {
+          initializedConversation.current = true;
+          const latest = (rows || [])[0] || null;
+          setActiveConversationId(latest ? latest.id : null);
+          if (latest) {
+            const messagesRows = await api.getTutorConversationMessages(assignment.id, latest.id, token);
+            if (!cancelled) setMessages((messagesRows || []).map((m) => ({ role: m.role === 'assistant' ? 'tutor' : 'student', text: m.content })));
+          }
+        }
+      } catch (e) {
+        if (!cancelled) setError(e.message || 'Could not load tutor conversations.');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [assignment.id, getToken]);
+
+  useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages]);
+
+  const startNewConversation = () => {
+    setActiveConversationId(null);
+    setMessages([]);
+    setInput('');
+    setError(null);
+  };
+
+  const loadConversation = async (conversationId) => {
+    setActiveConversationId(conversationId);
+    setMessages([]);
+    try {
+      const token = getToken ? await getToken() : null;
+      const rows = await api.getTutorConversationMessages(assignment.id, conversationId, token);
+      setMessages((rows || []).map((m) => ({ role: m.role === 'assistant' ? 'tutor' : 'student', text: m.content })));
+    } catch (e) {
+      setError(e.message || 'Could not load conversation history.');
+    }
+  };
 
   const send = async (text) => {
     const trimmed = (text ?? input).trim();
@@ -58,10 +103,17 @@ export default function TutorPanel({ assignment }) {
         {
           message: trimmed,
           history: next,
+          conversation_id: activeConversationId,
         },
         token
       );
-      setMessages((m) => [...m, { role: 'tutor', text: reply.text }]);
+      const conversationId = reply.conversation_id;
+      setActiveConversationId(conversationId);
+      const tutorMsg = { role: 'tutor', text: reply.text };
+      setMessages((m) => [...next, tutorMsg]);
+      if (!conversations.find((c) => c.id === conversationId)) {
+        setConversations((prev) => [{ id: conversationId, title: trimmed.slice(0, 60), source: 'tutor' }, ...prev]);
+      }
     } catch (e) {
       setError(e.message || 'The tutor is unavailable right now.');
       setMessages((m) => m.slice(0, -1));
@@ -77,13 +129,18 @@ export default function TutorPanel({ assignment }) {
     'Here’s my logic so far, what edge cases or gaps am I missing?',
   ];
 
+  const secondaryButtonClass = 'inline-flex min-h-9 items-center justify-center rounded-lg border border-line bg-white px-3 text-sm font-semibold text-ink transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50';
+
   return (
     <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
       <div className="flex min-w-0 flex-col gap-4">
         <section className="min-w-0 overflow-hidden rounded-xl border border-line bg-white shadow-sm">
           <header className="flex items-center justify-between gap-3 border-b border-line px-5 py-4">
-            <span className="text-sm font-semibold text-ink">Requirements breakdown</span>
-            {breakdown?.requirements?.length > 0 && <span className="rounded-full bg-violet-light px-3 py-1 text-xs font-semibold text-violet-dark">{breakdown.requirements.length} tasks</span>}
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-semibold text-ink">Requirements breakdown</span>
+              {breakdown?.requirements?.length > 0 && <span className="rounded-full bg-violet-light px-3 py-1 text-xs font-semibold text-violet-dark">{breakdown.requirements.length} tasks</span>}
+            </div>
+            <button type="button" className={secondaryButtonClass} onClick={startNewConversation}>New chat</button>
           </header>
           {loadingBreakdown ? <div className="p-8 text-center text-sm text-muted" role="status"><span className="mx-auto mb-3 block size-6 animate-spin rounded-full border-2 border-violet-light border-t-violet" />Analyzing rubric criteria…</div> : breakdown?.requirements?.length ? (
             <div className="flex max-h-[440px] flex-col gap-2 overflow-y-auto p-4">
@@ -94,6 +151,19 @@ export default function TutorPanel({ assignment }) {
               </button>)}
             </div>
           ) : <div className="p-8 text-center"><strong className="block text-sm font-semibold text-ink">No structured task list</strong><span className="mt-1 block text-sm text-muted">Ask the tutor directly for help breaking down the assignment.</span></div>}
+          {conversations.length > 0 && (
+            <div className="border-t border-line pt-4 px-5 py-3">
+              <p className="mb-1 block text-xs font-semibold uppercase tracking-wide text-muted">Recent conversations</p>
+              <div className="max-h-[150px] overflow-y-auto divide-y divide-line">
+                {conversations.map((c) => (
+                  <button key={c.id} type="button" onClick={() => loadConversation(c.id)} className={`w-full flex items-center gap-3 px-4 py-2 text-left text-sm rounded border transition ${activeConversationId === c.id ? 'border-violet bg-violet-light' : 'border-transparent hover:bg-paper'}`}>
+                    <span className="line-clamp-1">{c.title}</span>
+                    <span className="ml-auto text-xs text-muted">{c.source === 'tutor' ? 'Tutor' : 'Study'}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
         <aside className="rounded-xl border border-violet/20 bg-violet-light/60 p-4 text-sm leading-6 text-violet-dark"><strong>Socratic tutoring:</strong> The AI tutor guides your understanding and points out edge cases. It explains concepts using non-assignment examples without authoring deliverables for you.</aside>
       </div>
@@ -101,7 +171,9 @@ export default function TutorPanel({ assignment }) {
       <section className="flex min-h-[520px] min-w-0 flex-col overflow-hidden rounded-xl border border-line bg-white shadow-sm">
         <header className="flex items-center justify-between gap-3 border-b border-line bg-paper px-5 py-4">
           <div className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-lg bg-violet-light text-violet"><Icon name="lightbulb" size={18}/></span><span><strong className="block text-sm font-semibold text-ink">Course academic tutor</strong><small className="mt-0.5 inline-flex items-center gap-1.5 text-xs text-brand-hover"><span className="size-1.5 rounded-full bg-brand"/>Ready to answer questions</small></span></div>
-          {messages.length > 0 && <button type="button" onClick={() => setMessages([])} className="text-sm font-medium text-muted hover:text-ink">Clear chat</button>}
+          <div className="flex items-center gap-2">
+            {messages.length > 0 && <button type="button" onClick={startNewConversation} className="text-sm font-medium text-muted hover:text-ink">Clear chat</button>}
+          </div>
         </header>
 
         <div ref={scrollRef} className="flex min-h-[360px] flex-1 flex-col gap-4 overflow-y-auto p-5">

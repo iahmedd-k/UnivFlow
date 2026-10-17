@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 import MarkdownRenderer from '../MarkdownRenderer';
+import Icon from '@/app/dashboard/Icon';
 
 export default function CoursesPage() {
   const { getToken } = useAuth();
@@ -14,31 +15,81 @@ export default function CoursesPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [conversations, setConversations] = useState([]);
+  const [activeConversationId, setActiveConversationId] = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const initializedSelection = useRef(false);
+  const initializedConversation = useRef(false);
+  const scrollRef = useRef(null);
+
+  const loadMessages = async (conversationId, token) => {
+    try {
+      const rows = await api.getRagConversationMessages(conversationId, token);
+      setMessages((rows || []).map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'you', text: m.content })));
+      setActiveConversationId(conversationId);
+    } catch (e) {
+      setError(e.message || 'Could not load conversation history.');
+    }
+  };
 
   const load = useCallback(async () => {
     const token = await getToken();
-    const rows = await api.getClassroomStudyMaterials(token);
-    setMaterials(rows || []);
+    const [materialRows, conversationRows] = await Promise.all([
+      api.getClassroomStudyMaterials(token),
+      api.getRagConversations(token),
+    ]);
+    setMaterials(materialRows || []);
+    setConversations(conversationRows || []);
     if (!initializedSelection.current) {
       initializedSelection.current = true;
-      setSelected((rows || []).map((item) => item.id));
+      setSelected((materialRows || []).map((item) => item.id));
     } else {
-      setSelected((current) => current.filter((id) => rows.some((item) => item.id === id)));
+      setSelected((current) => current.filter((id) => materialRows.some((item) => item.id === id)));
+    }
+    if (!initializedConversation.current) {
+      initializedConversation.current = true;
+      const latest = (conversationRows || [])[0] || null;
+      setActiveConversationId(latest ? latest.id : null);
+      if (latest) {
+        loadMessages(latest.id, token);
+      }
     }
   }, [getToken]);
-  useEffect(() => { load().catch((e) => setError(e.message || 'Could not load Classroom materials.')).finally(() => setLoading(false)); }, [load]);
+
+  useEffect(() => {
+    load().catch((e) => setError(e.message || 'Could not load course materials.')).finally(() => setLoading(false));
+  }, [load]);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+  }, [messages]);
 
   const send = async (event) => {
     event.preventDefault(); if (!question.trim()) return;
     const prompt = question.trim(); setQuestion(''); setError(''); setBusy(true);
-    setMessages((items) => [...items, { role: 'you', text: prompt }]);
+    const nextMessages = [...messages, { role: 'you', text: prompt }];
+    setMessages(nextMessages);
     try {
       const token = await getToken();
-      const result = await api.askCourseMaterials({ query: prompt, document_ids: selected }, token);
-      setMessages((items) => [...items, { role: 'assistant', text: result.answer || 'No answer returned.' }]);
-    } catch (e) { setError(e.message || 'Could not answer from the selected materials.'); }
-    finally { setBusy(false); }
+      const result = await api.askCourseMaterials({
+        query: prompt,
+        document_ids: selected,
+        conversation_id: activeConversationId,
+        history: nextMessages,
+      }, token);
+      const conversationId = result.conversation_id;
+      const assistant = { role: 'assistant', text: result.answer || 'No answer returned.' };
+      setMessages([...nextMessages, assistant]);
+      if (!conversations.find((c) => c.id === conversationId)) {
+        setConversations((prev) => [{ id: conversationId, title: prompt.slice(0, 60), source: 'rag' }, ...prev]);
+      }
+    } catch (e) {
+      setError(e.message || 'Could not answer from the selected materials.');
+      setMessages((m) => m.slice(0, -1));
+      setQuestion(prompt);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const refreshMaterials = () => {
@@ -47,65 +98,125 @@ export default function CoursesPage() {
     load().catch((e) => setError(e.message || 'Could not refresh course materials.')).finally(() => setLoading(false));
   };
 
+  const startNewConversation = () => {
+    setActiveConversationId(null);
+    setMessages([]);
+    setQuestion('');
+    setError('');
+  };
+
+  const toggleSidebar = () => setSidebarOpen(!sidebarOpen);
+
   const cardClass = 'min-w-0 overflow-hidden rounded-xl border border-line bg-white shadow-sm';
-  const cardHeaderClass = 'flex items-center justify-between gap-3 border-b border-line px-5 py-4';
   const labelClass = 'mb-1 block text-xs font-semibold uppercase tracking-wide text-muted';
   const secondaryButtonClass = 'inline-flex min-h-9 items-center justify-center rounded-lg border border-line bg-white px-3 text-sm font-semibold text-ink transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50';
+  const buttonClass = 'inline-flex min-h-10 items-center justify-center rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50';
+  const inputClass = 'min-w-0 flex-1 rounded-lg border border-line bg-white px-3 py-2.5 text-sm text-ink outline-none placeholder:text-muted focus:border-violet focus:ring-2 focus:ring-violet/20';
 
   return (
-    <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-ink">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+    <main className="mx-auto flex w-full max-w-[1280px] flex-col gap-0 pb-10 text-ink">
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between border-b border-line pb-6">
         <div>
           <p className={labelClass}>Coursework</p>
-          <h1 className="text-2xl font-semibold tracking-tight">Study assistant</h1>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted">Choose course materials, then ask a question grounded in those sources.</p>
+          <h1 className="text-2xl font-semibold tracking-tight">Study Assistant</h1>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted">Grounded answers from your selected Classroom materials, with full conversation history.</p>
         </div>
-        <span className="inline-flex w-fit items-center rounded-full bg-violet-light px-3 py-1.5 text-sm font-semibold text-violet-dark">{selected.length} of {materials.length} sources selected</span>
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-2 rounded-full bg-violet-light px-3 py-1.5 text-sm font-semibold text-violet-dark">{selected.length} of {materials.length} sources</span>
+          <button type="button" className={secondaryButtonClass} onClick={startNewConversation}>New chat</button>
+        </div>
       </header>
-      {error && <div className="rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose" role="alert">{error}</div>}
-      <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-2">
-        <section className={cardClass}>
-          <header className={cardHeaderClass}>
-            <div><p className={labelClass}>Step 1</p><h2 className="text-base font-semibold">Choose course materials</h2></div>
-            <button className={secondaryButtonClass} type="button" disabled={loading} onClick={refreshMaterials}>{loading ? 'Loading…' : 'Refresh'}</button>
-          </header>
-          {!loading && materials.length > 0 && (
-            <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3">
-              <span className="text-sm text-muted">{selected.length} selected</span>
-              <div className="flex gap-3">
-                <button type="button" className="text-sm font-semibold text-violet hover:text-violet-dark" onClick={() => setSelected(materials.map((item) => item.id))}>Select all</button>
-                <button type="button" className="text-sm font-semibold text-violet hover:text-violet-dark" onClick={() => setSelected([])}>Clear</button>
+      {error && <div className="mx-4 rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose" role="alert">{error}</div>}
+      <div className="flex min-h-[700px] flex-1">
+        {sidebarOpen && (
+          <aside className="hidden lg:flex flex-col gap-4 w-[340px] border-r border-line bg-white px-5 py-4">
+            <section className="flex flex-col gap-3">
+              <p className={labelClass}>Conversations</p>
+              <div className="flex min-h-[60px] items-center justify-between border border-line rounded-lg bg-paper px-3 py-2">
+                <input className="flex-1 bg-transparent border-none outline-none text-sm text-ink placeholder:text-muted" placeholder="Search conversations…" />
+                <button type="button" className="text-violet hover:text-violet-dark" title="Search">
+                  <Icon name="search" size={16} />
+                </button>
+              </div>
+              <div className="max-h-[320px] overflow-y-auto divide-y divide-line">
+                {conversations.length ? conversations.map((c) => (
+                  <button key={c.id} type="button" onClick={async () => {
+                    const token = await getToken();
+                    await loadMessages(c.id, token);
+                  }} className={`flex items-center gap-3 px-3 py-2.5 text-left text-sm rounded transition ${activeConversationId === c.id ? 'border-violet bg-violet-light' : 'border-transparent hover:bg-paper'}`}>
+                    <span className="line-clamp-1">{c.title}</span>
+                    <span className="ml-auto text-xs text-muted">{c.source === 'tutor' ? 'Tutor' : 'Study'}</span>
+                  </button>
+                )) : <div className="p-4 text-center text-sm text-muted">No conversations yet</div>}
+              </div>
+            </section>
+            {materials.length > 0 && (
+              <section className="flex flex-col gap-3 border-t border-line pt-4">
+                <div className="flex items-center justify-between gap-2">
+                  <p className={labelClass}>Source materials</p>
+                  <span className="text-xs font-medium text-violet-dark">{selected.length} selected</span>
+                </div>
+                <div className="max-h-[260px] overflow-y-auto divide-y divide-line rounded-lg border border-line">
+                  {materials.map((item) => (
+                    <label key={item.id} className="flex cursor-pointer items-start gap-3 px-3 py-2.5 transition hover:bg-paper">
+                      <input className="mt-1 size-4 accent-violet shrink-0" type="checkbox" checked={selected.includes(item.id)} onChange={(e) => setSelected((ids) => e.target.checked ? [...ids, item.id] : ids.filter((id) => id !== item.id))} />
+                      <span className="flex min-w-0 flex-col gap-0.5">
+                        <span className="text-sm font-semibold text-ink line-clamp-1">{item.title || 'Untitled file'}</span>
+                        <small className="text-xs text-muted">{[item.course_name, item.assignment].filter(Boolean).join(' · ') || 'Course material'}</small>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <div className="flex gap-2 pt-2">
+                  <button type="button" className="flex-1 text-xs font-semibold text-violet hover:text-violet-dark" onClick={() => setSelected(materials.map((item) => item.id))}>Select all</button>
+                  <button type="button" className="flex-1 text-xs font-semibold text-violet hover:text-violet-dark" onClick={() => setSelected([])}>Clear</button>
+                </div>
+              </section>
+            )}
+          </aside>
+        )}
+        <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <header className="flex items-center justify-between gap-3 border-b border-line bg-white px-5 py-4 shrink-0">
+            <div className="flex items-center gap-3">
+              <span className="grid size-8 place-items-center rounded-lg bg-violet-light text-violet"><Icon name="lightbulb" size={16} /></span>
+              <div>
+                <strong className="block text-sm font-semibold text-ink">{activeConversationId ? 'Study Assistant' : 'Start a new conversation'}</strong>
+                <small className="mt-0.5 text-xs text-muted">Answers use your selected sources and pasted syllabus.</small>
               </div>
             </div>
-          )}
-          {loading ? <div className="p-8 text-center text-sm text-muted" role="status">Loading synced materials…</div> : materials.length ? (
-            <div className="max-h-[520px] divide-y divide-line overflow-y-auto" aria-label="Select source materials">
-              {materials.map((item) => <label key={item.id} className="flex cursor-pointer items-start gap-3 px-5 py-4 transition hover:bg-paper">
-                <input className="mt-1 size-4 accent-violet" type="checkbox" checked={selected.includes(item.id)} onChange={(e) => setSelected((ids) => e.target.checked ? [...ids, item.id] : ids.filter((id) => id !== item.id))} />
-                <span className="flex min-w-0 flex-col gap-1"><strong className="text-sm font-semibold text-ink">{item.title || 'Untitled file'}</strong><small className="text-xs text-muted">{[item.course_name, item.assignment].filter(Boolean).join(' · ') || 'Course material'}</small></span>
-              </label>)}
-            </div>
-          ) : <div className="p-8 text-center"><strong className="block text-sm font-semibold">No course files available</strong><span className="mt-1 block text-sm text-muted">Connect Google Classroom and sync your coursework to add materials here.</span></div>}
-        </section>
-
-        <section className={`${cardClass} flex min-h-[520px] flex-col`}>
-          <header className={cardHeaderClass}><div><p className={labelClass}>Step 2</p><h2 className="text-base font-semibold">Ask about your sources</h2></div></header>
-          <div className="flex min-h-0 flex-1 flex-col gap-4 p-5">
-            <p className="text-sm leading-6 text-muted">Answers use relevant passages from selected materials. If the sources do not cover your question, the assistant will say so.</p>
-            <div className="flex min-h-[300px] flex-1 flex-col gap-3 overflow-y-auto rounded-lg bg-paper p-4" aria-live="polite" aria-busy={busy}>
-              {messages.length ? messages.map((message, index) => (
-                <article className={`max-w-[90%] rounded-xl border px-4 py-3 text-sm leading-6 ${message.role === 'you' ? 'ml-auto border-violet bg-violet text-white' : 'border-line bg-white text-ink'}`} key={index}>
-                  <small className={`mb-1 block text-xs font-semibold ${message.role === 'you' ? 'text-white/75' : 'text-muted'}`}>{message.role === 'you' ? 'You' : 'Study assistant'}</small>
-                  {message.role === 'you' ? <p className="whitespace-pre-wrap">{message.text}</p> : <MarkdownRenderer content={message.text} />}
+            {sidebarOpen && <button type="button" className="lg:hidden text-muted hover:text-ink" onClick={toggleSidebar}><Icon name="chevronLeft" size={18} /></button>}
+          </header>
+          <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-5">
+            {loading ? (
+              <div className="m-auto py-10 text-center text-sm text-muted" role="status">Loading study materials…</div>
+            ) : messages.length ? (
+              messages.map((message, index) => (
+                <article key={index} className={`flex gap-3 ${message.role === 'you' ? 'justify-end' : 'justify-start'}`}>
+                  {message.role !== 'you' && (
+                    <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-violet-light text-xs font-bold text-violet">AI</span>
+                  )}
+                  <div className={`max-w-[90%] rounded-xl px-4 py-3 text-sm leading-6 ${message.role === 'you' ? 'bg-violet text-white' : 'border border-line bg-paper text-ink'}`}>
+                    {message.role === 'you' ? <p className="whitespace-pre-wrap">{message.text}</p> : <MarkdownRenderer content={message.text} />}
+                  </div>
                 </article>
-              )) : <div className="m-auto max-w-sm text-center text-sm leading-6 text-muted">{selected.length ? 'Ask for an explanation, compare concepts, or review a topic.' : 'Select at least one source to begin.'}</div>}
-              {busy && <p className="text-sm text-muted" role="status">Searching selected sources…</p>}
-            </div>
-            <form className="flex gap-2" onSubmit={send}>
-              <input className="min-w-0 flex-1 rounded-lg border border-line bg-white px-3 py-2.5 text-sm text-ink outline-none placeholder:text-muted focus:border-violet focus:ring-2 focus:ring-violet/20" value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask about the selected materials…" aria-label="Ask about selected materials" />
-              <button className="inline-flex min-h-10 items-center justify-center rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50" disabled={busy || !question.trim() || !selected.length}>{busy ? 'Working…' : 'Ask'}</button>
-            </form>
+              ))
+            ) : (
+              <div className="m-auto w-full max-w-lg py-10 text-center">
+                <span className="mx-auto mb-4 grid size-16 place-items-center rounded-xl bg-violet-light text-violet"><Icon name="messageCircle" size={28} /></span>
+                <strong className="block text-base font-semibold text-ink">Ask about your course materials</strong>
+                <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">Select at least one source material, then ask for explanations, comparisons, or topic reviews.</p>
+                {!selected.length && <div className="mt-6 rounded-lg border border-line bg-paper p-4 text-sm leading-6 text-muted">
+                  <strong className="block text-xs font-semibold uppercase tracking-wide text-muted">No sources selected</strong>
+                  <span>Open the sidebar and choose the course files you want to ask about.</span>
+                </div>}
+              </div>
+            )}
+            {busy && <div className="flex items-center gap-2 text-sm text-muted" role="status"><span className="size-4 animate-spin rounded-full border-2 border-violet-light border-t-violet" />Study assistant is thinking…</div>}
           </div>
+          <form className="flex gap-2 border-t border-line bg-white p-4 shrink-0" onSubmit={send}>
+            <input className={inputClass} value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask about your selected materials…" aria-label="Ask about selected materials" disabled={!selected.length} />
+            <button type="submit" className={buttonClass} disabled={busy || !question.trim() || !selected.length}>{busy ? 'Working…' : 'Ask'}</button>
+          </form>
         </section>
       </div>
     </main>

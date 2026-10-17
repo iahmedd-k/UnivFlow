@@ -1,14 +1,26 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
 import re
 import io
-from sqlalchemy import or_
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from typing import List, Optional
+from sqlalchemy import or_, func
 from app.db.database import get_db
 from app.integrations.google_drive import get_drive_service
 from app.core.config import settings
+from app.auth.clerk_auth import get_current_user_optional
 from app.services.ai_solution import _call_groq
-from app.db.models import AssignmentMaterial, Assignment, Course
+from app.db.models import AssignmentMaterial, Assignment, Course, ChatConversation, ChatMessage, StudyPlan, StudyPlanSession
+from app.rag.study_planning import (
+    SPACED_REVIEW_OFFSETS,
+    generate_study_plan,
+    extract_topics_from_syllabus,
+    _parse_date,
+    _safe_json_loads,
+    _safe_json_dumps,
+    StudyPlanningError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +35,10 @@ class ChatRequest(BaseModel):
     document_ids: list[str] = Field(default_factory=list, max_length=12)
     query: str
     syllabus: str | None = None
+    # Previous turns so the assistant can answer in conversation context.
+    history: Optional[List[dict]] = Field(default_factory=list)
+    # Optional existing conversation to continue (persisted).
+    conversation_id: Optional[int] = None
     # Optional academic context (e.g., CGPA) that can be used in the answer
     academic_context: dict | None = None
 
@@ -31,6 +47,18 @@ class StudyPlanRequest(BaseModel):
     syllabus: str = Field(min_length=10, max_length=12000)
     document_ids: list[str] = Field(default_factory=list, max_length=12)
     exam_title: str | None = Field(default=None, max_length=300)
+    exam_date: str | None = Field(default=None, max_length=30)
+    start_date: str | None = Field(default=None, max_length=30)
+    end_date: str | None = Field(default=None, max_length=30)
+    hours_per_day: float = Field(default=3.0, ge=0.5, le=12.0)
+    session_minutes: int = Field(default=60, ge=15, le=240)
+    plan_mode: str = Field(default="spaced_repetition")  # "coverage" | "spaced_repetition"
+    topics: Optional[list[dict]] = Field(default_factory=list)  # user-corrected topics
+
+
+class StudyPlanSessionUpdate(BaseModel):
+    status: str = Field(pattern="^(pending|done|partial|missed)$")
+    notes: Optional[str] = None
 
 
 @router.get("/materials")
@@ -119,41 +147,363 @@ def _retrieve_passages(materials: list[dict], query: str, limit: int = 6) -> lis
 
 
 @router.post("/study-plan")
-async def create_study_plan(request: StudyPlanRequest, db=Depends(get_db)):
-    """Build an exam study plan grounded in the pasted syllabus and selected Drive materials."""
+async def create_study_plan(request: StudyPlanRequest, db=Depends(get_db), clerk_user: Optional[dict] = Depends(get_current_user_optional)):
+    """Build a day-by-day study plan grounded in the syllabus and selected materials.
+
+    Uses an evidence-based scheduler (spaced repetition / coverage mode) with
+    topic weighting, daily capacity caps and burnout protection. The plan is
+    persisted so the user can track progress session-by-session.
+    """
     try:
+        if not request.syllabus.strip():
+            raise HTTPException(status_code=422, detail="Paste a syllabus or topic list to build a plan.")
+
+        user_id = _user_id(clerk_user)
+
+        # Parse dates
+        start_date = _parse_date(request.start_date) or _now_utc().date()
+        end_date = _parse_date(request.end_date) or (start_date + timedelta(days=14))
+        exam_date = _parse_date(request.exam_date) or end_date
+
+        if end_date < start_date:
+            raise HTTPException(status_code=422, detail="End date must be on or after the start date.")
+        if request.plan_mode not in ("coverage", "spaced_repetition"):
+            raise HTTPException(status_code=422, detail="plan_mode must be 'coverage' or 'spaced_repetition'.")
+
+        # Build document context from selected materials (lazy read, per selection)
         materials = _read_materials(db, request.document_ids)
-        material_context = "\n\n".join(f"MATERIAL: {item['title']}\n{item['content']}" for item in materials)
-        prompt = (
-            f"Exam: {request.exam_title or 'Upcoming exam'}\n\nSYLLABUS:\n{request.syllabus}\n\n"
-            f"GOOGLE CLASSROOM / DRIVE MATERIALS:\n{material_context[:24000] or 'No readable selected materials.'}\n\n"
-            "Create a practical study plan. Identify syllabus topics, connect each to relevant material, "
-            "sequence sessions, include active-recall practice and a final review. Clearly mark topics "
-            "not supported by the provided materials. Return readable Markdown with a brief coverage summary."
+        document_context = "\n\n".join(
+            f"MATERIAL: {item['title']}\n{item['content'][:4000]}" for item in materials
+        ) if materials else "No materials selected."
+
+        # Use user-corrected topics if provided, otherwise extract from syllabus
+        topics = request.topics if request.topics else extract_topics_from_syllabus(request.syllabus, request.exam_title)
+
+        plan_data = generate_study_plan(
+            syllabus=request.syllabus,
+            exam_title=request.exam_title,
+            exam_date=exam_date,
+            start_date=start_date,
+            end_date=end_date,
+            hours_per_day=request.hours_per_day,
+            session_minutes=request.session_minutes,
+            plan_mode=request.plan_mode,
+            topics=topics,
+            document_context=document_context,
         )
-        plan = _call_groq(prompt=prompt, system_prompt="You are an academic study planner. Ground claims in supplied material and do not invent course content.", model=settings.groq_chat_model, max_tokens=3000)
-        return {"plan": plan, "materials": [{k: v for k, v in item.items() if k != "content"} for item in materials]}
+
+        # Persist the plan
+        plan = StudyPlan(
+            user_id=user_id,
+            title=request.exam_title or f"Study plan ({start_date.isoformat()} → {end_date.isoformat()})",
+            exam_title=request.exam_title,
+            exam_date=datetime.combine(exam_date, datetime.min.time(), tzinfo=timezone.utc) if exam_date else None,
+            syllabus=request.syllabus,
+            topics=_safe_json_dumps(plan_data["topics"]),
+            preferences=_safe_json_dumps(plan_data["preferences"]),
+            stats=_safe_json_dumps(plan_data["stats"]),
+            summary=plan_data["summary"],
+            status="active",
+        )
+        db.add(plan)
+        db.flush()
+
+        for s in plan_data["sessions"]:
+            db.add(StudyPlanSession(
+                plan_id=plan.id,
+                session_date=s["session_date"],
+                session_type=s["session_type"],
+                topic=s["topic"],
+                duration_minutes=s["duration_minutes"],
+                order_index=s["order_index"],
+                status="pending",
+            ))
+        db.commit()
+
+        return {
+            "id": plan.id,
+            "title": plan.title,
+            "exam_title": plan.exam_title,
+            "exam_date": plan.exam_date,
+            "topics": plan_data["topics"],
+            "preferences": plan_data["preferences"],
+            "stats": plan_data["stats"],
+            "summary": plan_data["summary"],
+            "sessions": [
+                {
+                    "id": sess.id,
+                    "session_date": sess.session_date,
+                    "session_type": sess.session_type,
+                    "topic": sess.topic,
+                    "duration_minutes": sess.duration_minutes,
+                    "order_index": sess.order_index,
+                    "status": sess.status,
+                    "notes": sess.notes,
+                }
+                for sess in plan.sessions
+            ],
+            "materials": [{k: v for k, v in item.items() if k != "content"} for item in materials],
+        }
+    except StudyPlanningError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=502, detail=f"Could not generate the study plan: {e}") from e
 
+
+@router.get("/study-plans", response_model=List[dict])
+def list_study_plans(
+    limit: int = 50,
+    db=Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """List the current user's study plans."""
+    user_id = _user_id(clerk_user)
+    rows = (
+        db.query(StudyPlan)
+        .filter(StudyPlan.user_id == user_id)
+        .order_by(StudyPlan.updated_at.desc().nullslast(), StudyPlan.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": p.id,
+            "title": p.title,
+            "exam_title": p.exam_title,
+            "exam_date": p.exam_date,
+            "status": p.status,
+            "stats": _safe_json_loads(p.stats, {}),
+            "created_at": p.created_at,
+            "updated_at": p.updated_at,
+        }
+        for p in rows
+    ]
+
+
+@router.get("/study-plans/{plan_id}", response_model=dict)
+def get_study_plan(
+    plan_id: int,
+    db=Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Return a study plan with its day-by-day sessions."""
+    user_id = _user_id(clerk_user)
+    plan = (
+        db.query(StudyPlan)
+        .filter(StudyPlan.id == plan_id, StudyPlan.user_id == user_id)
+        .first()
+    )
+    if not plan:
+        raise HTTPException(status_code=404, detail="Study plan not found")
+    sessions = (
+        db.query(StudyPlanSession)
+        .filter(StudyPlanSession.plan_id == plan_id)
+        .order_by(StudyPlanSession.session_date.asc(), StudyPlanSession.order_index.asc())
+        .all()
+    )
+    return {
+        "id": plan.id,
+        "title": plan.title,
+        "exam_title": plan.exam_title,
+        "exam_date": plan.exam_date,
+        "syllabus": plan.syllabus,
+        "topics": _safe_json_loads(plan.topics, []),
+        "preferences": _safe_json_loads(plan.preferences, {}),
+        "stats": _safe_json_loads(plan.stats, {}),
+        "summary": plan.summary,
+        "status": plan.status,
+        "created_at": plan.created_at,
+        "updated_at": plan.updated_at,
+        "sessions": [
+            {
+                "id": s.id,
+                "session_date": s.session_date,
+                "session_type": s.session_type,
+                "topic": s.topic,
+                "duration_minutes": s.duration_minutes,
+                "order_index": s.order_index,
+                "status": s.status,
+                "notes": s.notes,
+                "created_at": s.created_at,
+            }
+            for s in sessions
+        ],
+    }
+
+
+@router.post("/study-plans/{plan_id}/sessions/{session_id}/status", response_model=dict)
+def update_session_status(
+    plan_id: int,
+    session_id: int,
+    payload: StudyPlanSessionUpdate,
+    db=Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Mark a study session as done / partial / missed."""
+    user_id = _user_id(clerk_user)
+    plan = (
+        db.query(StudyPlan)
+        .filter(StudyPlan.id == plan_id, StudyPlan.user_id == user_id)
+        .first()
+    )
+    if not plan:
+        raise HTTPException(status_code=404, detail="Study plan not found")
+    session = (
+        db.query(StudyPlanSession)
+        .filter(StudyPlanSession.id == session_id, StudyPlanSession.plan_id == plan_id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.status = payload.status
+    if payload.notes is not None:
+        session.notes = payload.notes
+    session.updated_at = func.now()
+    db.commit()
+
+    # Recompute completion stats
+    all_sessions = (
+        db.query(StudyPlanSession)
+        .filter(StudyPlanSession.plan_id == plan_id)
+        .all()
+    )
+    done = sum(1 for s in all_sessions if s.status == "done")
+    partial = sum(1 for s in all_sessions if s.status == "partial")
+    missed = sum(1 for s in all_sessions if s.status == "missed")
+    total = len(all_sessions)
+    stats = _safe_json_loads(plan.stats, {})
+    stats.update({
+        "done": done,
+        "partial": partial,
+        "missed": missed,
+        "completion_pct": round((done + 0.5 * partial) / total * 100, 1) if total else 0.0,
+    })
+    plan.stats = _safe_json_dumps(stats)
+    db.commit()
+
+    return {
+        "id": session.id,
+        "status": session.status,
+        "notes": session.notes,
+        "stats": stats,
+    }
+
+@router.get("/conversations", response_model=List[dict])
+def list_conversations(
+    limit: int = 50,
+    db=Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """List the current user's RAG study-assistant conversations."""
+    user_id = _user_id(clerk_user)
+    rows = (
+        db.query(ChatConversation)
+        .filter(ChatConversation.user_id == user_id, ChatConversation.source == "rag")
+        .order_by(ChatConversation.updated_at.desc().nullslast(), ChatConversation.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": c.id,
+            "title": c.title or "Study chat",
+            "source": c.source,
+            "assignment_id": c.assignment_id,
+            "created_at": c.created_at,
+            "updated_at": c.updated_at,
+        }
+        for c in rows
+    ]
+
+
+@router.get("/conversations/{conversation_id}/messages", response_model=List[dict])
+def get_conversation_messages(
+    conversation_id: int,
+    db=Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Return messages for one conversation (owner only)."""
+    user_id = _user_id(clerk_user)
+    conv = (
+        db.query(ChatConversation)
+        .filter(ChatConversation.id == conversation_id, ChatConversation.user_id == user_id)
+        .first()
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    messages = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.conversation_id == conversation_id)
+        .order_by(ChatMessage.created_at.asc())
+        .all()
+    )
+    return [
+        {"id": m.id, "role": m.role, "content": m.content, "created_at": m.created_at}
+        for m in messages
+    ]
+
+
+def _user_id(clerk_user: Optional[dict]) -> str:
+    user_id = str((clerk_user or {}).get("id") or "")
+    if not user_id:
+        user_id = "dev_student_user"
+    return user_id
+
+
 @router.post("/chat")
-async def rag_chat(request: ChatRequest, db=Depends(get_db)):
+async def rag_chat(request: ChatRequest, db=Depends(get_db), clerk_user: Optional[dict] = Depends(get_current_user_optional)):
     """Answer a user's query from the documents they selected/attached.
 
     Documents are only read (and chunked at query time) when the user selects
     them - we never pre-chunk or pre-process all documents upfront. The LLM
     receives the FULL text of every selected document so it can answer with
     complete information, supplemented by the most relevant retrieved passages.
+    The conversation is persisted so the user can see previous questions and
+    answers.
     """
     try:
         if not request.query.strip():
             raise HTTPException(status_code=422, detail="Enter a question to start the chat.")
+        user_id = _user_id(clerk_user)
+
+        # Resolve or create the conversation.
+        if request.conversation_id:
+            conv = (
+                db.query(ChatConversation)
+                .filter(
+                    ChatConversation.id == request.conversation_id,
+                    ChatConversation.user_id == user_id,
+                    ChatConversation.source == "rag",
+                )
+                .first()
+            )
+            if not conv:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+        else:
+            title = (request.query.strip()[:80] + ("…" if len(request.query.strip()) > 80 else "")) or "Study chat"
+            conv = ChatConversation(user_id=user_id, title=title, source="rag")
+            db.add(conv)
+            db.flush()
+
+        # Persist the user's turn.
+        db.add(ChatMessage(conversation_id=conv.id, role="user", content=request.query.strip()))
+        db.flush()
+
         document_ids = request.document_ids or ([request.document_id] if request.document_id else [])
         # Only read / chunk the documents the user selected - never all documents.
         materials = _read_materials(db, document_ids)
-        # Build context: full text of each selected document first, then
-        # top retrieved passages for precise grounding.
+        # Build context: conversation history first, then full text of each
+        # selected document, then top retrieved passages for precise grounding.
         context_parts = []
+        if request.history:
+            history_lines = "\n".join(
+                f"{(h.get('role') or 'user').upper()}: {h.get('text', '')}"
+                for h in (request.history or [])[-10:]
+            )
+            context_parts.append(f"CONVERSATION HISTORY:\n{history_lines}")
         if request.academic_context:
             context_parts.append(f"User academic context: {request.academic_context}")
         if request.syllabus:
@@ -177,9 +527,29 @@ async def rag_chat(request: ChatRequest, db=Depends(get_db)):
             system_prompt=system_prompt,
             model=settings.groq_chat_model
         )
+
+        # Persist the assistant's turn.
+        db.add(ChatMessage(conversation_id=conv.id, role="assistant", content=answer))
+        conv.updated_at = func.now()
+        db.commit()
+
+        messages = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.conversation_id == conv.id)
+            .order_by(ChatMessage.created_at.asc())
+            .all()
+        )
         return {
             "answer": answer,
+            "conversation_id": conv.id,
+            "messages": [
+                {"id": m.id, "role": m.role, "content": m.content, "created_at": m.created_at}
+                for m in messages
+            ],
             "materials": [{k: v for k, v in item.items() if k != "content"} for item in materials]
         }
+    except HTTPException:
+        raise
     except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=str(e))

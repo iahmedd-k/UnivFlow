@@ -30,6 +30,10 @@ from .notifications import NotificationPreference
 from .notifications import NotificationTemplate
 from .settings import Setting
 from .portal import PortalSyncJob
+from .chat import ChatConversation
+from .chat import ChatMessage
+from .study_plans import StudyPlan
+from .study_plans import StudyPlanSession
 from . import indexes as _indexes  # Register named database indexes.
 
 __all__ = [
@@ -63,4 +67,8 @@ __all__ = [
     "NotificationTemplate",
     "Setting",
     "PortalSyncJob",
+    "ChatConversation",
+    "ChatMessage",
+    "StudyPlan",
+    "StudyPlanSession",
 ]

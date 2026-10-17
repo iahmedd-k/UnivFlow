@@ -540,9 +540,42 @@ def extract_assignment_question_text(db: Session, assignment: Assignment) -> str
     return "\n\n".join(parts)
 
 
+def _is_material_for_different_course(title: str, current_course: Optional[Course], other_courses: List[Course]) -> bool:
+    """
+    Check if an attached material explicitly belongs to another course (cross-linked material)
+    so we don't pollute Claude's context with unrelated course files.
+    """
+    if not current_course or not other_courses or not title:
+        return False
+    title_norm = re.sub(r'[^a-zA-Z0-9]+', ' ', title).strip().lower()
+    curr_name = (current_course.name or "").lower()
+    curr_name_parts = [w for w in re.split(r'[^a-zA-Z0-9]+', curr_name) if len(w) > 3]
+    if any(p in title_norm for p in curr_name_parts):
+        return False
+
+    for oc in other_courses:
+        if not oc.name:
+            continue
+        oc_name = oc.name.lower()
+        # Course codes like CS270, CS-444, CS373
+        codes = re.findall(r'[a-zA-Z]{2,4}[-\s]?\d{3}', oc_name)
+        for code in codes:
+            clean_code = re.sub(r'[-\s]', '', code).lower()
+            clean_title = re.sub(r'[-\s]', '', title_norm)
+            if clean_code in clean_title:
+                return True
+        # Base course name stripped of course codes (e.g. "Professional Practices" from "Professional Practices CS270")
+        base_oc_name = re.sub(r'[a-zA-Z]{2,4}[-\s]?\d{3}', '', oc_name).strip()
+        base_oc_norm = re.sub(r'[^a-zA-Z0-9]+', ' ', base_oc_name).strip()
+        if len(base_oc_norm) >= 5 and base_oc_norm in title_norm:
+            return True
+    return False
+
+
 def prepare_assignment_materials(db: Session, assignment: Assignment, course: Optional[Course] = None) -> List[str]:
     """
     Return deduplicated files explicitly attached to this assignment, ready for Claude upload.
+    Filters out materials belonging to other courses and empty files.
     """
     materials = db.query(AssignmentMaterial).filter(AssignmentMaterial.assignment_id == assignment.id).all()
     file_paths: List[str] = []
@@ -550,9 +583,23 @@ def prepare_assignment_materials(db: Session, assignment: Assignment, course: Op
     seen_names = set()
     docs_service = get_google_docs_service(db, user_id=assignment.user_id)
 
+    other_courses = []
+    if course and assignment.course_id:
+        try:
+            other_courses = db.query(Course).filter(
+                Course.user_id == assignment.user_id,
+                Course.id != assignment.course_id,
+            ).all()
+        except Exception:
+            other_courses = []
+
     for m in materials:
         title = m.title or f"assignment_{assignment.id}_material"
         safe_title = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', title)
+
+        if _is_material_for_different_course(title, course, other_courses):
+            logger.info("Skipping cross-course material '%s' for assignment %s", title, assignment.id)
+            continue
 
         if m.material_type == "local_upload":
             local_path = CLAUDE_MATERIALS_DIR / f"assignment_{assignment.id}_{safe_title}"
@@ -562,7 +609,7 @@ def prepare_assignment_materials(db: Session, assignment: Assignment, course: Op
                     seen_names.add(safe_title)
                     file_paths.append(p_str)
             else:
-                logger.warning("Attached local material %s is missing from disk.", m.title or m.id)
+                logger.warning("Attached local material %s is missing from disk or empty.", m.title or m.id)
             continue
 
         if m.drive_file_id and docs_service:
@@ -585,17 +632,18 @@ def prepare_assignment_materials(db: Session, assignment: Assignment, course: Op
                         logger.warning("Google Drive returned no content for attached material %s.", m.title or m.id)
                         continue
                     dest_path.write_bytes(data)
-                file_paths.append(str(dest_path.resolve()))
-                logger.info("Prepared attached material for assignment %s: %s", assignment.id, dest_path)
+                if dest_path.is_file() and dest_path.stat().st_size > 0:
+                    file_paths.append(str(dest_path.resolve()))
+                    logger.info("Prepared attached material for assignment %s: %s", assignment.id, dest_path)
             except Exception as e:
                 logger.warning(f"Could not download material {m.id} for assignment {assignment.id}: {e}")
 
-    # Final deduplication by file size & name
+    # Final deduplication by file size & name (strictly non-empty files)
     unique_paths = []
     seen_sizes = set()
     for fp in file_paths:
         p = Path(fp)
-        if p.is_file():
+        if p.is_file() and p.stat().st_size > 0:
             key = (p.name, p.stat().st_size)
             if key not in seen_sizes:
                 seen_sizes.add(key)
@@ -907,6 +955,43 @@ def classify_assignment_domain(
         return DOMAIN_CODING_LAB
 
     return DOMAIN_THEORY_ACADEMIC
+
+
+def _is_claude_asking_for_clarification(text: str) -> bool:
+    """
+    Detect if Claude paused or refused to solve by asking a clarifying question instead of solving.
+    """
+    if not text or len(text.strip()) == 0:
+        return False
+    t = text.strip()
+    clarification_patterns = [
+        r"\bwhich one (?:should|would) (?:you like|i)\b",
+        r"\bwhich (?:assignment|task|part|subject|course|option|approach) (?:should|would|do you)\b",
+        r"\bwhich one to start with\b",
+        r"\bwhich one should i start with\b",
+        r"\bcan't tell whether you want\b",
+        r"\bcannot tell whether you want\b",
+        r"\bcombines instructions for .* courses\b",
+        r"\bwould you like me to (?:start|proceed|focus|solve|do)\b",
+        r"\blet me know (?:which|how|if you would like me to proceed)\b",
+        r"\bplease (?:let me know|clarify|specify) which\b",
+        r"\bhow would you like (?:me to proceed|to proceed)\b",
+        r"\bbefore i (?:begin|start|proceed), (?:please|could you|would you)\b",
+        r"\bwhich of these would you like\b",
+    ]
+    has_clarification_phrase = any(re.search(p, t, re.IGNORECASE) for p in clarification_patterns)
+    if not has_clarification_phrase:
+        return False
+
+    # Check if there is actual substantial solution structure
+    has_code_fence = bool(re.search(r"```(?:python|java|cpp|c|colab|terminal|sql|asm)", t, re.IGNORECASE))
+    has_math_block = bool(re.search(r"\$\$.*?\$\$", t, re.DOTALL))
+    has_task_headers = len(re.findall(r"(?im)^\s{0,3}#{1,4}\s*(?:Task|Question|Problem)\s*\d+", t)) >= 2
+    if (has_code_fence or has_math_block or has_task_headers) and len(t) > 3000:
+        return False
+
+    return True
+
 
 
 def build_academic_cover_markdown(meta: Dict[str, str], assignment_title: str) -> str:
@@ -1277,9 +1362,24 @@ def solve_assignment_via_claude_browser(
         # 5. Classify assignment domain & build tailored academic prompt
         questions_block = ""
         if assignment.description and assignment.description.strip():
-            questions_block += f"\nASSIGNMENT INSTRUCTIONS & QUESTIONS:\n{assignment.description.strip()}\n"
-        if not attachment_paths and extracted_text and extracted_text.strip():
-            questions_block += f"\nEXTRACTED REFERENCE MATERIAL CONTENT:\n{extracted_text.strip()[:10000]}\n"
+            questions_block += f"\nASSIGNMENT INSTRUCTIONS & QUESTIONS (SOURCE OF TRUTH - ANSWER THESE EXACTLY):\n{assignment.description.strip()}\n"
+        # Always include extracted reference text so Claude has the real assignment
+        # content to solve from, regardless of whether files are attached.
+        if extracted_text and extracted_text.strip():
+            clean_ref_text = extracted_text.strip()
+            if len(clean_ref_text) > 45000:
+                clean_ref_text = clean_ref_text[:45000].rsplit("\n", 1)[0]
+            questions_block += f"\nEXTRACTED REFERENCE MATERIAL CONTENT (from attached PDFs/documents):\n{clean_ref_text}\n"
+
+        # Guard: warn when there is no assignment content at all so operators know
+        # Claude may hallucinate a generic answer instead of the real assignment.
+        # We do not hard-fail here because the downstream response-length check
+        # (raw_solution_text < 100 chars) already catches empty Claude outputs.
+        if not questions_block.strip():
+            logger.warning(
+                f"No assignment content available for assignment {assignment_id} "
+                "(empty description, no extracted text, no attachments). Claude may hallucinate."
+            )
 
         domain = classify_assignment_domain(
             title=assignment.title or "",
@@ -1314,27 +1414,41 @@ def solve_assignment_via_claude_browser(
         elif domain == DOMAIN_THEORY_ACADEMIC:
             domain_instructions = (
                 "THEORETICAL ANALYSIS & ACADEMIC RESEARCH REPORT INSTRUCTIONS:\n"
-                "- This is an ACADEMIC THEORY & RESEARCH assignment. Do NOT include terminal execution screenshots, console outputs, or fake code implementation blocks.\n"
+                "- This is an ACADEMIC THEORY & RESEARCH assignment. Do NOT include terminal execution screenshots, console outputs, or fake code implementation blocks unless the assignment explicitly requests working code.\n"
                 "- Provide an exceptionally thorough, structured academic report addressing all assignment questions, objectives, and problem statements with scholarly depth.\n"
                 "- For each question or topic, provide theoretical foundations, structured explanations, comparative analyses, real-world case studies, and practical applications.\n"
+                "- DIAGRAMS: If the assignment explicitly asks for any diagram (flowchart, architecture, UML, ERD, circuit, block diagram, schema, etc.), you MUST also provide a valid Draw.io XML code block enclosed in a ```drawio fence (starting with <mxfile> and <diagram> tags) for that diagram, plus a brief explanation of the diagram.\n"
                 "- Conclude with academic references and bibliography formatted in standard citation style (APA/IEEE).\n"
             )
             report_structure = (
                 "MANDATORY REPORT STRUCTURE (THEORETICAL & ACADEMIC ANALYSIS - FOLLOW STRICTLY):\n"
-                "Format your entire response in polished, professional Markdown.\n\n"
+                "Format your entire response in polished, professional Markdown. CRITICAL: Replace every\n"
+                "[bracketed placeholder] below with the ACTUAL content from the assignment questions and\n"
+                "reference materials. Do NOT leave any placeholder text (e.g. [Exact Title], [Detailed...])\n"
+                "in the final report — every section must contain real, specific answers to this assignment.\n\n"
                 "# Executive Summary & Overview\n"
-                "[Concise academic synthesis of the core topic, objectives, and analytical scope]\n\n"
-                "# Question 1: [Exact Title or Question from Assignment]\n"
+                "[Concise academic synthesis of the core topic, objectives, and analytical scope — written for THIS assignment]\n\n"
+                "# Question 1: [Replace with the EXACT title/question from the assignment]\n"
                 "## 1. In-Depth Theoretical Analysis\n"
-                "[Detailed, rigorous conceptual analysis, problem breakdown, and critical discussion. Use structured paragraphs, bullet points, or comparison tables where appropriate]\n\n"
+                "[Detailed, rigorous conceptual analysis, problem breakdown, and critical discussion of Question 1. Use structured paragraphs, bullet points, or comparison tables where appropriate]\n\n"
                 "## 2. Case Study & Practical Application\n"
-                "[Practical application, industry best practices, empirical evidence, or concrete scenarios illustrating the principles]\n\n"
-                "# Question N: [Next Question / Topic]\n"
-                "...\n\n"
+                "[Practical application, industry best practices, empirical evidence, or concrete scenarios illustrating the principles of Question 1]\n\n"
+                "# Question 2: [Replace with the EXACT title/question from the assignment]\n"
+                "## 1. In-Depth Theoretical Analysis\n"
+                "[... real answer for Question 2 ...]\n\n"
+                "## 2. Case Study & Practical Application\n"
+                "[... real answer for Question 2 ...]\n\n"
+                "# Diagram (only if the assignment requests a diagram)\n"
+                "## Diagram Title & Purpose\n"
+                "[What the diagram represents and why it is needed for this assignment]\n\n"
+                "## Diagram (Draw.io XML)\n"
+                "```drawio\n"
+                "<mxfile host=\"app.diagrams.net\"> ... </mxfile>\n"
+                "```\n\n"
                 "# Conclusion & Strategic Takeaways\n"
-                "[Synthesized key findings, analytical conclusions, and broader implications]\n\n"
+                "[Synthesized key findings, analytical conclusions, and broader implications for THIS assignment]\n\n"
                 "# References & Academic Citations\n"
-                "[Properly formatted academic citations in APA/IEEE style]\n"
+                "[Properly formatted academic citations in APA/IEEE style for sources actually used]\n"
             )
         elif domain == DOMAIN_DIAGRAM_DESIGN:
             domain_instructions = (
@@ -1424,11 +1538,12 @@ def solve_assignment_via_claude_browser(
             f"3. STRICT SINGLE-ASSIGNMENT FOCUS & ZERO-QUESTION DIRECTIVE:\n"
             f"   - You must solve ONLY this specific assignment: '{assignment.title}' for the course '{meta['course_name']}'.\n"
             f"   - If any materials from previous sessions or other courses appear in context, IGNORE THEM COMPLETELY.\n"
-            f"   - DO NOT ask clarifying questions, DO NOT ask which task to start with, and DO NOT ask the user for preferences.\n"
+            f"   - You are strictly forbidden from asking clarifying questions, asking which task to start with, or asking for preferences.\n"
             f"   - Solve ALL questions for this assignment completely right now from start to finish in this single response.\n\n"
             f"{domain_instructions}\n\n"
             f"{report_structure}\n"
-            "Do not attempt to generate a Google Doc yourself; our automated system compiles your output into an official Air University Google Doc with title cover page, high-definition terminal cards, and rendered diagrams."
+            "Do not attempt to generate a Google Doc yourself; our automated system compiles your output into the official Air University Google Doc. "
+            "Do not include terminal screenshots or console output unless the assignment explicitly requests executable code output."
         )
 
         # 6. Fill prompt and send with active overlay dismissal and forced click
@@ -1455,7 +1570,7 @@ def solve_assignment_via_claude_browser(
 
         # Wait until send button is enabled (in case file upload is finalizing)
         send_btn = page.locator('button[aria-label*="Send" i], button[aria-label="Send Message" i], button[data-testid="chat-input-send"]').first
-        for _ in range(8):
+        for _ in range(15):
             if send_btn.is_visible() and send_btn.is_enabled():
                 break
             page.wait_for_timeout(1000)
@@ -1486,6 +1601,7 @@ def solve_assignment_via_claude_browser(
         page.wait_for_timeout(5000)
 
         stop_selector = 'button[aria-label*="Stop response"], button[aria-label*="Stop"], button[data-testid*="stop"]'
+        continue_clicks = 0
         
         while time.monotonic() - start_time < max_wait_seconds:
             for quota_token in (
@@ -1496,6 +1612,8 @@ def solve_assignment_via_claude_browser(
                 "free message limit",
                 "limit until",
                 "try again at",
+                "too many requests",
+                "resets at",
                 "currently at capacity",
             ):
                 try:
@@ -1561,6 +1679,18 @@ def solve_assignment_via_claude_browser(
                 except Exception:
                     still_going = False
                 if not still_going:
+                    # Check if Claude truncated response and needs a 'Continue' click
+                    if continue_clicks < 3:
+                        try:
+                            cont_btn = page.locator('button:has-text("Continue generating"), button:has-text("Continue")')
+                            if cont_btn.count() > 0 and cont_btn.first.is_visible():
+                                logger.info("Claude truncated response; clicking 'Continue generating'...")
+                                cont_btn.first.click()
+                                continue_clicks += 1
+                                page.wait_for_timeout(3000)
+                                continue
+                        except Exception:
+                            pass
                     logger.info("Claude finished generating response.")
                     break
             
@@ -1576,17 +1706,56 @@ def solve_assignment_via_claude_browser(
                 )
             page.wait_for_timeout(2000)
 
-        # 8. Extract Claude's response
+        # 8. Extract Claude's response (with clipboard interceptor and DOM-to-Markdown fallback)
         raw_solution_text = ""
+        try:
+            page.evaluate("""() => {
+                window.__claude_copied_text = "";
+                if (navigator.clipboard) {
+                    const origWrite = navigator.clipboard.writeText ? navigator.clipboard.writeText.bind(navigator.clipboard) : null;
+                    navigator.clipboard.writeText = async function(text) {
+                        window.__claude_copied_text = text;
+                        if (origWrite) {
+                            try { return await origWrite(text); } catch(e) {}
+                        }
+                        return Promise.resolve();
+                    };
+                }
+            }""")
+        except Exception:
+            pass
+
         copy_buttons = page.locator('button[aria-label*="Copy" i]').all()
         if copy_buttons:
             try:
                 last_copy = copy_buttons[-1]
                 last_copy.click()
-                page.wait_for_timeout(500)
-                raw_solution_text = page.evaluate("() => navigator.clipboard.readText()")
+                page.wait_for_timeout(600)
+                raw_solution_text = page.evaluate("() => window.__claude_copied_text || ''")
+                if not raw_solution_text or len(raw_solution_text.strip()) < 50:
+                    raw_solution_text = page.evaluate("() => navigator.clipboard.readText()")
             except Exception as clip_err:
                 logger.debug(f"Clipboard read fallback: {clip_err}")
+
+        if not raw_solution_text or len(raw_solution_text.strip()) < 50:
+            try:
+                raw_solution_text = page.evaluate(r"""() => {
+                    const containers = document.querySelectorAll('.font-claude-message, [data-message-author-role="assistant"], [data-testid="chat-message-content"]');
+                    const msg = containers.length > 0 ? containers[containers.length - 1] : document.querySelector('main');
+                    if (!msg) return "";
+                    const clone = msg.cloneNode(true);
+                    clone.querySelectorAll('pre').forEach(pre => {
+                        const code = pre.querySelector('code');
+                        const langClass = Array.from(code?.classList || []).find(c => c.startsWith('language-'));
+                        const lang = langClass ? langClass.replace('language-', '') : (pre.getAttribute('data-language') || '');
+                        const codeText = code ? code.innerText : pre.innerText;
+                        pre.innerText = `\n\`\`\`${lang}\n${codeText}\n\`\`\`\n`;
+                    });
+                    return clone.innerText || "";
+                }""")
+            except Exception:
+                raw_solution_text = ""
+
 
         if not raw_solution_text or len(raw_solution_text.strip()) < 50:
             message_containers = page.locator('.font-claude-message, [data-message-author-role="assistant"], div[data-is-streaming="false"], [data-testid="chat-message-content"]').all()
@@ -1594,6 +1763,67 @@ def solve_assignment_via_claude_browser(
                 raw_solution_text = message_containers[-1].inner_text()
             else:
                 raw_solution_text = page.locator('main').inner_text()
+
+        # Check if Claude asked a clarifying question instead of solving (self-correction loop)
+        if _is_claude_asking_for_clarification(raw_solution_text):
+            logger.warning("Claude asked a clarifying question instead of solving. Autonomously commanding single-assignment focus...")
+            _update_solver_progress(
+                db,
+                assignment_id,
+                3,
+                5,
+                "Clarifying Focus to Claude",
+                f"Claude requested clarification; commanding focus exclusively on '{assignment.title}'...",
+            )
+            follow_up_prompt = (
+                f"Focus EXCLUSIVELY on the assignment '{assignment.title}' for the course '{meta['course_name']}'. "
+                f"Ignore all files, instructions, or materials from other courses or topics. "
+                f"Do not ask questions, do not offer choices, and do not ask how to proceed. "
+                f"Immediately provide the complete, comprehensive academic solution for '{assignment.title}' from start to finish."
+            )
+            try:
+                fu_input = page.locator(prompt_selector).first
+                fu_input.click(force=True, timeout=5000)
+                page.keyboard.insert_text(follow_up_prompt)
+                page.wait_for_timeout(500)
+                fu_send = page.locator('button[aria-label*="Send" i], button[aria-label="Send Message" i], button[data-testid="chat-input-send"]').first
+                if fu_send.is_visible() and fu_send.is_enabled():
+                    fu_send.click()
+                else:
+                    page.keyboard.press("Enter")
+
+                fu_start = time.monotonic()
+                page.wait_for_timeout(5000)
+                while time.monotonic() - fu_start < max_wait_seconds:
+                    fu_stop = page.locator(stop_selector)
+                    fu_gen = False
+                    try:
+                        if fu_stop.count() > 0 and fu_stop.first.is_visible():
+                            fu_gen = True
+                    except Exception:
+                        fu_gen = False
+                    if not fu_gen:
+                        page.wait_for_timeout(2000)
+                        still_fu = (fu_stop.count() > 0 and fu_stop.first.is_visible())
+                        if not still_fu:
+                            break
+                    page.wait_for_timeout(2000)
+
+                # Re-extract the response from the follow-up
+                copy_buttons = page.locator('button[aria-label*="Copy" i]').all()
+                if copy_buttons:
+                    try:
+                        copy_buttons[-1].click()
+                        page.wait_for_timeout(600)
+                        fu_text = page.evaluate("() => window.__claude_copied_text || ''")
+                        if not fu_text or len(fu_text.strip()) < 50:
+                            fu_text = page.evaluate("() => navigator.clipboard.readText()")
+                        if fu_text and len(fu_text.strip()) >= 50:
+                            raw_solution_text = fu_text
+                    except Exception:
+                        pass
+            except Exception as fu_err:
+                logger.warning("Follow-up clarification prompt failed: %s", fu_err)
 
         if not raw_solution_text or len(raw_solution_text.strip()) < 100:
             return {
@@ -1632,19 +1862,18 @@ def solve_assignment_via_claude_browser(
                 append_execution_metadata,
                 extract_assignment_deliverables,
                 extract_colab_notebooks,
+                synthesize_colab_notebook_from_markdown,
             )
 
             if domain == DOMAIN_HEAVY_ML:
                 notebook_deliverables = extract_colab_notebooks(raw_solution_text)
                 if not notebook_deliverables:
-                    return {
-                        "status": "error",
-                        "error": (
-                            "This heavy machine-learning assignment requires a valid Colab notebook, "
-                            "but Claude did not return one. Retry the solver to generate the notebook."
-                        ),
-                    }
-                raw_solution_text = remove_heavy_ml_code_fences(raw_solution_text)
+                    synth = synthesize_colab_notebook_from_markdown(raw_solution_text, title=assignment.title or "Google Colab Implementation")
+                    if synth:
+                        notebook_deliverables = [synth]
+                        logger.info("Synthesized valid Colab notebook from Claude's Python code deliverables.")
+                if notebook_deliverables:
+                    raw_solution_text = remove_heavy_ml_code_fences(raw_solution_text)
                 final_solution_content = cover_md + raw_solution_text.strip()
 
             elif domain in (DOMAIN_THEORY_ACADEMIC, DOMAIN_QUANTITATIVE_MATH):

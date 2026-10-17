@@ -280,6 +280,11 @@ export const api = {
   getClassroomStudyMaterials: async (token = null) => fetchFromApi('/rag/materials?limit=12', token),
   generateStudyPlan: async (data, token = null) => fetchFromApi('/rag/study-plan', token, { method: 'POST', body: JSON.stringify(data) }),
   askCourseMaterials: async (data, token = null) => fetchFromApi('/rag/chat', token, { method: 'POST', body: JSON.stringify(data) }),
+  getRagConversations: async (token = null) => fetchFromApi('/rag/conversations', token),
+  getRagConversationMessages: async (conversationId, token = null) => fetchFromApi(`/rag/conversations/${conversationId}/messages`, token),
+  getStudyPlans: async (token = null) => fetchFromApi('/rag/study-plans', token),
+  getStudyPlan: async (planId, token = null) => fetchFromApi(`/rag/study-plans/${planId}`, token),
+  updateStudyPlanSession: async (planId, sessionId, payload, token = null) => fetchFromApi(`/rag/study-plans/${planId}/sessions/${sessionId}/status`, token, { method: 'POST', body: JSON.stringify(payload) }),
 
   // Assignment Templates
   getAssignmentTemplates: async (token = null) => fetchFromApi('/classroom/templates', token),
@@ -330,6 +335,8 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(payload),
   }),
+  getTutorConversations: async (assignmentId, token = null) => fetchFromApi(`/assignments/${assignmentId}/conversations`, token),
+  getTutorConversationMessages: async (assignmentId, conversationId, token = null) => fetchFromApi(`/assignments/${assignmentId}/conversations/${conversationId}/messages`, token),
 
   reviewDraft: async (assignmentId, { text, file } = {}, token = null) => {
     return fetchFromApi(`/assignments/${assignmentId}/review`, token, {

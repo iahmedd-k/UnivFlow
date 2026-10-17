@@ -27,12 +27,16 @@ from app.services.claude_browser_solver import (
     DOMAIN_DIAGRAM_DESIGN,
     DOMAIN_QUANTITATIVE_MATH,
     DOMAIN_THEORY_ACADEMIC,
+    _is_material_for_different_course,
+    _is_claude_asking_for_clarification,
 )
 from app.services.ai_solution import (
     export_solution_to_google_doc,
     extract_assignment_deliverables,
     extract_colab_notebooks,
+    synthesize_colab_notebook_from_markdown,
 )
+
 
 
 def test_find_system_browser():
@@ -681,5 +685,118 @@ QuickSort verified: [1, 2, 3, 4, 5]
     assert deliverables["files"][0]["name"] == "task_1_solution.py"
     assert deliverables["files"][1]["name"] == "task_2_solution.py"
     assert len(deliverables["terminal_outputs"]) == 2
+
+
+def test_is_material_for_different_course():
+    """Verify cross-course material detection avoids sending unrelated course files to Claude."""
+    curr_course = Course(id=1, name="Parallel and Distributed Computing")
+    other_courses = [
+        Course(id=2, name="Professional Practices CS270"),
+        Course(id=3, name="Deep Learning CS-444"),
+    ]
+
+    # Material matching other courses
+    assert _is_material_for_different_course("Professional_Practices_Assignment_01.docx", curr_course, other_courses) is True
+    assert _is_material_for_different_course("CS270_Ethics_Case_Study.pdf", curr_course, other_courses) is True
+    assert _is_material_for_different_course("Deep_Learning_Lab_3.pdf", curr_course, other_courses) is True
+    assert _is_material_for_different_course("CS444_Perceptron_Handout.pdf", curr_course, other_courses) is True
+
+    # Material belonging to current course or generic
+    assert _is_material_for_different_course("PDC_Assignment_1_MPI.pdf", curr_course, other_courses) is False
+    assert _is_material_for_different_course("Parallel_Computing_Manual.pdf", curr_course, other_courses) is False
+    assert _is_material_for_different_course("Lab_Manual_Task1.pdf", curr_course, other_courses) is False
+
+
+def test_is_claude_asking_for_clarification():
+    """Verify autonomous detection when Claude pauses to ask a question instead of solving."""
+    # Clarification/hesitation queries from real logs
+    hesitant_1 = (
+        "Your message combines instructions for three different courses "
+        "(Professional Practices, Parallel and Distributed Computing, and Deep Learning), "
+        "and I can't tell whether you want all of them done at once or in a particular order.\n"
+        "Which one should I start with?"
+    )
+    hesitant_2 = "Which task would you like me to focus on first? Please let me know how you'd like to proceed."
+    hesitant_3 = "Before I begin, please clarify whether you want the implementation in C++ or Python."
+
+    assert _is_claude_asking_for_clarification(hesitant_1) is True
+    assert _is_claude_asking_for_clarification(hesitant_2) is True
+    assert _is_claude_asking_for_clarification(hesitant_3) is True
+
+    # Real solution responses should NOT be flagged as clarification
+    real_solution = """
+# Task 1: Matrix Multiplication using MPI
+## 1. Problem Statement
+Implement parallel matrix multiplication using OpenMPI.
+## 2. Source Code
+```cpp
+#include <mpi.h>
+int main(int argc, char** argv) {
+    MPI_Init(&argc, &argv);
+    return 0;
+}
+```
+## 3. Terminal Output
+```terminal
+$ mpirun -np 4 ./matmul
+Execution time: 0.12s
+```
+"""
+    assert _is_claude_asking_for_clarification(real_solution) is False
+
+
+def test_extract_colab_notebooks_extended_fences():
+    """Verify extract_colab_notebooks supports ```colab-json, ```ipynb, and ```json nbformat 4 blocks."""
+    sample_nb = {
+        "nbformat": 4,
+        "nbformat_minor": 2,
+        "metadata": {"accelerator": "GPU"},
+        "cells": [
+            {"cell_type": "markdown", "metadata": {}, "source": ["# MLP Classifier\n"]},
+            {"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [], "source": ["import torch\n"]}
+        ]
+    }
+    nb_json = json.dumps(sample_nb)
+
+    md_colab_json = f"# Task 1: Train Model\n```colab-json\n{nb_json}\n```"
+    md_ipynb = f"# Task 1: Train Model\n```ipynb\n{nb_json}\n```"
+    md_json = f"# Task 1: Train Model\n```json\n{nb_json}\n```"
+
+    nbs1 = extract_colab_notebooks(md_colab_json)
+    nbs2 = extract_colab_notebooks(md_ipynb)
+    nbs3 = extract_colab_notebooks(md_json)
+
+    assert len(nbs1) == 1
+    assert len(nbs2) == 1
+    assert len(nbs3) == 1
+    assert nbs1[0]["language"] == "ipynb"
+    assert "import torch" in nbs2[0]["content"]
+
+
+def test_synthesize_colab_notebook_from_markdown():
+    """Verify fallback notebook synthesis when Claude outputs Python code blocks for an ML task."""
+    ml_markdown = """
+# Task 1: Convolutional Neural Network
+## 1. Problem Statement
+Build and train a CNN on CIFAR-10.
+
+```python
+import torch
+import torch.nn as nn
+
+class ConvNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv = nn.Conv2d(3, 16, 3)
+```
+"""
+    synthesized = synthesize_colab_notebook_from_markdown(ml_markdown, title="Deep Learning Lab 4")
+    assert synthesized is not None
+    assert synthesized["name"] == "solution_colab_notebook.ipynb"
+    nb = json.loads(synthesized["content"])
+    assert nb["nbformat"] == 4
+    assert nb["metadata"]["accelerator"] == "GPU"
+    assert any("import torch" in "".join(c.get("source", [])) for c in nb["cells"] if c["cell_type"] == "code")
+
 
 

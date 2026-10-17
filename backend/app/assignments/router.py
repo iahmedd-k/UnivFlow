@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.db.models import Assignment, AssignmentMaterial, Course, Setting, Submission, SubmissionState, AssignmentStatus
+from app.db.models import Assignment, AssignmentMaterial, Course, Setting, Submission, SubmissionState, AssignmentStatus, ChatConversation, ChatMessage
 from app.assignments.schemas.assignment import (
     AssignmentRecord, ExtractedRequirements, SolutionPackage,
     GoogleDocInfo, SubmissionReceipt, ApproveRequest, ChangesRequest,
@@ -406,6 +406,7 @@ Return JSON ONLY:
 class TutorChatRequest(BaseModel):
     message: str
     history: Optional[List[dict]] = None
+    conversation_id: Optional[int] = None
 
 
 @router.post("/{assignment_id}/tutor", response_model=dict)
@@ -482,6 +483,31 @@ STUDENT MESSAGE: {payload.message}
         recent_history = "\n".join(f"{h.get('role', 'user').upper()}: {h.get('text', '')}" for h in payload.history[-6:])
         context_prompt = f"CHAT HISTORY:\n{recent_history}\n\n" + context_prompt
 
+    # Resolve or create the persisted tutor conversation.
+    user_id_for_conv = user_id
+    if payload.conversation_id:
+        conv = (
+            db.query(ChatConversation)
+            .filter(
+                ChatConversation.id == payload.conversation_id,
+                ChatConversation.user_id == user_id_for_conv,
+                ChatConversation.source == "tutor",
+                ChatConversation.assignment_id == assignment.id,
+            )
+            .first()
+        )
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+    else:
+        title = (payload.message.strip()[:80] + ("…" if len(payload.message.strip()) > 80 else "")) or "Tutor chat"
+        conv = ChatConversation(user_id=user_id_for_conv, title=title, source="tutor", assignment_id=assignment.id)
+        db.add(conv)
+        db.flush()
+
+    # Persist the student's turn.
+    db.add(ChatMessage(conversation_id=conv.id, role="user", content=payload.message.strip()))
+    db.flush()
+
     try:
         reply = _call_groq(
             prompt=context_prompt,
@@ -489,10 +515,92 @@ STUDENT MESSAGE: {payload.message}
             temperature=0.4,
             max_tokens=2000
         )
-        return {"text": reply}
+        # Persist the tutor's turn.
+        db.add(ChatMessage(conversation_id=conv.id, role="assistant", content=reply))
+        conv.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+        messages = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.conversation_id == conv.id)
+            .order_by(ChatMessage.created_at.asc())
+            .all()
+        )
+        return {
+            "text": reply,
+            "conversation_id": conv.id,
+            "messages": [
+                {"id": m.id, "role": m.role, "content": m.content, "created_at": m.created_at}
+                for m in messages
+            ],
+        }
     except Exception as e:
+        db.rollback()
         logger.error(f"Tutor chat error for {assignment_id}: {e}")
         raise HTTPException(status_code=502, detail=f"Tutor service error: {str(e)}")
+
+
+@router.get("/{assignment_id}/conversations", response_model=List[dict])
+def list_tutor_conversations(
+    assignment_id: str,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """List the current user's tutor conversations for an assignment."""
+    user_id = _authenticated_user_id(clerk_user)
+    assignment = _find_assignment(db, assignment_id, user_id)
+    rows = (
+        db.query(ChatConversation)
+        .filter(
+            ChatConversation.user_id == user_id,
+            ChatConversation.source == "tutor",
+            ChatConversation.assignment_id == assignment.id,
+        )
+        .order_by(ChatConversation.updated_at.desc().nullslast(), ChatConversation.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": c.id,
+            "title": c.title or "Tutor chat",
+            "source": c.source,
+            "assignment_id": c.assignment_id,
+            "created_at": c.created_at,
+            "updated_at": c.updated_at,
+        }
+        for c in rows
+    ]
+
+
+@router.get("/{assignment_id}/conversations/{conversation_id}/messages", response_model=List[dict])
+def get_tutor_conversation_messages(
+    assignment_id: str,
+    conversation_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Return messages for one tutor conversation (owner only)."""
+    user_id = _authenticated_user_id(clerk_user)
+    _find_assignment(db, assignment_id, user_id)
+    conv = (
+        db.query(ChatConversation)
+        .filter(ChatConversation.id == conversation_id, ChatConversation.user_id == user_id)
+        .first()
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    messages = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.conversation_id == conversation_id)
+        .order_by(ChatMessage.created_at.asc())
+        .all()
+    )
+    return [
+        {"id": m.id, "role": m.role, "content": m.content, "created_at": m.created_at}
+        for m in messages
+    ]
 
 
 class DraftReviewRequest(BaseModel):
