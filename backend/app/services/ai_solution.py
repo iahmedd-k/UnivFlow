@@ -1067,7 +1067,7 @@ def export_solution_to_google_doc(
         # Treat only non-diagram source files as "code files."  Theory assignments
         # that contain only Draw.io/Mermaid diagram XML must still flow through the
         # academic report path so diagrams are rendered as images, not dumped as raw XML.
-        _diagram_langs = {"drawio", "drawio.xml", "mxfile", "mxgraph", "mermaid", "mmd", "plantuml", "puml", "graphviz", "dot"}
+        _diagram_langs = {"drawio", "drawio.xml", "mxfile", "mxgraph", "mermaid", "mmd", "plantuml", "puml", "graphviz", "dot", "svg", "xml"}
         code_files = [f for f in (deliverables.get("files") or []) if f.get("language") not in _diagram_langs]
         has_code_files = bool(code_files)
 
@@ -1105,7 +1105,7 @@ def export_solution_to_google_doc(
                 )
                 task_title = task_heading.group(1).strip() if task_heading else source_file["name"]
                 lang = (source_file.get("language") or "python").lower()
-                is_diagram = lang in ("mermaid", "diagram", "plantuml", "graphviz", "dot", "mmd", "puml", "drawio", "drawio.xml", "mxfile", "xml") or source_file["name"].endswith((".mmd", ".puml", ".dot", ".drawio.xml", ".xml"))
+                is_diagram = lang in ("mermaid", "diagram", "plantuml", "graphviz", "dot", "mmd", "puml", "drawio", "drawio.xml", "mxfile", "xml", "svg") or source_file["name"].endswith((".mmd", ".puml", ".dot", ".drawio.xml", ".xml"))
                 result = results_by_file.get(source_file["name"], {})
                 claude_term = claude_terminals.get(str(task))
                 terminal_output = claude_term or result.get("terminal_output") or ("Diagram rendered successfully." if is_diagram else "No terminal output was produced.")
@@ -1192,16 +1192,28 @@ def export_solution_to_google_doc(
                     )
 
                 # 4. Source Code / Diagram Markup (Heading 2 + Code Block)
-                docs_service.append_styled_block(
-                    doc_id,
-                    f"3. Source Code Implementation ({source_file['name']})\n" if not is_diagram else f"3. Architecture & Diagram Specification ({source_file['name']})\n",
-                    style_type="HEADING_2"
-                )
-                docs_service.append_styled_block(
-                    doc_id,
-                    f"{source_file['content'].rstrip()}\n\n",
-                    style_type="CODE"
-                )
+                if not is_diagram:
+                    docs_service.append_styled_block(
+                        doc_id,
+                        f"3. Source Code Implementation ({source_file['name']})\n",
+                        style_type="HEADING_2"
+                    )
+                    docs_service.append_styled_block(
+                        doc_id,
+                        f"{source_file['content'].rstrip()}\n\n",
+                        style_type="CODE"
+                    )
+                else:
+                    docs_service.append_styled_block(
+                        doc_id,
+                        f"3. Architecture & Diagram Specification ({source_file['name']})\n",
+                        style_type="HEADING_2"
+                    )
+                    docs_service.append_styled_block(
+                        doc_id,
+                        f"{source_file['name']} is provided as an attached companion deliverable file.\n\n",
+                        style_type="NORMAL"
+                    )
 
                 # Separate tasks cleanly
                 if idx < len(deliverables["files"]) - 1:
@@ -1234,16 +1246,16 @@ def export_solution_to_google_doc(
                     else:
                         in_code_fence = False
                         code_content = "\n".join(fence_lines).strip()
-                        docs_service.append_styled_block(doc_id, f"{code_content}\n\n", style_type="CODE")
                         
                         # If this is a diagram block, check if we have a rendered image for it!
-                        is_drawio = fence_lang in ("drawio", "xml", "mxfile", "mxgraph") or ("<mxfile" in code_content or "<mxGraphModel" in code_content)
-                        is_diagram = fence_lang in ("mermaid", "plantuml", "graphviz", "dot", "mmd", "puml") or is_drawio
+                        is_drawio = fence_lang in ("drawio", "drawio.xml", "xml", "mxfile", "mxgraph") or ("<mxfile" in code_content or "<mxGraphModel" in code_content)
+                        is_diagram = fence_lang in ("mermaid", "plantuml", "graphviz", "dot", "mmd", "puml", "svg") or is_drawio
                         if is_diagram:
                             matched_png = None
                             diag_lang = "drawio" if is_drawio else fence_lang
+                            diag_filename = f"diagram_architecture.{'drawio.xml' if is_drawio else _CODE_EXTENSIONS.get(fence_lang, 'png')}"
                             for res in execution_results:
-                                if (res.get("language") == diag_lang or (is_drawio and res.get("language") in ("drawio", "xml", "mxfile"))) and res.get("screenshot_data_uri"):
+                                if (res.get("language") == diag_lang or (is_drawio and res.get("language") in ("drawio", "drawio.xml", "xml", "mxfile"))) and res.get("screenshot_data_uri"):
                                     try:
                                         matched_png = base64.b64decode(res["screenshot_data_uri"].split("base64,")[1])
                                         break
@@ -1268,6 +1280,39 @@ def export_solution_to_google_doc(
                                     filename=f"diagram_{diag_lang}.png",
                                     width_pt=460
                                 )
+                                docs_service.append_styled_block(
+                                    doc_id,
+                                    f"Figure: Visual Educational Diagram Architecture ({diag_filename} attached)\n\n",
+                                    style_type="NORMAL",
+                                    italic=True
+                                )
+
+                            # Upload the diagram XML as a companion file deliverable to Google Drive
+                            if is_drawio and docs_service.drive_service:
+                                try:
+                                    uploaded_file = docs_service.upload_file(
+                                        name=diag_filename,
+                                        content=code_content.encode("utf-8"),
+                                        mime_type="application/xml",
+                                    )
+                                    diag_link = uploaded_file.get("webViewLink") if uploaded_file else None
+                                    if diag_link:
+                                        docs_service.append_styled_block(
+                                            doc_id,
+                                            f"Download and edit companion diagram file: {diag_link}\n\n",
+                                            style_type="NORMAL"
+                                        )
+                                    else:
+                                        docs_service.append_styled_block(
+                                            doc_id,
+                                            f"{diag_filename} is included as an attached deliverable file.\n\n",
+                                            style_type="NORMAL"
+                                        )
+                                except Exception as diag_upload_err:
+                                    logger.warning(f"Could not upload diagram XML to Drive: {diag_upload_err}")
+                        else:
+                            # Not a diagram: append code block into document
+                            docs_service.append_styled_block(doc_id, f"{code_content}\n\n", style_type="CODE")
                         fence_lines = []
                     continue
 

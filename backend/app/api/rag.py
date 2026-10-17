@@ -65,15 +65,26 @@ class StudyPlanSessionUpdate(BaseModel):
 def get_classroom_materials(limit: int = 100, db=Depends(get_db)):
     rows = (db.query(AssignmentMaterial, Assignment, Course).join(Assignment, Assignment.id == AssignmentMaterial.assignment_id)
             .join(Course, Course.id == Assignment.course_id)
-            .filter(AssignmentMaterial.drive_file_id.isnot(None))
-            .filter(or_(AssignmentMaterial.mime_type == "application/vnd.google-apps.document", AssignmentMaterial.mime_type == "application/pdf", AssignmentMaterial.mime_type.like("text/%"), AssignmentMaterial.mime_type.is_(None)))
+            .filter(
+                or_(
+                    # Google Drive materials (content fetched lazily from Drive on read)
+                    and_(AssignmentMaterial.drive_file_id.isnot(None),
+                         AssignmentMaterial.mime_type.in_(
+                             ["application/vnd.google-apps.document", "application/pdf"]
+                         ) | AssignmentMaterial.mime_type.like("text/%")),
+                    # Local uploads (content already extracted and stored in DB)
+                    and_(AssignmentMaterial.drive_file_id.is_(None),
+                         AssignmentMaterial.content.isnot(None))
+                )
+            )
             .order_by(AssignmentMaterial.created_at.desc()).limit(min(max(limit, 1), 200)).all())
     seen, result = set(), []
     for material, assignment, course in rows:
-        if material.drive_file_id in seen:
+        if material.drive_file_id in seen and material.drive_file_id is not None:
             continue
-        seen.add(material.drive_file_id)
-        result.append({"id": material.drive_file_id, "title": material.title or assignment.title, "course_id": assignment.course_id, "course_name": course.name, "assignment": assignment.title, "mime_type": material.mime_type, "url": material.url})
+        if material.drive_file_id is not None:
+            seen.add(material.drive_file_id)
+        result.append({"id": material.drive_file_id or str(material.id), "title": material.title or assignment.title, "course_id": assignment.course_id, "course_name": course.name, "assignment": assignment.title, "mime_type": material.mime_type, "url": material.url})
     return result
 
 
@@ -86,6 +97,8 @@ def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS)
     try:
         drive_service = get_drive_service(db)
     except Exception as e:
+        # No Google credential connected: we cannot fetch Drive content.
+        # Log once and continue so DB-stored content (local uploads) still works.
         logger.warning(f"Could not load Google Drive service for RAG: {e}")
 
     for document_id in dict.fromkeys(document_ids):
@@ -110,6 +123,23 @@ def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS)
                 elif mime.startswith("text/"):
                     data = drive_service.files().get_media(fileId=document_id).execute()
                     content = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+
+                # Cache extracted Drive content to DB so subsequent reads don't
+                # need to re-fetch from the Drive API.
+                if content:
+                    try:
+                        mat_row = db.query(AssignmentMaterial).filter(
+                            AssignmentMaterial.drive_file_id == document_id
+                        ).first()
+                        if mat_row:
+                            mat_row.content = content[:max_chars]
+                            mat_row.title = mat_row.title or title
+                            mat_row.url = mat_row.url or url
+                            db.add(mat_row)
+                            db.commit()
+                    except Exception as cache_err:
+                        db.rollback()
+                        logger.warning(f"Could not cache Drive content for {document_id}: {cache_err}")
             except Exception as e:
                 logger.warning(f"Drive API fetch failed for {document_id}: {e}")
 

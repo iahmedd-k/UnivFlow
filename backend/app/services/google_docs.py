@@ -104,14 +104,145 @@ class GoogleDocsService:
             logger.error(f"Error creating document: {e}")
             return None
 
+    @staticmethod
+    def _clean_conversational_artifacts(raw: str) -> str:
+        """
+        Cleans conversational / comment artifacts such as '//' from text.
+        Converts leading '//' into bullet points ('• ') and inline ' // ' into clean dashes (' — ').
+        Preserves URLs (e.g. http://, https://).
+        """
+        if not raw:
+            return ""
+        lines = raw.split("\n")
+        cleaned_lines = []
+        for line in lines:
+            stripped = line.strip()
+            # If line starts with // (comment style), convert to bullet point
+            if stripped.startswith("//"):
+                bullet_content = re.sub(r"^\/{2,}\s*", "", stripped)
+                indent = line[: len(line) - len(line.lstrip())]
+                cleaned_lines.append(f"{indent}• {bullet_content}")
+            else:
+                # Replace inline " // " with " — " (protect URLs with negative lookbehind)
+                subbed = re.sub(r"(?<!:)\s*\/{2,}\s*", " — ", line)
+                cleaned_lines.append(subbed)
+        return "\n".join(cleaned_lines)
+
+    @classmethod
+    def _parse_inline_markdown(cls, raw_text: str) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        Parses markdown inline styling tokens from raw text:
+        - ***bold italic*** / ___bold italic___
+        - **bold** / __bold__
+        - *italic* / _italic_
+        - `code`
+
+        Strips the markdown characters so raw formatting characters (**, //, etc.) do NOT show up literally,
+        and returns the clean plain text alongside character spans for Google Docs updateTextStyle.
+        """
+        if not raw_text:
+            return "", []
+
+        # 1. Clean comment slashes and conversational artifacts
+        text = cls._clean_conversational_artifacts(raw_text)
+
+        # 2. Tokenize markdown inline syntax
+        # Precedence: bold_italic (*** or ___), bold (** or __), italic (* or _), code (`)
+        pattern = re.compile(
+            r"(?P<bold_italic>(?:\*\*\*|___)(?!\s)(.+?)(?<!\s)(?:\*\*\*|___))"
+            r"|(?P<bold>(?:\*\*|__)(?!\s)(.+?)(?<!\s)(?:\*\*|__))"
+            r"|(?P<italic>(?:\*|_)(?!\s)(.+?)(?<!\s)(?:\*|_))"
+            r"|(?P<code>`([^`\n]+)`)"
+        )
+
+        spans: List[Dict[str, Any]] = []
+        clean_parts: List[str] = []
+        last_idx = 0
+        clean_idx = 0
+
+        for match in pattern.finditer(text):
+            m_start, m_end = match.span()
+            # Add preceding non-formatted text
+            if m_start > last_idx:
+                segment = text[last_idx:m_start]
+                clean_parts.append(segment)
+                clean_idx += len(segment)
+
+            if match.group("bold_italic"):
+                matched_str = match.group("bold_italic")
+                content = matched_str[3:-3]
+                span_start = clean_idx
+                clean_parts.append(content)
+                clean_idx += len(content)
+                spans.append({
+                    "start": span_start,
+                    "end": clean_idx,
+                    "style": {"bold": True, "italic": True},
+                    "fields": ["bold", "italic"]
+                })
+            elif match.group("bold"):
+                matched_str = match.group("bold")
+                content = matched_str[2:-2]
+                span_start = clean_idx
+                clean_parts.append(content)
+                clean_idx += len(content)
+                spans.append({
+                    "start": span_start,
+                    "end": clean_idx,
+                    "style": {"bold": True},
+                    "fields": ["bold"]
+                })
+            elif match.group("italic"):
+                matched_str = match.group("italic")
+                content = matched_str[1:-1]
+                span_start = clean_idx
+                clean_parts.append(content)
+                clean_idx += len(content)
+                spans.append({
+                    "start": span_start,
+                    "end": clean_idx,
+                    "style": {"italic": True},
+                    "fields": ["italic"]
+                })
+            elif match.group("code"):
+                content = match.group("code")[1:-1]
+                span_start = clean_idx
+                clean_parts.append(content)
+                clean_idx += len(content)
+                spans.append({
+                    "start": span_start,
+                    "end": clean_idx,
+                    "style": {
+                        "weightedFontFamily": {"fontFamily": "Consolas"},
+                        "fontSize": {"magnitude": 9.5, "unit": "PT"},
+                    },
+                    "fields": ["weightedFontFamily", "fontSize"]
+                })
+
+            last_idx = m_end
+
+        if last_idx < len(text):
+            segment = text[last_idx:]
+            clean_parts.append(segment)
+            clean_idx += len(segment)
+
+        result_text = "".join(clean_parts)
+        # Strip any remaining stray unmatched double asterisks or double underscores
+        if "**" in result_text or "__" in result_text:
+            result_text = result_text.replace("**", "").replace("__", "")
+
+        return result_text, spans
+
     def append_text(self, document_id: str, text: str) -> bool:
-        """Append text to the end of the document"""
+        """Append text to the end of the document, stripping markdown formatting characters."""
         try:
+            clean_text, _ = self._parse_inline_markdown(text)
+            clean_text = clean_text or text
             end_index = self.get_document_end_index(document_id)
             requests = [{
                 "insertText": {
                     "location": {"index": end_index},
-                    "text": text
+                    "text": clean_text
                 }
             }]
             self.docs_service.documents().batchUpdate(
@@ -157,18 +288,27 @@ class GoogleDocsService:
         color_rgb: Optional[tuple] = None,
         font_family: Optional[str] = None,
     ) -> bool:
-        """Append text to the document and apply typography styles (headings, colors, alignments, code fonts)."""
+        """Append text to the document and apply typography styles (headings, colors, alignments, code fonts, inline bold/italic)."""
         if not text:
             return True
+
+        if style_type != "CODE":
+            clean_text, styled_spans = self._parse_inline_markdown(text)
+        else:
+            clean_text, styled_spans = text, []
+
+        if not clean_text:
+            return True
+
         try:
             start_index = self.get_document_end_index(document_id)
             insert_req = {
                 "insertText": {
                     "location": {"index": start_index},
-                    "text": text
+                    "text": clean_text
                 }
             }
-            end_index = start_index + len(text)
+            end_index = start_index + len(clean_text)
             requests = [insert_req]
 
             para_named_style = None
@@ -293,6 +433,19 @@ class GoogleDocsService:
                         "fields": ",".join(fields)
                     }
                 })
+
+            # Apply granular inline styled spans (bold, italic, code)
+            for span in styled_spans:
+                s_start = start_index + span["start"]
+                s_end = start_index + span["end"]
+                if s_end > s_start:
+                    requests.append({
+                        "updateTextStyle": {
+                            "range": {"startIndex": s_start, "endIndex": s_end},
+                            "textStyle": span["style"],
+                            "fields": ",".join(span["fields"])
+                        }
+                    })
 
             self.docs_service.documents().batchUpdate(
                 documentId=document_id,
