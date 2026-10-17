@@ -44,8 +44,12 @@ export default function PortalPage() {
 
   const handleSyncCookie = async (e) => {
     if (e) e.preventDefault();
+    if (!portalUrl.trim()) {
+      setError('Please enter your university portal address.');
+      return;
+    }
     if (!cookieInput.trim()) {
-      setError('Please paste your portal session cookie (ASP.NET_SessionId or cookie header).');
+      setError('Please paste your portal session cookie (full cookie header or .AspNetCore.Cookies).');
       return;
     }
     setSyncingCookie(true);
@@ -53,7 +57,7 @@ export default function PortalPage() {
     setNotice('');
     try {
       const token = await getToken();
-      const res = await api.syncPortalCookies(cookieInput.trim(), portalUrl, token);
+      const res = await api.syncPortalCookies(cookieInput.trim(), portalUrl.trim(), token);
       setNotice(res?.message || `Successfully synced ${res?.attendance_count || 0} course attendance records!`);
       setCookieInput('');
       await loadSettings();
@@ -312,34 +316,81 @@ export default function PortalPage() {
               )}
             </div>
 
-            <form onSubmit={handleSyncCookie} className="mt-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-              <input
-                type="password"
-                placeholder="Paste ASP.NET_SessionId (or full cookie string)"
-                className="flex-1 rounded-lg border border-[#d6d4f0] bg-white px-3 py-2 text-xs font-mono text-[#292d3a] placeholder:text-[#9fa3b5] focus:border-[#6657d9] focus:outline-none"
-                value={cookieInput}
-                onChange={(e) => setCookieInput(e.target.value)}
-                disabled={syncingCookie || busy}
-              />
-              <button
-                type="submit"
-                className="inline-flex min-h-9 items-center justify-center rounded-lg border border-[#6657d9] bg-[#6657d9] px-4 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55 whitespace-nowrap"
-                disabled={syncingCookie || busy || !cookieInput.trim()}
-              >
-                {syncingCookie ? 'Syncing…' : settings?.has_session_cookies ? 'Update Cookie' : 'Connect & Sync'}
-              </button>
+            <form onSubmit={handleSyncCookie} className="mt-2 flex flex-col gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-semibold uppercase tracking-wider text-[#5d6170]">
+                  1. University Portal Address
+                </label>
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <input
+                    type="url"
+                    placeholder="https://portals.au.edu.pk/students/"
+                    className="flex-1 rounded-lg border border-[#d6d4f0] bg-white px-3 py-2 text-xs text-[#292d3a] placeholder:text-[#9fa3b5] focus:border-[#6657d9] focus:outline-none"
+                    value={portalUrl}
+                    onChange={(e) => setPortalUrl(e.target.value)}
+                    disabled={syncingCookie || busy}
+                  />
+                  <a
+                    href={portalUrl || AIR_UNIVERSITY_PORTAL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex min-h-9 items-center justify-center gap-1 rounded-lg border border-[#d6d4f0] bg-white px-3 text-xs font-semibold text-[#483ba6] hover:bg-[#f5f4fd] whitespace-nowrap"
+                  >
+                    Open Portal <Icon name="externalLink" size={12} />
+                  </a>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-semibold uppercase tracking-wider text-[#5d6170]">
+                  2. Session Cookies (Full Cookie Header or .AspNetCore.Cookies)
+                </label>
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <input
+                    type="password"
+                    placeholder="Paste full Cookie header or .AspNetCore.Cookies session string"
+                    className="flex-1 rounded-lg border border-[#d6d4f0] bg-white px-3 py-2 text-xs font-mono text-[#292d3a] placeholder:text-[#9fa3b5] focus:border-[#6657d9] focus:outline-none"
+                    value={cookieInput}
+                    onChange={(e) => setCookieInput(e.target.value)}
+                    disabled={syncingCookie || busy}
+                  />
+                  <button
+                    type="submit"
+                    className="inline-flex min-h-9 items-center justify-center rounded-lg border border-[#6657d9] bg-[#6657d9] px-4 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55 whitespace-nowrap"
+                    disabled={syncingCookie || busy || !cookieInput.trim()}
+                  >
+                    {syncingCookie ? 'Syncing…' : settings?.has_session_cookies ? 'Update & Sync' : 'Connect & Sync'}
+                  </button>
+                </div>
+              </div>
             </form>
 
             <details className="mt-1 rounded-lg border border-[#ececf4] bg-white p-3 text-xs text-[#6e7284]">
               <summary className="cursor-pointer font-semibold text-[#4b4e60] hover:text-[#6657d9]">
-                How to copy your session cookie in 5 seconds (click to view)
+                How to copy your session cookie in 10 seconds (click to view)
               </summary>
-              <ol className="mt-2 list-decimal pl-4 space-y-1 text-[#5d6170]">
-                <li>Open <a href={portalUrl} target="_blank" rel="noreferrer" className="text-[#6657d9] underline font-medium">portals.au.edu.pk</a> in your browser and log in.</li>
-                <li>Press <kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">F12</kbd> (or right-click → Inspect) → click the <strong>Application</strong> tab (or <strong>Storage</strong> in Firefox).</li>
-                <li>On the left sidebar, click <strong>Cookies</strong> → <strong>https://portals.au.edu.pk</strong>.</li>
-                <li>Find <strong>ASP.NET_SessionId</strong>, double-click its value, copy it, and paste it above!</li>
-              </ol>
+              <div className="mt-2 space-y-2 text-[#5d6170]">
+                <div className="rounded bg-[#f5f4fd] p-2 text-[11px] text-[#483ba6]">
+                  <strong>Important:</strong> Air University requires <code>.AspNetCore.Cookies</code> for student authentication (not just <code>ASP.NET_SessionId</code>). Follow either method below:
+                </div>
+                <div>
+                  <p className="font-semibold text-[#3b3e4a]">⚡ Method 1: Network Tab (Recommended - 2 clicks)</p>
+                  <ol className="mt-1 list-decimal pl-4 space-y-1">
+                    <li>Sign into <a href={portalUrl} target="_blank" rel="noreferrer" className="text-[#6657d9] underline font-medium">portals.au.edu.pk</a> in your browser.</li>
+                    <li>Press <kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">F12</kbd> → click the <strong>Network</strong> tab → reload the page (<kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">Ctrl+R</kbd>).</li>
+                    <li>Click the first request (e.g. <code>students</code> or <code>Attendance</code>) → under <strong>Request Headers</strong>, right-click <strong>Cookie</strong> → click <strong>Copy value</strong>.</li>
+                    <li>Paste into the box above and click <strong>Connect & Sync</strong>!</li>
+                  </ol>
+                </div>
+                <div>
+                  <p className="font-semibold text-[#3b3e4a]">🍪 Method 2: Application / Storage Tab</p>
+                  <ol className="mt-1 list-decimal pl-4 space-y-1">
+                    <li>Press <kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">F12</kbd> → click <strong>Application</strong> (or <strong>Storage</strong> in Firefox) → <strong>Cookies</strong> → <strong>https://portals.au.edu.pk</strong>.</li>
+                    <li>Select all rows (<kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">Ctrl+A</kbd>) and copy (<kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">Ctrl+C</kbd>), or double-click and copy the value of <strong>.AspNetCore.Cookies</strong>.</li>
+                    <li>Paste into the box above and click <strong>Connect & Sync</strong>!</li>
+                  </ol>
+                </div>
+              </div>
             </details>
           </div>
 

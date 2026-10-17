@@ -278,7 +278,13 @@ def _parse_cookie_header(raw: str) -> dict[str, str]:
     if not raw:
         return {}
 
-    # Check if JSON
+    # 1. If user pasted a cURL command, extract the cookie header parameter
+    if "curl" in raw.lower() and ("--header" in raw.lower() or "-h" in raw.lower() or "-b" in raw.lower() or "--cookie" in raw.lower()):
+        m = re.search(r'''(?:--header|-H|-b|--cookie)\s+['"](?:cookie:\s*)?([^'"]+)['"]''', raw, re.I)
+        if m:
+            raw = m.group(1).strip()
+
+    # 2. Check if JSON (from browser extensions like Cookie-Editor or EditThisCookie)
     if (raw.startswith("{") and raw.endswith("}")) or (raw.startswith("[") and raw.endswith("]")):
         try:
             data = json.loads(raw)
@@ -287,30 +293,68 @@ def _parse_cookie_header(raw: str) -> dict[str, str]:
             elif isinstance(data, list):
                 res = {}
                 for item in data:
-                    if isinstance(item, dict) and "name" in item and "value" in item:
-                        res[str(item["name"]).strip()] = str(item["value"]).strip()
+                    if isinstance(item, dict):
+                        name = item.get("name") or item.get("key")
+                        value = item.get("value")
+                        if name and value is not None:
+                            res[str(name).strip()] = str(value).strip()
                 if res:
                     return res
         except Exception:
             pass
 
-    cookie_attribute_names = {"path", "domain", "expires", "max-age", "samesite", "httponly", "secure"}
-    cookies = {}
+    cookie_attribute_names = {
+        "path", "domain", "expires", "max-age", "samesite", "httponly", "secure", "priority", "size"
+    }
+    cookies: dict[str, str] = {}
+
+    # 3. Check for tab-separated rows copied directly from DevTools Application -> Cookies table
+    # Format: Name \t Value \t Domain \t Path \t Expires ...
+    lines = raw.splitlines()
+    has_tabs = any("\t" in line for line in lines)
+    if has_tabs:
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            cols = [c.strip() for c in line.split("\t")]
+            if len(cols) >= 2:
+                name, val = cols[0], cols[1]
+                # Skip table header row
+                if name.lower() in ("name", "cookie name", "cookiename") and val.lower() in ("value", "cookie value"):
+                    continue
+                if name.lower() not in cookie_attribute_names and name and val:
+                    cookies[name] = val
+        if cookies:
+            return cookies
+
+    # 4. Standard Cookie string parsing (semicolon or newline delimited)
+    if raw.lower().startswith("cookie:"):
+        raw = raw[7:].strip()
+
     parts = re.split(r"[;\r\n]+", raw)
     for part in parts:
         part = part.strip()
         if not part:
             continue
+        if part.lower().startswith("cookie:"):
+            part = part[7:].strip()
         if "=" in part:
             key, val = part.split("=", 1)
             key = key.strip()
             val = val.strip().strip('"\'')
+            if key.lower().startswith("cookie:"):
+                key = key[7:].strip()
             if key and key.lower() not in cookie_attribute_names:
                 cookies[key] = val
         else:
             cleaned = part.strip().strip('"\'')
-            if cleaned.lower() not in cookie_attribute_names and len(cleaned) >= 8 and not cookies:
-                cookies["ASP.NET_SessionId"] = cleaned
+            if cleaned.lower() not in cookie_attribute_names and len(cleaned) >= 8:
+                # ASP.NET Core Data Protection signature or long auth ticket
+                if cleaned.startswith("CfDJ8") or len(cleaned) > 80:
+                    cookies[".AspNetCore.Cookies"] = cleaned
+                elif not cookies:
+                    cookies["ASP.NET_SessionId"] = cleaned
 
     return cookies
 
@@ -403,28 +447,44 @@ def _fetch_and_sync_portal_http(db: Session, uid: str, cookies: dict, portal_bas
     base = (portal_base_url or "https://portals.au.edu.pk/students/").rstrip("/")
     if not base.startswith("http"):
         base = "https://" + base
+    if "portals.au.edu.pk" in base.lower() and "/students" not in base.lower():
+        base = f"{base}/students"
+
+    parsed_base = urlsplit(base)
+    portal_host = parsed_base.netloc or "portals.au.edu.pk"
+    origin = f"{parsed_base.scheme}://{portal_host}"
 
     att_setting = _portal_setting(db, uid, "portal_attendance_url")
     candidate_att_urls = []
     if att_setting and att_setting.value:
         candidate_att_urls.append(att_setting.value)
-    candidate_att_urls.extend([
+
+    default_candidates = [
         f"{base}/Reports/Attendance",
         f"{base}/attendance.aspx",
+        f"{base}/Attendance.aspx",
         f"{base}/Reports/Attendance.aspx",
-    ])
+        f"{base}/Student/Attendance",
+        f"{base}/Attendance",
+    ]
+    for cand in default_candidates:
+        if cand not in candidate_att_urls:
+            candidate_att_urls.append(cand)
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": base + "/",
+        "Origin": origin,
+        "Host": portal_host,
     }
 
     attendance_rows = []
     timetable_rows = []
     summary = {}
     successful_url = None
+    auth_redirect_count = 0
 
     with httpx.Client(timeout=15.0, follow_redirects=False, headers=headers) as client:
         last_resp = None
@@ -436,24 +496,26 @@ def _fetch_and_sync_portal_http(db: Session, uid: str, cookies: dict, portal_bas
                 if resp.status_code in (301, 302, 303, 307, 308):
                     loc = resp.headers.get("Location", "")
                     if any(k in loc.lower() for k in ("login", "signin", "auth", "accounts.google.com")):
-                        raise HTTPException(
-                            status_code=401,
-                            detail="Session cookie expired or unauthenticated. Please sign into the university portal and copy a fresh cookie.",
-                        )
-                    if loc.startswith("/") or base in loc:
+                        auth_redirect_count += 1
+                        logger.warning("Candidate URL %s redirected to auth: %s", cand_url, loc)
+                        continue
+                    if loc.startswith("/") or portal_host in loc:
                         target = loc if loc.startswith("http") else urljoin(cand_url, loc)
                         resp = client.get(target, cookies=cookies)
                         last_resp = resp
+                        if resp.status_code in (301, 302, 303, 307, 308):
+                            loc2 = resp.headers.get("Location", "")
+                            if any(k in loc2.lower() for k in ("login", "signin", "auth", "accounts.google.com")):
+                                auth_redirect_count += 1
+                                continue
 
                 if resp.status_code == 200:
                     html = resp.text
                     title, text_lower, tables = _parse_html_report(html)
 
                     if "enter your password" in text_lower or ("sign in with google" in text_lower and not tables):
-                        raise HTTPException(
-                            status_code=401,
-                            detail="Portal session has expired. Please sign into the portal and copy fresh cookies.",
-                        )
+                        auth_redirect_count += 1
+                        continue
 
                     parsed_att = _attendance_rows(tables, text_lower)
                     if parsed_att:
@@ -464,11 +526,37 @@ def _fetch_and_sync_portal_http(db: Session, uid: str, cookies: dict, portal_bas
                         for k, v in resp.cookies.items():
                             cookies[k] = v
                         break
-            except HTTPException:
-                raise
             except Exception as e:
-                logger.debug(f"Candidate URL {cand_url} error: {e}")
+                logger.debug("Candidate URL %s error: %s", cand_url, e)
                 continue
+
+        if not attendance_rows and auth_redirect_count > 0:
+            has_auth_token = any(
+                k in cookies for k in (
+                    ".AspNetCore.Cookies",
+                    ".AspNetCore.CookiesC1",
+                    ".AspNetCore.CookiesC2",
+                    ".AspNetCore.Identity.Application",
+                    ".AspNet.ApplicationCookie",
+                    ".ASPXAUTH",
+                )
+            ) or any("auth" in k.lower() or "token" in k.lower() for k in cookies)
+            has_session_id = any(k.lower() == "asp.net_sessionid" for k in cookies)
+
+            if has_session_id and not has_auth_token:
+                raise HTTPException(
+                    status_code=401,
+                    detail=(
+                        "Authentication cookie missing. Only 'ASP.NET_SessionId' was provided, but the university portal requires "
+                        "'.AspNetCore.Cookies' for student authentication. "
+                        "In your browser DevTools (F12) → Network tab on portals.au.edu.pk, click any request and copy the full 'Cookie' request header, "
+                        "or copy all cookies from Application → Storage → Cookies."
+                    ),
+                )
+            raise HTTPException(
+                status_code=401,
+                detail="Session cookie expired or unauthenticated. Please sign into the university portal and copy fresh cookies (including .AspNetCore.Cookies).",
+            )
 
         if not attendance_rows and last_resp is not None and last_resp.status_code != 200:
             raise HTTPException(
@@ -526,7 +614,10 @@ def sync_portal_cookies(
     uid = _user_id(user)
     cookies = _parse_cookie_header(payload.cookies)
     if not cookies:
-        raise HTTPException(status_code=400, detail="Invalid cookies. Please paste your portal cookie string (e.g., ASP.NET_SessionId=...).")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid cookie format. Please paste your full portal Cookie header or session cookies.",
+        )
 
     url = payload.portal_url
     if not url:
