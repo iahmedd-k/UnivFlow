@@ -1,10 +1,19 @@
+import io
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.db.database import Base
 from app.db.models import Course, Assignment, AssignmentMaterial
 from app.db.models.enums import AssignmentStatus
-from app.api.rag import _classify_material, _classify_file_type, _read_materials, get_classroom_materials
+from app.api.rag import (
+    _classify_material,
+    _classify_file_type,
+    _read_materials,
+    get_classroom_materials,
+    _extract_text_from_upload,
+    upload_study_material,
+    sync_classroom_study_materials,
+)
 
 
 # SQLite in-memory test setup
@@ -176,3 +185,85 @@ def test_read_materials_fallback_assignment_description(db_session):
     assert len(results) == 1
     assert "top-earning employees" in results[0]["content"]
     assert results[0]["title"] == "SQL Subqueries Task"
+
+
+def test_extract_text_from_upload():
+    # 1. Plain text
+    txt = _extract_text_from_upload("notes.txt", "text/plain", b"Important theorem: P != NP")
+    assert "Important theorem" in txt
+
+    # 2. PPTX XML structure
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(
+            "ppt/slides/slide1.xml",
+            b'<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+            b'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+            b'<a:t>Lecture 5: Memory Management</a:t>'
+            b'<a:t>Paging and TLB</a:t>'
+            b'</p:sld>'
+        )
+    pptx_bytes = buf.getvalue()
+    pptx_text = _extract_text_from_upload("lecture5.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", pptx_bytes)
+    assert "Lecture 5: Memory Management" in pptx_text
+    assert "Paging and TLB" in pptx_text
+
+
+@pytest.mark.asyncio
+async def test_upload_study_material(db_session):
+    from unittest.mock import AsyncMock
+    from fastapi import UploadFile
+
+    course = Course(id=20, user_id="dev_student_user", external_id="c_20", name="Computer Networks")
+    db_session.add(course)
+    db_session.commit()
+
+    mock_file = UploadFile(
+        filename="lecture_01_osi_model.txt",
+        file=io.BytesIO(b"Layer 1: Physical, Layer 2: Data Link, Layer 3: Network"),
+        headers={"content-type": "text/plain"},
+    )
+
+    res = await upload_study_material(
+        course_id=course.id,
+        file=mock_file,
+        current_user={"id": "dev_student_user"},
+        db=db_session,
+    )
+
+    assert res["status"] == "success"
+    mat = res["material"]
+    assert mat["title"] == "lecture_01_osi_model.txt"
+    assert mat["category"] == "material"
+    assert mat["has_content"] is True
+
+    # Verify it now appears in get_classroom_materials
+    all_mats = get_classroom_materials(limit=50, course_id=course.id, category="material", query=None, current_user={"id": "dev_student_user"}, db=db_session)
+    assert any(m["title"] == "lecture_01_osi_model.txt" for m in all_mats)
+
+
+def test_sync_classroom_study_materials_reconnect_required(db_session, monkeypatch):
+    class MockClassroomService:
+        def __init__(self):
+            self.scope_missing_for_materials = True
+
+        def _get_all_courses(self):
+            return [{"id": "123", "name": "AI"}]
+
+        def _sync_course(self, course, is_active=True):
+            pass
+
+        def _sync_coursework_materials(self, course_id):
+            return 0
+
+        def _sync_announcements(self, course):
+            pass
+
+    monkeypatch.setattr("app.services.classroom_sync.get_classroom_service", lambda db, user_id: MockClassroomService())
+
+    res = sync_classroom_study_materials(current_user={"id": "dev_student_user"}, db=db_session)
+    assert res["status"] == "reconnect_required"
+    assert res["scope_missing"] is True
+    assert "reconnect_url" in res

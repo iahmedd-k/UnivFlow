@@ -14,7 +14,10 @@ class CourseRepository:
         self.db = db
 
     def get_by_external_id(self, external_id: str, user_id: str = "legacy") -> Optional[Course]:
-        return self.db.query(Course).filter(Course.external_id == external_id, Course.user_id == user_id).first()
+        course = self.db.query(Course).filter(Course.external_id == external_id, Course.user_id == user_id).first()
+        if not course and user_id != "legacy":
+            course = self.db.query(Course).filter(Course.external_id == external_id, Course.user_id == "legacy").first()
+        return course
 
     def create_or_update(self, course_data: dict) -> Course:
         course = self.get_by_external_id(course_data["external_id"], course_data.get("user_id", "legacy"))

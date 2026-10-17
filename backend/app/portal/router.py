@@ -1722,7 +1722,7 @@ def _timetable_rows(tables: list, text: str = "") -> list:
     return results
 
 
-def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_name: Optional[str] = None):
+def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_name: Optional[str] = None, user_id: str = "legacy"):
     """
     Upserts timetable classes into TimetableEntry and generates ClassSchedule entries
     for the upcoming 30 days so dashboard counters and schedule views populate immediately.
@@ -1760,11 +1760,13 @@ def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_
                 (func.lower(TimetableEntry.subject) == subj.lower()) &
                 (TimetableEntry.weekday == weekday) &
                 (TimetableEntry.start_time == st) &
-                (TimetableEntry.end_time == et)
+                (TimetableEntry.end_time == et) &
+                ((TimetableEntry.user_id == user_id) | (TimetableEntry.user_id == "legacy"))
             )
         ).first()
         if not tt_entry:
             tt_entry = TimetableEntry(
+                user_id=user_id,
                 external_id=tt_ext_id,
                 subject=subj,
                 weekday=weekday,
@@ -1777,6 +1779,7 @@ def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_
             )
             db.add(tt_entry)
         else:
+            tt_entry.user_id = user_id
             tt_entry.subject = subj
             tt_entry.room = room or tt_entry.room
             tt_entry.teacher = teacher or tt_entry.teacher
@@ -1787,6 +1790,7 @@ def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_
         # 2. Link Course
         course_ext_id = "portal-course:" + sha256(subj.lower().encode("utf-8")).hexdigest()[:32]
         course = course_repo.create_or_update({
+            "user_id": user_id,
             "external_id": course_ext_id,
             "name": subj,
             "room": room,
@@ -1805,9 +1809,13 @@ def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_
                     st_dt = datetime.combine(target_date, dtime(s_h, s_m)).replace(tzinfo=timezone.utc)
                     et_dt = datetime.combine(target_date, dtime(e_h, e_m)).replace(tzinfo=timezone.utc)
 
-                    existing_sch = db.query(ClassSchedule).filter(ClassSchedule.external_id == sch_ext_id).first()
+                    existing_sch = db.query(ClassSchedule).filter(
+                        ClassSchedule.external_id == sch_ext_id,
+                        (ClassSchedule.user_id == user_id) | (ClassSchedule.user_id == "legacy")
+                    ).first()
                     if not existing_sch:
                         new_sch = ClassSchedule(
+                            user_id=user_id,
                             external_id=sch_ext_id,
                             course_id=course.id,
                             subject=subj,
@@ -1820,6 +1828,7 @@ def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_
                         )
                         db.add(new_sch)
                     else:
+                        existing_sch.user_id = user_id
                         existing_sch.teacher = teacher or existing_sch.teacher
                         existing_sch.room = room or existing_sch.room
         except Exception:
@@ -1845,12 +1854,14 @@ def _ingest_report_data(db: Session, report: dict, source_url: str, user_id: str
     for row in attendance_rows:
         external_id = "portal-attendance:" + sha256(row["subject"].strip().lower().encode("utf-8")).hexdigest()
         course = CourseRepository(db).create_or_update({
+            "user_id": user_id,
             "external_id": external_id,
             "name": row["subject"],
             "course_state": "ACTIVE",
             "alternate_link": clean_link,
         })
         AttendanceRecordRepository(db).create_or_update({
+            "user_id": user_id,
             "external_id": external_id,
             "course_id": course.id,
             "subject": row["subject"],
@@ -1862,7 +1873,7 @@ def _ingest_report_data(db: Session, report: dict, source_url: str, user_id: str
 
     # Save timetable classes & schedules
     if timetable_rows:
-        _sync_timetable_to_schedules(db, timetable_rows, summary.get("semester_name"))
+        _sync_timetable_to_schedules(db, timetable_rows, summary.get("semester_name"), user_id=user_id)
 
     stored = _portal_setting(db, user_id, "portal_academic_summary")
     if stored and stored.value:
@@ -2445,10 +2456,10 @@ def _run_portal_sync_job(uid: str, job_id: str):
     db = SessionLocal()
     try:
         repo = PortalSyncJobRepository(db)
-        repo.complete_job(job_id, error=None)  # Mark as running
-        
+        repo.claim_job(job_id)  # Mark as running
+
         result = _sync_portal_for_user(uid)
-        
+
         repo.complete_job(job_id, result=result, error=None)
     except Exception as error:
         repo = PortalSyncJobRepository(db)
@@ -2463,7 +2474,7 @@ def _persist_sync_job(uid: str, job_id: str, result: dict):
     try:
         repo = PortalSyncJobRepository(db)
         if result.get("status") == "running":
-            repo.complete_job(job_id, error=None)
+            repo.claim_job(job_id)
         elif result.get("status") == "error":
             repo.complete_job(job_id, error=result.get("error"))
         else:
@@ -2476,17 +2487,17 @@ def _persist_sync_job(uid: str, job_id: str, result: dict):
 def queue_portal_sync(background_tasks: BackgroundTasks, db: Session = Depends(get_db), user: dict = Depends(require_current_user)):
     uid = _user_id(user)
     repo = PortalSyncJobRepository(db)
-    
+
     # Check for active job
     active_job = repo.get_active_job(uid)
     if active_job:
         return {"status": "queued", "job_id": active_job.job_id, "message": "Your portal sync is already in progress."}
-    
+
     # Create new job
     job_id = sha256(f"{uid}:{time.time_ns()}".encode()).hexdigest()[:20]
     repo.create(uid, job_id)
     db.commit()
-    
+
     background_tasks.add_task(_run_portal_sync_job, uid, job_id)
     return {"status": "queued", "job_id": job_id, "message": "Sync started. Your saved portal data remains available while it refreshes."}
 
@@ -2495,19 +2506,26 @@ def queue_portal_sync(background_tasks: BackgroundTasks, db: Session = Depends(g
 def get_portal_sync_status(job_id: str, db: Session = Depends(get_db), user: dict = Depends(require_current_user)):
     repo = PortalSyncJobRepository(db)
     job = repo.get_by_job_id(job_id)
-    
+
     if not job:
         raise HTTPException(status_code=404, detail="Sync job was not found or has expired.")
-    
+
+    job_result = json.loads(job.result) if job.result else None
+    status = job.status
+    if status == "completed":
+        status = (job_result or {}).get("status") or "success"
+
     result = {
         "job_id": job.job_id,
-        "status": job.status,
+        "status": status,
         "sync_type": job.sync_type,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
-        "error": job.error,
-        "result": json.loads(job.result) if job.result else None,
+        "error": job.error or (job_result or {}).get("error"),
+        "result": job_result,
+        "summary": (job_result or {}).get("summary"),
+        "message": (job_result or {}).get("message"),
         "retry_count": job.retry_count,
     }
     return result

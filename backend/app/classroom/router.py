@@ -3,11 +3,12 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 import html
 import base64
 import zipfile
+import re
 from io import BytesIO
 from googleapiclient.errors import HttpError
 
@@ -1138,6 +1139,341 @@ def _attach_submission_files(classroom_service, course_id: str, coursework_id: s
     except Exception as error:
         logger.error(f"Failed to attach Drive files to Google Classroom: {error}")
         raise HTTPException(status_code=502, detail="Failed to attach files to Google Classroom") from error
+
+
+def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict:
+    """
+    Immediate Quick Turn In:
+    1. Checks/creates Google Doc with formatted solution and cover intro page.
+    2. Packages all code deliverables and terminal outputs into a ZIP file.
+    3. Uploads ZIP archive to student's Google Drive.
+    4. Attaches BOTH Google Doc and ZIP file to Google Classroom coursework submission.
+    5. Executes turnIn on Google Classroom and marks assignment as TURNED_IN.
+    """
+    from app.services.ai_solution import (
+        extract_assignment_deliverables,
+        extract_execution_metadata,
+        strip_execution_metadata,
+        export_solution_to_google_doc,
+    )
+
+    assignment = _get_owned_assignment(db, assignment_id, user_id)
+    course = db.query(Course).filter(
+        Course.id == assignment.course_id,
+        Course.user_id == user_id,
+    ).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    service = get_classroom_service(db, user_id=user_id)
+    if not service:
+        raise HTTPException(status_code=503, detail="Google Classroom not configured")
+
+    docs_service = get_google_docs_service(db, user_id=user_id)
+    if not docs_service:
+        raise HTTPException(status_code=503, detail="Google Docs not configured")
+
+    solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+    if not solution or not (solution.validated_content or solution.draft_content):
+        raise HTTPException(
+            status_code=400,
+            detail="No solution content found to turn in. Please generate an assignment solution first."
+        )
+
+    raw_content = solution.validated_content or solution.draft_content
+    clean_content = strip_execution_metadata(raw_content)
+
+    # 1. Ensure Google Doc exists for this submission
+    existing_sub = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
+    student_doc_id = existing_sub.google_doc_id if (existing_sub and existing_sub.google_doc_id) else None
+
+    if not student_doc_id:
+        doc_info = export_solution_to_google_doc(db, assignment, raw_content, user_id=user_id)
+        if not doc_info or not doc_info.get("google_doc_id"):
+            raise HTTPException(status_code=502, detail="Failed to create Google Doc for assignment solution")
+        student_doc_id = doc_info["google_doc_id"]
+
+    # 2. Package deliverables into a single ZIP archive
+    deliverables = extract_assignment_deliverables(clean_content)
+    files = deliverables.get("files", [])
+
+    profile_row = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
+    profile = {}
+    if profile_row and profile_row.value:
+        try:
+            profile = json.loads(profile_row.value)
+        except Exception:
+            profile = {}
+    student_name = " ".join(part for part in (profile.get("first_name"), profile.get("last_name")) if part).strip() or "Student"
+    reg_id = profile.get("reg_id") or profile.get("roll_no") or profile.get("student_id") or ""
+
+    safe_title = re.sub(r'[^a-zA-Z0-9_\-]', '_', assignment.title or "Assignment").strip('_')
+    safe_student = re.sub(r'[^a-zA-Z0-9_\-]', '_', student_name).strip('_')
+    reg_part = f"_{re.sub(r'[^a-zA-Z0-9_\-]', '_', reg_id).strip('_')}" if reg_id else ""
+    zip_filename = f"{safe_student}_{safe_title}{reg_part}_Deliverables.zip"
+
+    archive = BytesIO()
+    with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        if files:
+            for source_file in files:
+                fname = source_file.get("name") or f"task_{source_file.get('task', 1)}_solution.py"
+                bundle.writestr(fname, source_file.get("content", ""))
+        else:
+            bundle.writestr(f"{safe_title}_Solution.txt", clean_content)
+
+        execution_results = extract_execution_metadata(raw_content)
+        for index, output in enumerate(execution_results or deliverables.get("terminal_outputs", [])):
+            filename = output.get("filename") or f"task_{output.get('task', index + 1)}"
+            text = output.get("terminal_output") or output.get("content") or "No terminal output was produced."
+            bundle.writestr(f"terminal_output_{filename}.txt", text + "\n")
+
+    zip_bytes = archive.getvalue()
+
+    # 3. Upload ZIP to Google Drive
+    uploaded_zip = docs_service.upload_file(name=zip_filename, content=zip_bytes, mime_type="application/zip")
+    if not uploaded_zip or not uploaded_zip.get("id"):
+        raise HTTPException(status_code=502, detail="Failed to upload deliverables ZIP to Google Drive")
+    zip_file_id = uploaded_zip["id"]
+
+    # 4. Set share permissions
+    for fid in [student_doc_id, zip_file_id]:
+        try:
+            docs_service.share_file(fid, "me", "writer")
+        except Exception:
+            pass
+
+    # 5. Attach both Google Doc and ZIP file to Classroom submission
+    submission_id = _attach_submission_files(
+        service.service,
+        course.external_id,
+        assignment.external_id,
+        [student_doc_id, zip_file_id],
+    )
+
+    # 6. Turn in on Classroom
+    try:
+        service.service.courses().courseWork().studentSubmissions().turnIn(
+            courseId=course.external_id,
+            courseWorkId=assignment.external_id,
+            id=submission_id,
+        ).execute()
+    except Exception as error:
+        err_str = str(error)
+        logger.error(f"Failed to turn in Classroom submission {submission_id}: {error}")
+        if "already been submitted" in err_str.lower() or "FAILED_PRECONDITION" in err_str:
+            logger.info(f"Classroom submission {submission_id} was already submitted.")
+        else:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Attachments uploaded, but Google Classroom turn-in failed: {err_str}",
+            ) from error
+
+    # 7. Update database records
+    if not existing_sub:
+        existing_sub = Submission(assignment_id=assignment_id, user_id=user_id)
+        db.add(existing_sub)
+
+    existing_sub.google_doc_id = student_doc_id
+    existing_sub.google_drive_file_id = zip_file_id
+    existing_sub.classroom_attachment_id = submission_id
+    existing_sub.submitted_at = datetime.now(timezone.utc)
+    existing_sub.submission_state = SubmissionState.TURNED_IN
+    existing_sub.approved_by_user = True
+    existing_sub.approved_at = datetime.now(timezone.utc)
+
+    assignment.submission_state = SubmissionState.TURNED_IN
+    assignment.status = AssignmentStatus.SUBMITTED
+    db.commit()
+    db.refresh(existing_sub)
+
+    return {
+        "success": True,
+        "assignment_id": assignment_id,
+        "course_id": course.id,
+        "course_name": course.name,
+        "submission_id": existing_sub.id,
+        "google_doc_id": student_doc_id,
+        "google_doc_url": f"https://docs.google.com/document/d/{student_doc_id}/edit",
+        "zip_file_id": zip_file_id,
+        "zip_filename": zip_filename,
+        "classroom_submission_id": submission_id,
+        "message": f"Successfully turned in Google Doc and {zip_filename} to Google Classroom!"
+    }
+
+
+def check_and_execute_course_auto_turn_in(db: Session, course_id: int, user_id: str) -> List[dict]:
+    """
+    Check if auto-turn-in is enabled strictly for THIS COURSE.
+    If enabled, auto-turns in assignments/labs belonging only to this course
+    if current time is within minutes_before (default 60 minutes) to deadline.
+    """
+    setting_key = f"auto_turnin_course_{user_id}_{course_id}"
+    setting = db.query(Setting).filter(Setting.key == setting_key).first()
+    if not setting or not setting.value:
+        return []
+
+    try:
+        val = json.loads(setting.value)
+        enabled = bool(val.get("enabled", False))
+        minutes_before = int(val.get("minutes_before", 60))
+    except Exception:
+        enabled = setting.value.lower() == "true"
+        minutes_before = 60
+
+    if not enabled:
+        return []
+
+    now = datetime.now(timezone.utc)
+    # Strictly query assignments belonging ONLY to this course
+    course_assignments = db.query(Assignment).filter(
+        Assignment.course_id == course_id,
+        Assignment.user_id == user_id,
+        Assignment.due_at.isnot(None),
+    ).all()
+
+    turned_in_results = []
+    for asgn in course_assignments:
+        sub_state = getattr(asgn.submission_state, "value", asgn.submission_state)
+        if sub_state in {"TURNED_IN", "RETURNED"}:
+            continue
+
+        due_at = asgn.due_at
+        if not due_at.tzinfo:
+            due_at = due_at.replace(tzinfo=timezone.utc)
+
+        time_to_deadline_mins = (due_at - now).total_seconds() / 60.0
+        # Trigger if deadline is within minutes_before (e.g. 60 mins), with 15 min grace period if slightly past due
+        if -15.0 <= time_to_deadline_mins <= float(minutes_before):
+            sol = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == asgn.id).first()
+            if sol and (sol.validated_content or sol.draft_content):
+                try:
+                    res = execute_quick_turn_in(db, asgn.id, user_id)
+                    turned_in_results.append(res)
+                    logger.info(f"Auto turned in assignment {asgn.id} for course {course_id}: {res}")
+                except Exception as auto_err:
+                    logger.error(f"Auto turn in error for assignment {asgn.id} in course {course_id}: {auto_err}")
+
+    return turned_in_results
+
+
+class CourseAutoTurnInPayload(BaseModel):
+    enabled: bool = True
+    minutes_before: Optional[int] = 60
+
+
+@router.post("/assignments/{assignment_id}/quick-turn-in", response_model=dict)
+def quick_turn_in_assignment(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """
+    Immediate Quick Turn In:
+    Uploads Google Doc + auto-zipped deliverables archive directly to Google Classroom submission.
+    """
+    user_id = _classroom_user_id(clerk_user)
+    return execute_quick_turn_in(db, assignment_id, user_id)
+
+
+@router.get("/courses/{course_id}/auto-turn-in", response_model=dict)
+def get_course_auto_turn_in(
+    course_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Retrieve auto turn-in status strictly for this course."""
+    user_id = _classroom_user_id(clerk_user)
+    course = db.query(Course).filter(Course.id == course_id, Course.user_id == user_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    setting_key = f"auto_turnin_course_{user_id}_{course_id}"
+    setting = db.query(Setting).filter(Setting.key == setting_key).first()
+    enabled = False
+    minutes_before = 60
+    if setting and setting.value:
+        try:
+            val = json.loads(setting.value)
+            enabled = bool(val.get("enabled", False))
+            minutes_before = int(val.get("minutes_before", 60))
+        except Exception:
+            enabled = setting.value.lower() == "true"
+
+    return {
+        "course_id": course_id,
+        "course_name": course.name,
+        "enabled": enabled,
+        "minutes_before": minutes_before,
+    }
+
+
+@router.put("/courses/{course_id}/auto-turn-in", response_model=dict)
+def update_course_auto_turn_in(
+    course_id: int,
+    payload: CourseAutoTurnInPayload,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """
+    Enable or disable auto turn-in strictly for this specific course.
+    Automatically turns in before 60 minutes to deadline.
+    """
+    user_id = _classroom_user_id(clerk_user)
+    course = db.query(Course).filter(Course.id == course_id, Course.user_id == user_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    setting_key = f"auto_turnin_course_{user_id}_{course_id}"
+    setting = db.query(Setting).filter(Setting.key == setting_key).first()
+    setting_val = {
+        "enabled": payload.enabled,
+        "minutes_before": payload.minutes_before or 60,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "course_id": course_id,
+        "course_name": course.name,
+    }
+    if not setting:
+        setting = Setting(
+            key=setting_key,
+            value=json.dumps(setting_val),
+            description=f"Auto turn-in setting strictly for course {course.name} ({course_id})"
+        )
+        db.add(setting)
+    else:
+        setting.value = json.dumps(setting_val)
+    db.commit()
+
+    turned_in = []
+    if payload.enabled:
+        try:
+            turned_in = check_and_execute_course_auto_turn_in(db, course_id, user_id)
+        except Exception as e:
+            logger.error(f"Error checking auto turn-in on update for course {course_id}: {e}")
+
+    return {
+        "course_id": course_id,
+        "course_name": course.name,
+        "enabled": payload.enabled,
+        "minutes_before": payload.minutes_before or 60,
+        "turned_in": turned_in,
+        "message": f"Auto turn-in for {course.name} {'enabled (60 minutes before deadline)' if payload.enabled else 'disabled'}"
+    }
+
+
+@router.post("/courses/{course_id}/check-auto-turn-in", response_model=dict)
+def trigger_course_auto_turn_in_check(
+    course_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Manually evaluate auto turn-in for this specific course."""
+    user_id = _classroom_user_id(clerk_user)
+    turned_in = check_and_execute_course_auto_turn_in(db, course_id, user_id)
+    return {
+        "course_id": course_id,
+        "turned_in_count": len(turned_in),
+        "results": turned_in
+    }
 
 
 @router.post("/assignments/{assignment_id}/materials/upload", response_model=dict)

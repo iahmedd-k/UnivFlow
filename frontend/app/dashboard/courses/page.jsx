@@ -27,6 +27,10 @@ export default function CoursesPage() {
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
+  const [scopeWarning, setScopeWarning] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
+
   const initializedSelection = useRef(false);
   const initializedConversation = useRef(false);
   const scrollRef = useRef(null);
@@ -74,9 +78,18 @@ export default function CoursesPage() {
   }, [getToken]);
 
   useEffect(() => {
-    load()
-      .catch((e) => setError(e.message || 'Could not load course materials.'))
-      .finally(() => setLoading(false));
+    let active = true;
+    const init = async () => {
+      try {
+        await load();
+      } catch (e) {
+        if (active) setError(e.message || 'Could not load course materials.');
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    init();
+    return () => { active = false; };
   }, [load]);
 
   useEffect(() => {
@@ -92,7 +105,12 @@ export default function CoursesPage() {
       const token = await getToken();
       const res = await api.syncStudyMaterials(token);
       await load();
-      if (res && res.status === 'success') {
+      if (res && (res.status === 'reconnect_required' || res.scope_missing)) {
+        setScopeWarning({
+          message: res.message || 'Google Classroom needs to be reconnected to grant permission to sync course slides and handouts.',
+          reconnectUrl: res.reconnect_url || '/api/v1/auth/google?redirect_to=/dashboard/courses',
+        });
+      } else if (res && res.status === 'success') {
         setSyncNotice(`Synced ${res.materials_synced || 0} materials across ${res.courses_synced || 0} courses from Google Classroom!`);
       } else {
         setSyncNotice('Materials updated from Google Classroom.');
@@ -102,6 +120,37 @@ export default function CoursesPage() {
       setError(err.message || 'Could not sync materials from Google Classroom.');
     } finally {
       setSyncing(false);
+    }
+  };
+
+  // Upload lecture slides, PDFs, or handouts directly into the active course
+  const handleUploadFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    let targetCourseId = selectedCourseFilter !== 'all' ? selectedCourseFilter : courses[0]?.id;
+    if (!targetCourseId) {
+      setError('Please select or wait for courses to load before uploading materials.');
+      return;
+    }
+
+    setUploading(true);
+    setError('');
+    setSyncNotice('');
+    try {
+      const token = await getToken();
+      const res = await api.uploadStudyMaterial(targetCourseId, file, token);
+      if (res && res.material) {
+        setSyncNotice(`Uploaded "${res.material.title}" successfully!`);
+        setMaterials((prev) => [res.material, ...prev]);
+        setSelected((prev) => Array.from(new Set([res.material.id, ...prev])));
+        setTimeout(() => setSyncNotice(''), 6000);
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to upload document.');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -261,33 +310,48 @@ export default function CoursesPage() {
   const inputClass = 'min-w-0 flex-1 rounded-lg border border-line bg-white px-3 py-2.5 text-sm text-ink outline-none placeholder:text-muted focus:border-violet focus:ring-2 focus:ring-violet/20';
 
   return (
-    <main className="mx-auto flex w-full max-w-[1440px] flex-col gap-0 pb-10 text-ink">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between border-b border-line pb-4">
+    <div className="flex flex-1 min-h-0 w-full flex-col gap-2 overflow-hidden text-ink">
+      <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between pb-1 shrink-0">
         <div>
-          <div className="flex items-center gap-2 mb-1">
-            <span className="inline-block text-xs font-semibold uppercase tracking-wide text-muted">Study Workspace</span>
-            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-violet-light text-violet-dark border border-violet/20">
-              GCR Connected
+          <div className="flex items-center gap-2 mb-0.5">
+            <span className="inline-block text-[11px] font-bold uppercase tracking-wider text-muted">Study Workspace</span>
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-violet-light text-violet-dark border border-violet/20">
+              <span className="size-1.5 rounded-full bg-violet" />
+              GCR Grounded
             </span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-ink">Study & Exam Assistant</h1>
-          <p className="mt-1 max-w-2xl text-xs sm:text-sm text-muted">
-            All Google Classroom lecture slides, lab manuals, PDFs, handouts, and announcements organized by course & category.
-          </p>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-ink">Study & Exam Assistant</h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleUploadFile}
+            accept=".pdf,.pptx,.ppt,.docx,.doc,.txt,.md,.py,.cpp,.c"
+            className="hidden"
+          />
           <button
             type="button"
-            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-line bg-white px-3 text-xs font-semibold text-ink transition hover:border-violet hover:bg-violet-light/30 disabled:opacity-50"
+            className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-line bg-white px-2.5 text-xs font-semibold text-ink transition hover:border-violet hover:bg-violet-light/30 disabled:opacity-50"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            title="Upload lecture slides, PPTX, PDF, or course notes"
+          >
+            <span>{uploading ? '⏳' : '📁'}</span>
+            {uploading ? 'Uploading…' : 'Upload Slides / Docs'}
+          </button>
+          <button
+            type="button"
+            className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-line bg-white px-2.5 text-xs font-semibold text-ink transition hover:border-violet hover:bg-violet-light/30 disabled:opacity-50"
             onClick={handleSyncMaterials}
             disabled={syncing}
             title="Fetch all course materials, lecture slides, and announcements from Google Classroom"
           >
             <span className={syncing ? 'animate-spin' : ''}>🔄</span>
-            {syncing ? 'Syncing Classroom…' : 'Sync GCR Materials'}
+            {syncing ? 'Syncing…' : 'Sync Classroom'}
           </button>
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-light px-3 py-1.5 text-xs font-semibold text-violet-dark border border-violet/20">
-            <span className="h-2 w-2 rounded-full bg-violet" />
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-light px-2.5 py-1 text-xs font-semibold text-violet-dark border border-violet/20">
+            <span className="h-1.5 w-1.5 rounded-full bg-violet" />
             {selected.length} of {materials.length} attached
           </span>
           <button type="button" className={secondaryButtonClass} onClick={startNewConversation}>
@@ -295,60 +359,89 @@ export default function CoursesPage() {
           </button>
           <button
             type="button"
-            className="lg:hidden inline-flex min-h-9 items-center justify-center rounded-lg border border-line bg-paper px-3 text-xs font-semibold text-ink"
+            className="lg:hidden inline-flex min-h-8 items-center justify-center rounded-lg border border-line bg-paper px-2.5 text-xs font-semibold text-ink"
             onClick={() => setSidebarOpen(!sidebarOpen)}
           >
-            {sidebarOpen ? 'Hide Files' : 'Show Files & Chats'}
+            {sidebarOpen ? 'Hide Files' : 'Files & Chats'}
           </button>
         </div>
       </header>
 
+      {/* Google Classroom Scopes Missing Warning Banner */}
+      {scopeWarning && (
+        <div className="my-1 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs text-amber-900 shadow-xs shrink-0" role="alert">
+          <div className="flex items-start gap-2">
+            <span className="text-base leading-none">⚠️</span>
+            <div>
+              <p className="font-bold text-amber-950">Google Classroom Permission Needed for Course Slides</p>
+              <p className="mt-0.5 text-amber-800">{scopeWarning.message}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
+            <a
+              href={scopeWarning.reconnectUrl}
+              className="inline-flex items-center justify-center px-3 py-1 rounded-md bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs transition shadow-xs"
+            >
+              Authorize Slides Access →
+            </a>
+            <button
+              type="button"
+              onClick={() => setScopeWarning(null)}
+              className="text-amber-700 hover:text-amber-900 font-bold px-1.5 py-0.5 text-sm"
+              title="Dismiss warning"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Sync Success or Error Notifications */}
       {syncNotice && (
-        <div className="my-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-medium text-emerald-800 transition flex items-center justify-between" role="status">
+        <div className="my-1 rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs font-medium text-emerald-800 transition flex items-center justify-between shrink-0" role="status">
           <span>✨ {syncNotice}</span>
           <button type="button" onClick={() => setSyncNotice('')} className="text-emerald-700 hover:text-emerald-900 font-bold ml-2">×</button>
         </div>
       )}
       {error && (
-        <div className="my-2 rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-xs text-rose" role="alert">
+        <div className="my-1 rounded-lg border border-rose-border bg-rose-bg px-3.5 py-2 text-xs text-rose shrink-0" role="alert">
           {error}
         </div>
       )}
 
       {/* Mobile/Tablet tab switcher */}
-      <div className="lg:hidden flex border-b border-line bg-paper px-2 pt-2">
+      <div className="lg:hidden flex border-b border-line bg-paper px-2 pt-1 shrink-0">
         <button
           type="button"
           onClick={() => setActiveTab('chat')}
-          className={`flex-1 py-2 text-xs font-semibold text-center border-b-2 ${activeTab === 'chat' ? 'border-violet text-violet' : 'border-transparent text-muted'}`}
+          className={`flex-1 py-1.5 text-xs font-semibold text-center border-b-2 ${activeTab === 'chat' ? 'border-violet text-violet' : 'border-transparent text-muted'}`}
         >
           💬 Chat
         </button>
         <button
           type="button"
           onClick={() => setActiveTab('materials')}
-          className={`flex-1 py-2 text-xs font-semibold text-center border-b-2 ${activeTab === 'materials' ? 'border-violet text-violet' : 'border-transparent text-muted'}`}
+          className={`flex-1 py-1.5 text-xs font-semibold text-center border-b-2 ${activeTab === 'materials' ? 'border-violet text-violet' : 'border-transparent text-muted'}`}
         >
           📚 Course Files ({selected.length})
         </button>
         <button
           type="button"
           onClick={() => setActiveTab('conversations')}
-          className={`flex-1 py-2 text-xs font-semibold text-center border-b-2 ${activeTab === 'conversations' ? 'border-violet text-violet' : 'border-transparent text-muted'}`}
+          className={`flex-1 py-1.5 text-xs font-semibold text-center border-b-2 ${activeTab === 'conversations' ? 'border-violet text-violet' : 'border-transparent text-muted'}`}
         >
           🕘 History
         </button>
       </div>
 
-      <div className="flex min-h-[720px] flex-1 border border-t-0 border-line bg-white shadow-sm rounded-b-xl overflow-hidden">
+      <div className="flex flex-1 min-h-0 border border-line bg-white shadow-sm rounded-xl overflow-hidden">
         {/* Left Sidebar: Course Selector, Category Filter & Document List */}
         {(sidebarOpen || activeTab !== 'chat') && (
-          <aside className={`${activeTab === 'chat' ? 'hidden lg:flex' : 'flex'} flex-col w-full lg:w-[410px] xl:w-[440px] border-r border-line bg-[#fcfcfd] shrink-0`}>
+          <aside className={`${activeTab === 'chat' ? 'hidden lg:flex' : 'flex'} flex-col w-full lg:w-[380px] xl:w-[410px] border-r border-line bg-[#fcfcfd] shrink-0 h-full overflow-hidden`}>
             {/* Source Materials Section */}
-            <section className={`flex flex-col flex-1 p-3.5 overflow-hidden ${activeTab === 'conversations' ? 'hidden lg:flex' : 'flex'}`}>
+            <section className={`flex flex-col flex-1 min-h-0 p-3 overflow-hidden ${activeTab === 'conversations' ? 'hidden lg:flex' : 'flex'}`}>
               {/* Header with Selection Controls */}
-              <div className="flex items-center justify-between pb-2">
+              <div className="flex items-center justify-between pb-2 shrink-0">
                 <div className="flex items-center gap-1.5">
                   <span className="font-semibold text-xs uppercase tracking-wide text-ink">GCR Materials</span>
                   <span className="text-[11px] font-semibold text-violet bg-violet-light px-2 py-0.5 rounded-full">
@@ -367,7 +460,7 @@ export default function CoursesPage() {
               </div>
 
               {/* Course Horizontal Selection Pills */}
-              <div className="mb-2.5">
+              <div className="mb-2 shrink-0">
                 <label className="block text-[10px] font-bold uppercase tracking-wider text-muted mb-1">
                   Courses ({courses.length})
                 </label>
@@ -411,7 +504,7 @@ export default function CoursesPage() {
               </div>
 
               {/* Material Category Filter Tabs */}
-              <div className="mb-2.5 grid grid-cols-4 gap-1 rounded-lg border border-line bg-paper p-1 text-[11px]">
+              <div className="mb-2 grid grid-cols-4 gap-1 rounded-lg border border-line bg-paper p-1 text-[11px] shrink-0">
                 <button
                   type="button"
                   onClick={() => setSelectedCategory('all')}
@@ -457,7 +550,7 @@ export default function CoursesPage() {
               </div>
 
               {/* Material Search Input */}
-              <div className="relative mb-2">
+              <div className="relative mb-2 shrink-0">
                 <input
                   type="text"
                   value={materialSearch}
@@ -480,7 +573,7 @@ export default function CoursesPage() {
               </div>
 
               {/* Materials Scrollable List */}
-              <div className="flex-1 min-h-[220px] max-h-[350px] lg:max-h-[390px] overflow-y-auto divide-y divide-line rounded-lg border border-line bg-white shadow-inner">
+              <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-line rounded-lg border border-line bg-white shadow-inner">
                 {loading ? (
                   <div className="p-8 text-center text-xs text-muted">Loading Classroom files…</div>
                 ) : filteredMaterials.length ? (
@@ -540,16 +633,32 @@ export default function CoursesPage() {
                     );
                   })
                 ) : (
-                  <div className="p-8 text-center text-xs text-muted">
-                    No files found for this filter.
-                    <div className="mt-2">
+                  <div className="p-8 text-center text-xs text-muted flex flex-col items-center gap-2">
+                    <span className="text-2xl">📚</span>
+                    <p className="font-medium text-ink">
+                      {selectedCategory === 'material' ? 'No slides or handouts found' : 'No documents found for this filter'}
+                    </p>
+                    <p className="text-[11px] text-muted max-w-[240px]">
+                      {selectedCategory === 'material'
+                        ? 'Upload your lecture slide decks directly, or reconnect Classroom to grant slide permissions.'
+                        : 'Upload course files or sync directly with Google Classroom.'}
+                    </p>
+                    <div className="mt-2 flex flex-col sm:flex-row items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={uploading}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-violet text-white text-xs font-semibold hover:bg-violet-dark transition"
+                      >
+                        📁 Upload Slides / PDF
+                      </button>
                       <button
                         type="button"
                         onClick={handleSyncMaterials}
                         disabled={syncing}
-                        className="text-violet font-semibold hover:underline"
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-line bg-white text-xs font-semibold text-ink hover:bg-paper transition"
                       >
-                        🔄 Fetch from Google Classroom
+                        🔄 {syncing ? 'Syncing…' : 'Sync Classroom'}
                       </button>
                     </div>
                   </div>
@@ -558,7 +667,7 @@ export default function CoursesPage() {
 
               {/* Quick Course Selector action bar */}
               {selectedCourseFilter !== 'all' && (
-                <div className="mt-2 flex items-center justify-between px-1 text-[11px]">
+                <div className="mt-1.5 flex items-center justify-between px-1 text-[11px] shrink-0">
                   <span className="text-muted">Filtering current course</span>
                   <button
                     type="button"
@@ -572,9 +681,9 @@ export default function CoursesPage() {
             </section>
 
             {/* Conversations History Section */}
-            <section className={`flex flex-col border-t border-line p-3.5 ${activeTab === 'materials' ? 'hidden lg:flex' : 'flex'}`}>
-              <div className="flex items-center justify-between pb-2">
-                <span className="font-semibold text-xs uppercase tracking-wide text-muted">Recent Study Sessions</span>
+            <section className={`flex flex-col border-t border-line p-3 shrink-0 max-h-[160px] overflow-hidden ${activeTab === 'materials' ? 'hidden lg:flex' : 'flex'}`}>
+              <div className="flex items-center justify-between pb-1.5 shrink-0">
+                <span className="font-semibold text-xs uppercase tracking-wide text-muted">Recent Sessions</span>
                 <button
                   type="button"
                   className="text-[11px] font-semibold text-violet hover:underline"
@@ -585,7 +694,7 @@ export default function CoursesPage() {
               </div>
 
               {conversations.length > 3 && (
-                <div className="relative mb-2">
+                <div className="relative mb-1.5 shrink-0">
                   <input
                     type="text"
                     value={conversationSearch}
@@ -599,7 +708,7 @@ export default function CoursesPage() {
                 </div>
               )}
 
-              <div className="max-h-[160px] overflow-y-auto divide-y divide-line rounded-lg border border-line bg-white">
+              <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-line rounded-lg border border-line bg-white">
                 {filteredConversations.length ? (
                   filteredConversations.map((c) => (
                     <button
@@ -628,8 +737,8 @@ export default function CoursesPage() {
         )}
 
         {/* Main Chat Workspace */}
-        <section className={`flex min-w-0 flex-1 flex-col overflow-hidden ${activeTab !== 'chat' ? 'hidden lg:flex' : 'flex'}`}>
-          <header className="flex items-center justify-between gap-3 border-b border-line bg-white px-5 py-3 shrink-0">
+        <section className={`flex min-w-0 flex-1 flex-col h-full overflow-hidden ${activeTab !== 'chat' ? 'hidden lg:flex' : 'flex'}`}>
+          <header className="flex items-center justify-between gap-3 border-b border-line bg-white px-4 py-2.5 shrink-0">
             <div className="flex items-center gap-3">
               <span className="grid size-8 place-items-center rounded-lg bg-violet-light text-violet">
                 <Icon name="lightbulb" size={16} />
@@ -806,7 +915,7 @@ export default function CoursesPage() {
           </div>
 
           {/* Bottom Chat Prompt Form */}
-          <form className="flex gap-2 border-t border-line bg-white p-3.5 shrink-0" onSubmit={send}>
+          <form className="flex gap-2 border-t border-line bg-white p-3 shrink-0" onSubmit={send}>
             <input
               className={inputClass}
               value={question}
@@ -828,6 +937,6 @@ export default function CoursesPage() {
           </form>
         </section>
       </div>
-    </main>
+    </div>
   );
 }

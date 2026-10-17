@@ -49,11 +49,14 @@ class AttendanceRecordRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_by_external_id(self, external_id: str) -> Optional[AttendanceRecord]:
-        return self.db.query(AttendanceRecord).filter(AttendanceRecord.external_id == external_id).first()
+    def get_by_external_id(self, external_id: str, user_id: str = "legacy") -> Optional[AttendanceRecord]:
+        rec = self.db.query(AttendanceRecord).filter(AttendanceRecord.external_id == external_id, AttendanceRecord.user_id == user_id).first()
+        if not rec and user_id != "legacy":
+            rec = self.db.query(AttendanceRecord).filter(AttendanceRecord.external_id == external_id, AttendanceRecord.user_id == "legacy").first()
+        return rec
 
     def create_or_update(self, record_data: dict) -> AttendanceRecord:
-        record = self.get_by_external_id(record_data["external_id"])
+        record = self.get_by_external_id(record_data["external_id"], record_data.get("user_id", "legacy"))
         if record:
             for key, value in record_data.items():
                 setattr(record, key, value)

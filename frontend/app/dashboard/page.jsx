@@ -49,10 +49,12 @@ export default function DashboardOverview() {
 
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     setError('');
     loadData(cancelled);
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [getToken]);
 
   // Real-time polling if any 4-Agent crew solver run is currently active
@@ -63,7 +65,28 @@ export default function DashboardOverview() {
       loadData(false);
     }, 3500);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRuns.length]);
+
+  const [turningInId, setTurningInId] = useState(null);
+  const [turnInNotice, setTurnInNotice] = useState('');
+
+  const handleDashboardQuickTurnIn = async (assignmentId) => {
+    if (turningInId) return;
+    setTurningInId(assignmentId);
+    setError('');
+    setTurnInNotice('');
+    try {
+      const token = await getToken();
+      const res = await api.quickTurnInAssignment(assignmentId, token);
+      setTurnInNotice(res.message || 'Successfully turned in Google Doc and ZIP deliverables to Google Classroom!');
+      await loadData(false);
+    } catch (err) {
+      setError(err.message || 'Quick turn-in failed. Please try again.');
+    } finally {
+      setTurningInId(null);
+    }
+  };
 
   const handleQuickSolve = async (assignmentId) => {
     if (solvingId) return;
@@ -200,6 +223,18 @@ export default function DashboardOverview() {
             );
           })}
 
+          {turnInNotice && (
+            <div className="mb-2 flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-emerald-800">
+              <div className="flex items-center gap-2">
+                <Icon name="checkCircle" size={14} />
+                <span>{turnInNotice}</span>
+              </div>
+              <button type="button" onClick={() => setTurnInNotice('')} className="text-emerald-700 hover:text-emerald-900">
+                <Icon name="close" size={12} />
+              </button>
+            </div>
+          )}
+
           {readySolutions.length > 0 && activeRuns.length === 0 && (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
               {readySolutions.slice(0, 3).map((sol) => (
@@ -208,13 +243,23 @@ export default function DashboardOverview() {
                     <strong className="block truncate text-sm font-semibold text-ink">{sol.title}</strong>
                     <small className="text-xs font-semibold text-brand-hover">✓ Verified solution ready</small>
                   </div>
-                  <div className="flex shrink-0 gap-2">
+                  <div className="flex shrink-0 items-center gap-1.5">
                     {sol.google_doc_url && (
                       <a href={sol.google_doc_url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-7 items-center rounded-md border border-border-input bg-surface px-2 text-xs font-semibold text-nav hover:bg-surface-secondary">
                         Doc
                       </a>
                     )}
-                    <Link href="/dashboard/assignments" className="inline-flex min-h-7 items-center rounded-md border border-violet bg-violet px-2 text-xs font-semibold text-white hover:bg-violet-dark">
+                    <button
+                      type="button"
+                      onClick={() => handleDashboardQuickTurnIn(sol.assignment_id)}
+                      disabled={turningInId === sol.assignment_id}
+                      className="inline-flex min-h-7 items-center gap-1 rounded-md bg-emerald-600 px-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
+                      title="Quick Turn In (Doc + ZIP) to Google Classroom"
+                    >
+                      <Icon name="upload" size={11} />
+                      <span>{turningInId === sol.assignment_id ? 'Turning in…' : '⚡ Turn In'}</span>
+                    </button>
+                    <Link href={`/dashboard/assignments/${sol.assignment_id}`} className="inline-flex min-h-7 items-center rounded-md border border-violet bg-violet px-2 text-xs font-semibold text-white hover:bg-violet-dark">
                       Review
                     </Link>
                   </div>

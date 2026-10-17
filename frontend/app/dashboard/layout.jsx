@@ -62,6 +62,7 @@ export default function DashboardLayout({ children }) {
   const [classroomSync, setClassroomSync] = useState(null);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true);
   }, []);
 
@@ -220,8 +221,8 @@ export default function DashboardLayout({ children }) {
         </div>
       </aside>
 
-      <div className="lg:ml-64 min-h-screen">
-        <header className="sticky top-0 z-20 h-16 flex items-center justify-between px-6 bg-surface/92 border-b border-border-light backdrop-blur-md lg:px-10">
+      <div className={pathname === '/dashboard/courses' ? "lg:ml-64 h-screen max-h-screen flex flex-col overflow-hidden" : "lg:ml-64 min-h-screen"}>
+        <header className={pathname === '/dashboard/courses' ? "sticky top-0 z-20 h-16 shrink-0 flex items-center justify-between px-6 bg-surface/92 border-b border-border-light backdrop-blur-md lg:px-10" : "sticky top-0 z-20 h-16 flex items-center justify-between px-6 bg-surface/92 border-b border-border-light backdrop-blur-md lg:px-10"}>
           <button className="lg:hidden size-8 flex flex-col justify-center gap-1 p-1.5 border border-border-light rounded-md bg-surface" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}>
             <span className="h-[1.5px] w-[15px] bg-text-nav" />
             <span className="h-[1.5px] w-[15px] bg-text-nav" />
@@ -298,7 +299,7 @@ export default function DashboardLayout({ children }) {
             <span className="size-7 flex-shrink-0 grid place-items-center rounded-full bg-violet-light text-violet text-xs font-bold" suppressHydrationWarning>{firstName.slice(0, 1).toUpperCase()}</span>
           </div>
         </header>
-        <main className="mx-auto min-h-[calc(100vh-64px)] w-full max-w-7xl px-4 pb-10 text-sm leading-6 sm:px-6 lg:px-10">
+        <main className={pathname === '/dashboard/courses' ? "mx-auto flex-1 min-h-0 w-full max-w-[1536px] px-3 sm:px-5 lg:px-8 py-2 text-sm leading-6 flex flex-col overflow-hidden" : "mx-auto min-h-[calc(100vh-64px)] w-full max-w-7xl px-4 pb-10 text-sm leading-6 sm:px-6 lg:px-10"}>
           <FirebaseAlertsBanner />
           {children}
         </main>

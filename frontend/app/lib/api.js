@@ -298,6 +298,15 @@ export const api = {
     return fetchFromApi(`/rag/materials?${params.toString()}`, token);
   },
   syncStudyMaterials: async (token = null) => fetchFromApi('/rag/sync-materials', token, { method: 'POST' }),
+  uploadStudyMaterial: async (courseId, file, token = null) => {
+    const form = new FormData();
+    form.append('course_id', String(courseId));
+    form.append('file', file);
+    return fetchFromApi('/rag/materials/upload', token, {
+      method: 'POST',
+      body: form,
+    });
+  },
   generateStudyPlan: async (data, token = null) => fetchFromApi('/rag/study-plan', token, { method: 'POST', body: JSON.stringify(data) }),
   askCourseMaterials: async (data, token = null) => fetchFromApi('/rag/chat', token, { method: 'POST', body: JSON.stringify(data) }),
   getRagConversations: async (token = null) => fetchFromApi('/rag/conversations', token),

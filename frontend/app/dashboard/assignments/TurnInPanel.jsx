@@ -25,6 +25,8 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
   const [scheduleMinutesBefore, setScheduleMinutesBefore] = useState(60);
   const [savingSchedule, setSavingSchedule] = useState(false);
 
+  const [quickSubmitting, setQuickSubmitting] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -43,6 +45,25 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
     return () => { cancelled = true; };
   }, [getToken]);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = getToken ? await getToken() : null;
+        if (assignment.course_id) {
+          const autoData = await api.getCourseAutoTurnIn(assignment.course_id, token);
+          if (!cancelled && autoData) {
+            setScheduleEnabled(Boolean(autoData.enabled));
+            setScheduleMinutesBefore(autoData.minutes_before || 60);
+          }
+        }
+      } catch (e) {
+        console.error('Failed to load course auto turn-in:', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [assignment.course_id, getToken]);
+
   const handleFileChange = (e) => {
     const picked = Array.from(e.target.files || []);
     setFiles((prev) => [
@@ -56,6 +77,22 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
   };
 
   const removeFile = (idx) => setFiles((prev) => prev.filter((_, i) => i !== idx));
+
+  const handleQuickTurnIn = async () => {
+    setQuickSubmitting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const token = getToken ? await getToken() : null;
+      const res = await api.quickTurnInAssignment(assignment.id, token);
+      setSubmitted(true);
+      setNotice(res.message || 'Successfully turned in Google Doc and ZIP deliverables to Google Classroom!');
+    } catch (e) {
+      setError(e.message || 'Quick turn-in failed. Please try again.');
+    } finally {
+      setQuickSubmitting(false);
+    }
+  };
 
   const handleSubmit = async () => {
     setSubmitting(true);
@@ -95,16 +132,28 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
     setNotice(null);
     try {
       const token = getToken ? await getToken() : null;
-      await api.scheduleTurnIn(
-        assignment.id,
-        {
-          enabled: scheduleEnabled,
-          minutes_before_due: scheduleMinutesBefore,
-          template_id: selectedTemplateId,
-        },
-        token
-      );
-      setNotice('Auto turn-in schedule saved successfully.');
+      if (assignment.course_id) {
+        const res = await api.updateCourseAutoTurnIn(
+          assignment.course_id,
+          {
+            enabled: scheduleEnabled,
+            minutes_before: scheduleMinutesBefore,
+          },
+          token
+        );
+        setNotice(res.message || `Auto turn-in for ${assignment.course_name || 'this course'} saved successfully.`);
+      } else {
+        await api.scheduleTurnIn(
+          assignment.id,
+          {
+            enabled: scheduleEnabled,
+            minutes_before_due: scheduleMinutesBefore,
+            template_id: selectedTemplateId,
+          },
+          token
+        );
+        setNotice('Auto turn-in schedule saved successfully.');
+      }
     } catch (e) {
       setError(e.message || 'Could not save turn-in schedule.');
     } finally {
@@ -119,15 +168,39 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
   return (
     <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-2">
       <section className={`${cardClass} flex flex-col gap-5`}>
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-emerald-800">
+                <Icon name="sparkles" size={14} />
+                <span>Instant Autonomous Turn-In</span>
+              </div>
+              <h4 className="mt-1 text-sm font-semibold text-emerald-950">Quick Turn In (Google Doc + ZIP)</h4>
+              <p className="mt-1 text-xs text-emerald-800 leading-relaxed">
+                Automatically attaches the generated solution Google Doc (with centered university intro page), packages code files & terminal outputs into a ZIP archive, and submits both directly to Google Classroom in one click.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleQuickTurnIn}
+            disabled={quickSubmitting || submitted}
+            className="mt-3 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white transition hover:bg-emerald-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Icon name="upload" size={16} />
+            <span>{quickSubmitting ? 'Submitting Doc & ZIP to GCR…' : submitted ? 'Turned in to Google Classroom' : '⚡ Quick Turn In (Doc + ZIP)'}</span>
+          </button>
+        </div>
+
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Final submission</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Manual submission</p>
           <h3 className="mt-1 text-base font-semibold text-ink">Submit to Google Classroom</h3>
-          <p className="mt-2 text-sm leading-6 text-muted">Attach your completed coursework files and select a cover page template if required by your university.</p>
+          <p className="mt-2 text-sm leading-6 text-muted">Attach custom files and select a cover page template if required by your university.</p>
         </div>
 
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold text-ink">Attached deliverables</span><span className="text-sm text-muted">{files.length} {files.length === 1 ? 'file' : 'files'}</span></div>
-          {files.length === 0 ? <div className="rounded-lg border border-dashed border-line bg-paper px-4 py-8 text-center"><strong className="block text-sm font-semibold">No files attached yet</strong><span className="mt-1 block text-sm text-muted">Attach your code, report, or document deliverables below.</span></div> : (
+          {files.length === 0 ? <div className="rounded-lg border border-dashed border-line bg-paper px-4 py-8 text-center"><strong className="block text-sm font-semibold">No custom files attached</strong><span className="mt-1 block text-sm text-muted">Use Quick Turn In above or attach manual files below.</span></div> : (
             <div className="flex max-h-48 flex-col gap-2 overflow-y-auto">
               {files.map((f, i) => <div key={i} className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-line bg-paper px-3 py-2">
                 <div className="flex min-w-0 items-center gap-2"><Icon name="file" size={16}/><span className="truncate text-sm font-medium text-ink">{f.name}</span><span className="shrink-0 text-xs text-muted">({f.size})</span></div>
@@ -165,13 +238,18 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
 
       <section className={`${cardClass} flex flex-col gap-5`}>
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Automation</p>
-          <h3 className="mt-1 text-base font-semibold text-ink">Scheduled auto turn-in</h3>
-          <p className="mt-2 text-sm leading-6 text-muted">Attach your work now and schedule Uniflow to turn in automatically before the deadline so you never miss a submission window.</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Course Automation</p>
+          <h3 className="mt-1 text-base font-semibold text-ink">Auto turn-in for {assignment.course_name || 'this course'}</h3>
+          <p className="mt-2 text-sm leading-6 text-muted">
+            Automatically turn in completed assignments or labs for <strong>{assignment.course_name || 'this course'}</strong> 60 minutes before the deadline on Google Classroom. Only coursework belonging strictly to this course is affected.
+          </p>
         </div>
 
         <label className="flex cursor-pointer items-center justify-between gap-4 rounded-lg border border-line bg-paper p-4">
-          <span><strong className="block text-sm font-semibold text-ink">Enable automatic submission</strong><small className="mt-1 block text-sm text-muted">Submits attached files automatically prior to due date</small></span>
+          <span>
+            <strong className="block text-sm font-semibold text-ink">Allow auto turn-in for this course</strong>
+            <small className="mt-1 block text-sm text-muted">Submits Google Doc + ZIP deliverables 60 minutes before deadline on GCR</small>
+          </span>
           <input type="checkbox" checked={scheduleEnabled} onChange={(e) => setScheduleEnabled(e.target.checked)} className="size-5 shrink-0 accent-violet" />
         </label>
 
@@ -183,10 +261,9 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
           </span>
         </label>
 
-        <button type="button" onClick={saveSchedule} disabled={files.length === 0 || savingSchedule} className={secondaryButtonClass}>
-          {savingSchedule ? 'Saving schedule…' : <><Icon name="save" size={16}/> Save schedule settings</>}
+        <button type="button" onClick={saveSchedule} disabled={savingSchedule} className={secondaryButtonClass}>
+          {savingSchedule ? 'Saving schedule…' : <><Icon name="save" size={16}/> Save course auto turn-in setting</>}
         </button>
-        {files.length === 0 && <p className="rounded-lg bg-amber-bg p-3 text-sm leading-5 text-amber">Attach at least one deliverable file on the left before activating auto turn-in.</p>}
       </section>
     </div>
   );

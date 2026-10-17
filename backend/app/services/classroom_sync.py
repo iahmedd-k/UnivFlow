@@ -38,6 +38,7 @@ class ClassroomSyncService:
         self.service = None
         self._new_assignments: Dict[int, Optional[datetime]] = {}
         self._submission_sync_failed: set[str] = set()
+        self.scope_missing_for_materials = False
         self._load_credentials()
 
     def _check_rate_limit(self) -> bool:
@@ -716,7 +717,11 @@ class ClassroomSyncService:
 
             except HttpError as e:
                 status = getattr(e.resp, "status", None)
-                if status in (403, 404):
+                err_str = str(e)
+                if status == 403 and ("ACCESS_TOKEN_SCOPE_INSUFFICIENT" in err_str or "insufficient authentication scopes" in err_str.lower()):
+                    logger.warning(f"courseWorkMaterials scope missing for course {course_id} (ACCESS_TOKEN_SCOPE_INSUFFICIENT): {e}")
+                    self.scope_missing_for_materials = True
+                elif status in (403, 404):
                     logger.info(f"courseWorkMaterials not accessible for course {course_id} (HTTP {status}): {e.reason}")
                 else:
                     logger.warning(f"Error fetching courseWorkMaterials for {course_id}: {e}")

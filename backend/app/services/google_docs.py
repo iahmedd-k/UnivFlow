@@ -623,7 +623,7 @@ class GoogleDocsService:
             # 2. Assignment / Lab No (Calibri 17pt, Bold, Centered)
             self.append_styled_block(
                 document_id,
-                f"{assignment_title.strip()}\n\n",
+                f"{assignment_title.strip()}\n",
                 font_family="Calibri",
                 font_size=17,
                 bold=True,
@@ -633,7 +633,7 @@ class GoogleDocsService:
                 color_rgb=(0, 0, 0)
             )
 
-            # 3. University Emblem / Logo
+            # 3. University Emblem / Logo (Centered with balanced spacing)
             logo_path = Path(__file__).resolve().parent.parent / "assets" / "university_logo.png"
             if logo_path.exists():
                 try:
@@ -642,28 +642,14 @@ class GoogleDocsService:
                         document_id=document_id,
                         image_bytes=logo_bytes,
                         filename="air_university_logo.png",
-                        width_pt=160
+                        width_pt=160,
+                        alignment="CENTER",
+                        space_above=12,
+                        space_below=16,
+                        append_newline=True
                     )
-                    # Center paragraph containing the logo
-                    end_idx = self.get_document_end_index(document_id)
-                    try:
-                        self.docs_service.documents().batchUpdate(
-                            documentId=document_id,
-                            body={"requests": [{
-                                "updateParagraphStyle": {
-                                    "range": {"startIndex": max(1, end_idx - 2), "endIndex": end_idx},
-                                    "paragraphStyle": {"alignment": "CENTER", "spaceAbove": {"magnitude": 10, "unit": "PT"}, "spaceBelow": {"magnitude": 14, "unit": "PT"}},
-                                    "fields": "alignment,spaceAbove,spaceBelow"
-                                }
-                            }]}
-                        ).execute()
-                    except Exception as align_err:
-                        logger.debug(f"Could not center logo paragraph: {align_err}")
                 except Exception as img_err:
                     logger.warning(f"Could not insert university logo image: {img_err}")
-            
-            # Spacer
-            self.append_styled_block(document_id, "\n", font_size=10, space_below=6)
 
             # 4. Submitted by: (Calibri 16pt, Bold, Underlined, Centered)
             self.append_styled_block(
@@ -776,7 +762,11 @@ class GoogleDocsService:
         image_bytes: bytes,
         filename: str = "screenshot.png",
         index: Optional[int] = None,
-        width_pt: float = 460
+        width_pt: float = 460,
+        alignment: Optional[str] = None,
+        space_above: Optional[float] = None,
+        space_below: Optional[float] = None,
+        append_newline: bool = True,
     ) -> bool:
         """Upload image bytes to Google Drive and insert as inline image into the Google Doc."""
         if not image_bytes or not self.drive_service or not self.docs_service:
@@ -809,6 +799,33 @@ class GoogleDocsService:
                     }
                 }
             }]
+            if append_newline:
+                requests.append({
+                    "insertText": {
+                        "location": {"index": target_index + 1},
+                        "text": "\n"
+                    }
+                })
+
+            if alignment:
+                para_style = {"alignment": alignment}
+                fields = ["alignment"]
+                if space_above is not None:
+                    para_style["spaceAbove"] = {"magnitude": space_above, "unit": "PT"}
+                    fields.append("spaceAbove")
+                if space_below is not None:
+                    para_style["spaceBelow"] = {"magnitude": space_below, "unit": "PT"}
+                    fields.append("spaceBelow")
+                # When newline is appended, paragraph encompasses both image and newline (target_index to target_index + 2)
+                end_range = target_index + 2 if append_newline else target_index + 1
+                requests.append({
+                    "updateParagraphStyle": {
+                        "range": {"startIndex": target_index, "endIndex": end_range},
+                        "paragraphStyle": para_style,
+                        "fields": ",".join(fields)
+                    }
+                })
+
             self.docs_service.documents().batchUpdate(
                 documentId=document_id,
                 body={"requests": requests}

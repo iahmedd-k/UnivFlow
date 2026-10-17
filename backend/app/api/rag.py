@@ -2,7 +2,7 @@ import logging
 import re
 import io
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from sqlalchemy import or_, and_, func
@@ -67,12 +67,21 @@ def _classify_material(material_title: str, assignment_title: str, work_type: st
     t = f"{material_title or ''} {assignment_title or ''}".lower()
     m = (mime_type or "").lower()
 
+    # 1. Direct presentation / slides / lecture / readings / notes / syllabus priority
+    if (
+        "presentation" in m or "powerpoint" in m
+        or any(t.endswith(ext) for ext in [".ppt", ".pptx", ".key"])
+        or any(k in t for k in ["slide", "lecture", "handout", "reading", "notes", "chapter", "unit", "syllabus", "textbook", "presentation"])
+    ):
+        return "material", "Slides & Handouts", "book"
+
+    # 2. Announcements
     if wt in ("ANNOUNCEMENT", "POST") or mt == "announcement" or "announcement" in t:
         return "announcement", "Announcements & Notes", "bell"
 
+    # 3. Labs & Assignments
     if (
         wt in ("ASSIGNMENT", "SHORT_ANSWER_QUESTION", "MULTIPLE_CHOICE_QUESTION")
-        and not any(k in t for k in ["syllabus", "lecture", "handout", "reading", "slides", "notes", "textbook"])
     ) or any(k in t for k in ["lab ", "lab-", "lab#", "manual", "task", "assignment", "hw", "homework", "quiz", "midterm", "final", "exam"]):
         return "assignment", "Labs & Assignments", "flask"
 
@@ -256,6 +265,15 @@ def sync_classroom_study_materials(
             m_count = service._sync_coursework_materials(course["id"])
             synced_materials += m_count
             service._sync_announcements(course)
+        if getattr(service, "scope_missing_for_materials", False):
+            return {
+                "status": "reconnect_required",
+                "scope_missing": True,
+                "reconnect_url": "/api/v1/auth/google?redirect_to=/dashboard/courses",
+                "courses_synced": synced_courses,
+                "materials_synced": synced_materials,
+                "message": "Google Classroom needs to be reconnected to grant permission to sync course slides and handouts."
+            }
         return {
             "status": "success",
             "courses_synced": synced_courses,
@@ -264,6 +282,147 @@ def sync_classroom_study_materials(
     except Exception as e:
         logger.warning(f"Error during on-demand materials sync: {e}")
         return {"status": "partial", "error": str(e)}
+
+
+def _extract_text_from_upload(filename: str, content_type: str, data: bytes) -> str:
+    """Extract readable text from uploaded presentations, pdfs, word documents, or plain text."""
+    text = ""
+    lower_name = (filename or "").lower()
+    ct = (content_type or "").lower()
+
+    # 1. PPTX presentation
+    if lower_name.endswith(".pptx") or "presentation" in ct:
+        try:
+            import zipfile
+            import xml.etree.ElementTree as ET
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                slide_texts = []
+                slide_files = [n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")]
+                slide_files.sort(key=lambda s: int(re.search(r'\d+', s.split('/')[-1]).group()) if re.search(r'\d+', s.split('/')[-1]) else 0)
+                for sf in slide_files:
+                    xml_content = z.read(sf)
+                    tree = ET.fromstring(xml_content)
+                    slide_num = re.search(r'\d+', sf.split('/')[-1]).group() if re.search(r'\d+', sf.split('/')[-1]) else ""
+                    tokens = [elem.text for elem in tree.iter() if elem.tag.endswith("}t") and elem.text]
+                    if tokens:
+                        slide_texts.append(f"--- Slide {slide_num} ---\n" + "\n".join(tokens))
+                text = "\n\n".join(slide_texts)
+        except Exception as e:
+            logger.warning(f"Error extracting text from pptx upload: {e}")
+
+    # 2. PDF document
+    elif lower_name.endswith(".pdf") or "pdf" in ct:
+        try:
+            from pypdf import PdfReader
+            pdf = PdfReader(io.BytesIO(data))
+            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        except Exception as e:
+            logger.warning(f"Error extracting text from pdf upload: {e}")
+
+    # 3. DOCX document
+    elif lower_name.endswith(".docx") or "wordprocessingml" in ct:
+        try:
+            import docx
+            doc = docx.Document(io.BytesIO(data))
+            text = "\n".join(p.text for p in doc.paragraphs if p.text)
+        except Exception as e:
+            logger.warning(f"Error extracting text from docx upload: {e}")
+
+    # 4. Text / Code / Markdown
+    elif ct.startswith("text/") or any(lower_name.endswith(ext) for ext in [".txt", ".md", ".py", ".c", ".cpp", ".java", ".js", ".ts", ".html", ".css", ".json", ".csv", ".xml"]):
+        try:
+            text = data.decode("utf-8", errors="ignore")
+        except Exception:
+            text = str(data)
+
+    return text.strip()
+
+
+@router.post("/materials/upload")
+async def upload_study_material(
+    course_id: int = Form(...),
+    file: UploadFile = File(...),
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+    db=Depends(get_db)
+):
+    """Upload slides, lecture notes, handouts, or documents directly into a course for study assistance."""
+    user_id = _user_id(current_user)
+    course = db.query(Course).filter(
+        Course.id == course_id,
+        or_(
+            Course.user_id == user_id,
+            Course.user_id == "legacy",
+            user_id == "dev_student_user",
+        )
+    ).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    content_bytes = await file.read()
+    if len(content_bytes) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 25MB)")
+
+    filename = file.filename or "Uploaded Document"
+    content_type = file.content_type or "application/octet-stream"
+    extracted_text = _extract_text_from_upload(filename, content_type, content_bytes)
+
+    # Find or create a course materials container assignment
+    container = db.query(Assignment).filter(
+        Assignment.course_id == course.id,
+        Assignment.work_type == "MATERIAL",
+        Assignment.title == f"Course Uploads - {course.name}",
+    ).first()
+
+    if not container:
+        container = Assignment(
+            user_id=user_id,
+            external_id=f"uploads_{course.id}",
+            course_id=course.id,
+            title=f"Course Uploads - {course.name}",
+            work_type="MATERIAL",
+            description="Uploaded lecture slides, notes, handouts, and study materials.",
+            status="SUBMITTED",
+        )
+        db.add(container)
+        db.flush()
+
+    cat_key, cat_label, cat_icon = _classify_material(filename, container.title, "MATERIAL", content_type, "material")
+    file_t = _classify_file_type(content_type, filename, cat_key)
+
+    material = AssignmentMaterial(
+        user_id=user_id,
+        assignment_id=container.id,
+        material_type="upload",
+        title=filename,
+        mime_type=content_type,
+        content=extracted_text[:MAX_DOC_CHARS] if extracted_text else None,
+    )
+    db.add(material)
+    db.commit()
+    db.refresh(material)
+
+    unique_key = f"mat_{material.id}"
+    return {
+        "status": "success",
+        "material": {
+            "id": unique_key,
+            "material_id": material.id,
+            "assignment_id": container.id,
+            "title": material.title,
+            "course_id": course.id,
+            "course_name": course.name,
+            "assignment": container.title,
+            "work_type": "MATERIAL",
+            "category": cat_key,
+            "category_label": cat_label,
+            "category_icon": cat_icon,
+            "file_type": file_t,
+            "mime_type": content_type,
+            "url": None,
+            "has_content": bool(extracted_text),
+            "created_at": material.created_at.isoformat() if material.created_at else None,
+        }
+    }
 
 
 def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS) -> list[dict]:

@@ -348,15 +348,35 @@ def get_attendance_summary(
     attendance_repo = AttendanceRecordRepository(db)
     course_repo = CourseRepository(db)
 
-    # This endpoint serves the portal's current cumulative snapshot. Filtering
-    # it by record sync timestamps would incorrectly drop courses registered earlier.
-    courses = course_repo.get_all(user_id=user_id)
+    # 1. Retrieve all attendance records for this user (or legacy fallback)
+    all_records = (
+        db.query(AttendanceRecord)
+        .filter(or_(AttendanceRecord.user_id == user_id, AttendanceRecord.user_id == "legacy"))
+        .order_by(AttendanceRecord.last_updated.desc().nullslast(), AttendanceRecord.id.desc())
+        .all()
+    )
+    seen_subjects = set()
+    records = []
+    for r in all_records:
+        sub_key = normalize_subject_name(r.subject or "")
+        if sub_key and sub_key not in seen_subjects:
+            seen_subjects.add(sub_key)
+            records.append(r)
+
+    # 2. Retrieve all courses owned by user, legacy, or referenced by attendance records
+    referenced_course_ids = {r.course_id for r in records if r.course_id}
+    courses = (
+        db.query(Course)
+        .filter(
+            or_(
+                Course.user_id == user_id,
+                Course.user_id == "legacy",
+                Course.id.in_(referenced_course_ids) if referenced_course_ids else False,
+            )
+        )
+        .all()
+    )
     course_by_id = {course.id: course for course in courses}
-    owned_course_ids = set(course_by_id)
-    records = [
-        record for record in attendance_repo.get_all()
-        if record.course_id in owned_course_ids
-    ]
     owned_subjects = {
         normalize_subject_name(course.name)
         for course in courses

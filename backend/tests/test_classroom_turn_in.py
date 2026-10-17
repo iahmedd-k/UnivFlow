@@ -32,9 +32,11 @@ class FakeExecution:
 
 
 class FakeStudentSubmissions:
-    def __init__(self, modify_error=None):
+    def __init__(self, modify_error=None, turn_in_error=None):
         self.modify_error = modify_error
+        self.turn_in_error = turn_in_error
         self.modify_arguments = None
+        self.turn_in_arguments = None
 
     def list(self, **kwargs):
         assert kwargs["userId"] == "me"
@@ -44,10 +46,18 @@ class FakeStudentSubmissions:
         self.modify_arguments = kwargs
         return FakeExecution({"id": "submission-123"}, self.modify_error)
 
+    def turnIn(self, **kwargs):
+        self.turn_in_arguments = kwargs
+        return FakeExecution({}, self.turn_in_error)
+
+    def reclaim(self, **kwargs):
+        return FakeExecution({})
+
 
 class FakeClassroomService:
-    def __init__(self, modify_error=None):
-        self.submissions = FakeStudentSubmissions(modify_error)
+    def __init__(self, modify_error=None, turn_in_error=None):
+        self.submissions = FakeStudentSubmissions(modify_error, turn_in_error)
+        self.service = self
 
     def courses(self):
         return self
@@ -115,3 +125,121 @@ def test_attach_submission_files_reports_classroom_attachment_failure():
 
     assert error.value.status_code == 502
     assert error.value.detail == "Failed to attach files to Google Classroom"
+
+
+def test_execute_quick_turn_in_attaches_doc_and_zip(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.db.database import Base
+    from app.db.models import Course, Assignment, AssignmentSolution, Submission, SubmissionState
+    from app.classroom.router import execute_quick_turn_in
+    import json
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    course = Course(id=1, external_id="course-ext-1", name="Parallel Computing", user_id="test_user")
+    assignment = Assignment(id=1, external_id="asgn-ext-1", course_id=1, title="Lab 1 - OpenMP", user_id="test_user")
+    solution = AssignmentSolution(
+        id=1,
+        assignment_id=1,
+        validated_content="```python\n# File: task_1.py\nprint('Hello OpenMP')\n```"
+    )
+    db.add_all([course, assignment, solution])
+    db.commit()
+
+    fake_classroom = FakeClassroomService()
+    fake_docs = FakeDriveDocsService(result={"id": "zip-file-drive-id"})
+    fake_docs.share_file = lambda *args, **kwargs: None
+
+    import sys
+    classroom_mod = sys.modules["app.classroom.router"]
+    monkeypatch.setattr(classroom_mod, "get_classroom_service", lambda _db, user_id: fake_classroom)
+    monkeypatch.setattr(classroom_mod, "get_google_docs_service", lambda _db, user_id: fake_docs)
+    monkeypatch.setattr(
+        "app.services.ai_solution.export_solution_to_google_doc",
+        lambda _db, _asgn, _content, user_id: {"google_doc_id": "doc-drive-id-123", "doc_url": "https://docs.google.com/..."}
+    )
+
+    res = execute_quick_turn_in(db, assignment.id, "test_user")
+
+    assert res["success"] is True
+    assert res["google_doc_id"] == "doc-drive-id-123"
+    assert res["zip_file_id"] == "zip-file-drive-id"
+    assert "Deliverables.zip" in res["zip_filename"]
+
+    # Verify both Google Doc and ZIP were attached
+    assert fake_classroom.submissions.modify_arguments["id"] == "submission-123"
+    attached = fake_classroom.submissions.modify_arguments["body"]["addAttachments"]
+    assert len(attached) == 2
+    assert attached[0]["driveFile"]["id"] == "doc-drive-id-123"
+    assert attached[1]["driveFile"]["id"] == "zip-file-drive-id"
+
+    # Verify turnIn was executed
+    assert fake_classroom.submissions.turn_in_arguments["id"] == "submission-123"
+
+    # Verify assignment submission state updated
+    db.refresh(assignment)
+    assert assignment.submission_state == SubmissionState.TURNED_IN
+
+
+def test_check_and_execute_course_auto_turn_in_strictly_scopes_to_course(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from datetime import datetime, timezone, timedelta
+    from app.db.database import Base
+    from app.db.models import Course, Assignment, AssignmentSolution, Setting, SubmissionState
+    from app.classroom.router import check_and_execute_course_auto_turn_in
+    import json
+    import sys
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    user_id = "test_user_scoped"
+    course1 = Course(id=10, external_id="c1", name="Course 1", user_id=user_id)
+    course2 = Course(id=20, external_id="c2", name="Course 2", user_id=user_id)
+
+    now = datetime.now(timezone.utc)
+    # Assignment in course 1: due in 35 mins (within 60 min window)
+    asgn1 = Assignment(
+        id=101, external_id="a1", course_id=10, title="Course 1 Lab",
+        due_at=now + timedelta(minutes=35), user_id=user_id,
+        submission_state=SubmissionState.CREATED
+    )
+    # Assignment in course 2: also due in 35 mins
+    asgn2 = Assignment(
+        id=201, external_id="a2", course_id=20, title="Course 2 Assignment",
+        due_at=now + timedelta(minutes=35), user_id=user_id,
+        submission_state=SubmissionState.CREATED
+    )
+
+    sol1 = AssignmentSolution(id=1, assignment_id=101, validated_content="Code 1")
+    sol2 = AssignmentSolution(id=2, assignment_id=201, validated_content="Code 2")
+
+    # Auto turn-in enabled ONLY for course 10
+    setting_c1 = Setting(
+        key=f"auto_turnin_course_{user_id}_10",
+        value=json.dumps({"enabled": True, "minutes_before": 60})
+    )
+    db.add_all([course1, course2, asgn1, asgn2, sol1, sol2, setting_c1])
+    db.commit()
+
+    turn_in_calls = []
+    classroom_mod = sys.modules["app.classroom.router"]
+    monkeypatch.setattr(
+        classroom_mod,
+        "execute_quick_turn_in",
+        lambda _db, a_id, u_id: turn_in_calls.append(a_id) or {"success": True, "assignment_id": a_id}
+    )
+
+    results = check_and_execute_course_auto_turn_in(db, course_id=10, user_id=user_id)
+
+    # STRICT CHECK: Only Course 1 assignment was turned in!
+    assert len(results) == 1
+    assert turn_in_calls == [101]
+    assert 201 not in turn_in_calls

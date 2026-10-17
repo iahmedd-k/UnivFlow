@@ -119,6 +119,78 @@ export default function SettingsPage() {
     return () => { active = false; };
   }, [getToken]);
 
+  const [googleConnected, setGoogleConnected] = useState(false);
+  const [googleEmail, setGoogleEmail] = useState('');
+  const [googleBusy, setGoogleBusy] = useState(false);
+
+  const loadGoogleAuth = useCallback(async () => {
+    try {
+      const token = await getToken();
+      const status = await api.getAuthStatus(token);
+      setGoogleConnected(Boolean(status?.google_connected));
+      setGoogleEmail(status?.google_email || '');
+    } catch (err) {
+      console.error('Failed to load Google auth status:', err);
+    }
+  }, [getToken]);
+
+  useEffect(() => {
+    let active = true;
+    const fetchGoogle = async () => {
+      try {
+        const token = await getToken();
+        const status = await api.getAuthStatus(token);
+        if (active) {
+          setGoogleConnected(Boolean(status?.google_connected));
+          setGoogleEmail(status?.google_email || '');
+        }
+      } catch (err) {
+        console.error('Failed to load Google auth status:', err);
+      }
+    };
+    fetchGoogle();
+    return () => { active = false; };
+  }, [getToken]);
+
+  const handleConnectGoogle = async () => {
+    setGoogleBusy(true);
+    setError('');
+    setSuccess('');
+    try {
+      const token = await getToken();
+      const res = await api.getGoogleAuthUrl(token, '/dashboard/settings');
+      if (res?.auth_url) {
+        window.location.assign(res.auth_url);
+      } else {
+        throw new Error('Google did not return an authorization link.');
+      }
+    } catch (err) {
+      setError(err.message || 'Could not initiate Google connection.');
+      setGoogleBusy(false);
+    }
+  };
+
+  const handleDisconnectGoogle = async () => {
+    if (!window.confirm('Disconnect Google Classroom? Automatic sync and turn-in will be paused until reconnected.')) {
+      return;
+    }
+    setGoogleBusy(true);
+    setError('');
+    setSuccess('');
+    try {
+      const token = await getToken();
+      await api.disconnectGoogle(token);
+      setGoogleConnected(false);
+      setGoogleEmail('');
+      setSuccess('Google Classroom disconnected successfully.');
+      await loadGoogleAuth();
+    } catch (err) {
+      setError(err.message || 'Could not disconnect Google Classroom.');
+    } finally {
+      setGoogleBusy(false);
+    }
+  };
+
   const [portalStatus, setPortalStatus] = useState(null);
   const [portalCookieInput, setPortalCookieInput] = useState('');
   const [syncingPortalCookie, setSyncingPortalCookie] = useState(false);
@@ -514,6 +586,7 @@ export default function SettingsPage() {
             {!browserStatus?.has_session_key && (
               <form onSubmit={handleSyncSessionKey} className="mt-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                 <input
+                  id="claudeSessionInputMain"
                   type="password"
                   placeholder="Paste Claude sessionKey (sk-ant-sid01-...)"
                   className="flex-1 rounded-md border border-[#d6d4f0] bg-white px-3 py-2 text-xs font-mono text-[#292d3a] placeholder:text-[#9fa3b5] focus:border-[#6657d9] focus:outline-none"
@@ -676,6 +749,7 @@ export default function SettingsPage() {
 
             <form onSubmit={handleSyncPortalCookie} className="mt-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
               <input
+                id="portalCookieInputMain"
                 type="text"
                 placeholder="Paste portal session key (ASP.NET_SessionId or cookie header)"
                 className="flex-1 rounded-md border border-[#d6d4f0] bg-white px-3 py-2 text-xs font-mono text-[#292d3a] placeholder:text-[#9fa3b5] focus:border-[#6657d9] focus:outline-none"
@@ -799,75 +873,200 @@ export default function SettingsPage() {
       <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm">
         <header className="flex items-center justify-between gap-3.5 border-b border-[#f0f0f3] px-5 py-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">ACCOUNT</p>
-            <h2 className="text-[13px] font-semibold text-[#343746]">Connected Services</h2>
+            <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">ACCOUNT & INTEGRATIONS</p>
+            <h2 className="text-[13px] font-semibold text-[#343746]">Connected Services & Disconnect Controls</h2>
           </div>
         </header>
         <div className="p-5">
-          <div className="flex flex-col">
-            <article className="flex min-h-[60px] items-center gap-3 border-b border-[#f1f1f4] py-3 last:border-b-0">
-              <span className="grid h-[30px] w-[30px] place-items-center rounded-lg bg-[#f0edff] text-[#6657d9]"><Icon name="user" size={18} /></span>
-              <span className="flex min-w-0 flex-1 flex-col gap-1">
-                <strong className="text-xs font-semibold text-[#414553]">Clerk Account</strong>
-                <small className="text-xs text-[#9295a2]">Primary authentication via Clerk</small>
-              </span>
-              <span className="inline-flex rounded-full bg-[#eaf7f1] px-2 py-1 text-xs font-semibold text-[#438a71]">Connected</span>
-            </article>
-            <article className="flex min-h-[60px] items-center gap-3 border-b border-[#f1f1f4] py-3 last:border-b-0">
-              <span className="grid h-[30px] w-[30px] place-items-center rounded-lg bg-[#f0edff] text-[#6657d9]"><Icon name="mail" size={18} /></span>
-              <span className="flex min-w-0 flex-1 flex-col gap-1">
-                <strong className="text-xs font-semibold text-[#414553]">Google Classroom</strong>
-                <small className="text-xs text-[#9295a2]">Sync courses, assignments, and grades</small>
-              </span>
-              <span className="inline-flex rounded-full bg-[#eaf7f1] px-2 py-1 text-xs font-semibold text-[#438a71]">Connected</span>
-            </article>
-            <article className="flex flex-col gap-2 py-3">
-              <div className="flex min-h-[50px] items-center gap-3">
-                <span className="grid h-[30px] w-[30px] place-items-center rounded-lg bg-[#f0edff] text-[#6657d9]"><Icon name="globe" size={18} /></span>
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <strong className="text-xs font-semibold text-[#414553]">University Portal</strong>
-                  <small className="text-xs text-[#9295a2]">Sync course attendance and schedules via fast session cookies</small>
+          <p className="mb-4 text-xs text-[#858998]">
+            Connect or disconnect your academic integrations and AI solvers. You have full control to connect or disconnect any service at any time.
+          </p>
+          <div className="flex flex-col divide-y divide-[#f1f1f4]">
+            {/* 1. Google Classroom (GCR) */}
+            <article className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3.5 first:pt-0">
+              <div className="flex items-start sm:items-center gap-3">
+                <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-[#f0edff] text-[#6657d9]">
+                  <Icon name="school" size={18} />
                 </span>
-                {portalStatus?.has_session_cookies || portalStatus?.session_status === 'ACTIVE' ? (
+                <div className="flex flex-col gap-0.5 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-[#eaf7f1] px-2.5 py-1 text-xs font-semibold text-[#438a71]">
-                      <span className="h-1.5 w-1.5 rounded-full bg-[#438a71]" /> Connected
-                    </span>
+                    <strong className="text-xs font-semibold text-[#414553]">Google Classroom (GCR)</strong>
+                    {googleConnected ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-[#eaf7f1] px-2 py-0.5 text-[11px] font-semibold text-[#438a71]">
+                        <span className="size-1.5 rounded-full bg-[#438a71]" /> Connected
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-[#f8f8fb] px-2 py-0.5 text-[11px] font-medium text-[#747887] border border-[#ebebf0]">
+                        <span className="size-1.5 rounded-full bg-[#9fa3b5]" /> Disconnected
+                      </span>
+                    )}
+                  </div>
+                  <small className="text-xs text-[#9295a2]">
+                    {googleConnected
+                      ? (googleEmail ? `${googleEmail} · Syncs courses, slides, announcements & turn-in` : 'Connected · Syncs courses, slides, announcements & turn-in')
+                      : 'Connect your student Google account to sync courses, slides, announcements, and submit work.'}
+                  </small>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 self-end sm:self-center pl-12 sm:pl-0">
+                {googleConnected ? (
+                  <>
                     <button
                       type="button"
-                      onClick={handleDisconnectPortalCookie}
-                      disabled={syncingPortalCookie}
-                      className="text-xs text-[#a04a4a] hover:underline"
+                      onClick={handleConnectGoogle}
+                      disabled={googleBusy}
+                      className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb] disabled:opacity-55"
+                      title="Re-authorize Google Classroom or refresh permissions"
                     >
-                      Disconnect
+                      {googleBusy ? 'Working…' : 'Reconnect'}
                     </button>
-                  </div>
+                    <button
+                      type="button"
+                      onClick={handleDisconnectGoogle}
+                      disabled={googleBusy}
+                      className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#f0dada] bg-white px-3 text-xs font-semibold text-[#b34d4d] hover:bg-[#fff4f4] disabled:opacity-55"
+                      title="Disconnect Google Classroom"
+                    >
+                      {googleBusy ? 'Disconnecting…' : 'Disconnect GCR'}
+                    </button>
+                  </>
                 ) : (
-                  <span className="inline-flex rounded-full bg-[#fff4e4] px-2.5 py-1 text-xs font-semibold text-[#a87936]">
-                    Not Connected
-                  </span>
+                  <button
+                    type="button"
+                    onClick={handleConnectGoogle}
+                    disabled={googleBusy}
+                    className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-3.5 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55"
+                  >
+                    {googleBusy ? 'Connecting…' : 'Connect Google Classroom'}
+                  </button>
                 )}
               </div>
+            </article>
 
-              {!(portalStatus?.has_session_cookies || portalStatus?.session_status === 'ACTIVE') && (
-                <form onSubmit={handleSyncPortalCookie} className="mt-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:pl-[42px]">
-                  <input
-                    type="password"
-                    placeholder="Paste ASP.NET_SessionId (or full cookie string)"
-                    className="flex-1 rounded-md border border-[#d6d4f0] bg-white px-3 py-1.5 text-xs font-mono text-[#292d3a] placeholder:text-[#9fa3b5] focus:border-[#6657d9] focus:outline-none"
-                    value={portalCookieInput}
-                    onChange={(e) => setPortalCookieInput(e.target.value)}
-                    disabled={syncingPortalCookie}
-                  />
+            {/* 2. University Portal (Air University) */}
+            <article className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3.5">
+              <div className="flex items-start sm:items-center gap-3">
+                <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-[#f0edff] text-[#6657d9]">
+                  <Icon name="globe" size={18} />
+                </span>
+                <div className="flex flex-col gap-0.5 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <strong className="text-xs font-semibold text-[#414553]">University Student Portal</strong>
+                    {portalStatus?.has_session_cookies || portalStatus?.session_status === 'ACTIVE' ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-[#eaf7f1] px-2 py-0.5 text-[11px] font-semibold text-[#438a71]">
+                        <span className="size-1.5 rounded-full bg-[#438a71]" /> Connected
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-[#f8f8fb] px-2 py-0.5 text-[11px] font-medium text-[#747887] border border-[#ebebf0]">
+                        <span className="size-1.5 rounded-full bg-[#9fa3b5]" /> Disconnected
+                      </span>
+                    )}
+                  </div>
+                  <small className="text-xs text-[#9295a2]">
+                    {portalStatus?.has_session_cookies || portalStatus?.session_status === 'ACTIVE'
+                      ? 'ASP.NET session active · Live timetable, attendance records, and section schedules synced'
+                      : 'Sync your timetable, class schedule, and real-time attendance stats via session cookies.'}
+                  </small>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 self-end sm:self-center pl-12 sm:pl-0">
+                {portalStatus?.has_session_cookies || portalStatus?.session_status === 'ACTIVE' ? (
                   <button
-                    type="submit"
-                    className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-3 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55 whitespace-nowrap"
-                    disabled={syncingPortalCookie || !portalCookieInput.trim()}
+                    type="button"
+                    onClick={handleDisconnectPortalCookie}
+                    disabled={syncingPortalCookie}
+                    className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#f0dada] bg-white px-3 text-xs font-semibold text-[#b34d4d] hover:bg-[#fff4f4] disabled:opacity-55"
                   >
-                    {syncingPortalCookie ? 'Connecting…' : 'Connect Portal'}
+                    {syncingPortalCookie ? 'Disconnecting…' : 'Disconnect Portal'}
                   </button>
-                </form>
-              )}
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const portalInput = document.getElementById('portalCookieInputMain');
+                      if (portalInput) {
+                        portalInput.scrollIntoView({ behavior: 'smooth' });
+                        portalInput.focus();
+                      }
+                    }}
+                    className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-3.5 text-xs font-semibold text-white hover:bg-[#5142c1]"
+                  >
+                    Connect Portal
+                  </button>
+                )}
+              </div>
+            </article>
+
+            {/* 3. Claude AI Assistant */}
+            <article className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3.5">
+              <div className="flex items-start sm:items-center gap-3">
+                <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-[#f0edff] text-[#6657d9]">
+                  <Icon name="brain" size={18} />
+                </span>
+                <div className="flex flex-col gap-0.5 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <strong className="text-xs font-semibold text-[#414553]">Claude AI Solver (claude.ai)</strong>
+                    {browserStatus?.has_session_key ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-[#eaf7f1] px-2 py-0.5 text-[11px] font-semibold text-[#438a71]">
+                        <span className="size-1.5 rounded-full bg-[#438a71]" /> Connected
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-[#f8f8fb] px-2 py-0.5 text-[11px] font-medium text-[#747887] border border-[#ebebf0]">
+                        <span className="size-1.5 rounded-full bg-[#9fa3b5]" /> Disconnected
+                      </span>
+                    )}
+                  </div>
+                  <small className="text-xs text-[#9295a2]">
+                    {browserStatus?.has_session_key
+                      ? 'SessionKey cookie active · 1-click automatic solving & terminal output generation enabled'
+                      : 'Connect your sessionKey to solve assignments, labs, and generate academic code.'}
+                  </small>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 self-end sm:self-center pl-12 sm:pl-0">
+                {browserStatus?.has_session_key ? (
+                  <button
+                    type="button"
+                    onClick={handleDisconnectSessionKey}
+                    disabled={syncingKey || browserBusy}
+                    className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#f0dada] bg-white px-3 text-xs font-semibold text-[#b34d4d] hover:bg-[#fff4f4] disabled:opacity-55"
+                  >
+                    {syncingKey ? 'Disconnecting…' : 'Disconnect Claude'}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const claudeInput = document.getElementById('claudeSessionInputMain');
+                      if (claudeInput) {
+                        claudeInput.scrollIntoView({ behavior: 'smooth' });
+                        claudeInput.focus();
+                      }
+                    }}
+                    className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-3.5 text-xs font-semibold text-white hover:bg-[#5142c1]"
+                  >
+                    Connect Claude
+                  </button>
+                )}
+              </div>
+            </article>
+
+            {/* 4. Clerk Account */}
+            <article className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3.5 last:pb-0">
+              <div className="flex items-start sm:items-center gap-3">
+                <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-[#f0edff] text-[#6657d9]">
+                  <Icon name="user" size={18} />
+                </span>
+                <div className="flex flex-col gap-0.5 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <strong className="text-xs font-semibold text-[#414553]">Clerk Security Account</strong>
+                    <span className="inline-flex items-center gap-1 rounded-full bg-[#eaf7f1] px-2 py-0.5 text-[11px] font-semibold text-[#438a71]">
+                      <span className="size-1.5 rounded-full bg-[#438a71]" /> Active
+                    </span>
+                  </div>
+                  <small className="text-xs text-[#9295a2]">{userEmail} · Primary Single Sign-On</small>
+                </div>
+              </div>
             </article>
           </div>
         </div>

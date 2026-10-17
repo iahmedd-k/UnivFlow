@@ -206,6 +206,34 @@ export default function SolutionPanel({ assignment }) {
     }
   };
 
+  const [quickSubmitting, setQuickSubmitting] = useState(false);
+
+  const handleQuickTurnIn = async () => {
+    if (!solution?.validated_content && !solution?.draft_content && state !== 'completed') {
+      setError('Please generate the assignment solution first (e.g. click "Solve with Claude" or "Multi-Agent" below), then Quick Turn In will automatically package and submit both the Google Doc and deliverables ZIP to Google Classroom.');
+      return;
+    }
+    setQuickSubmitting(true);
+    setError('');
+    setNotice('');
+    try {
+      const token = getToken ? await getToken() : null;
+      const result = await api.quickTurnInAssignment(assignment.id, token);
+      if (result.google_doc_url) {
+        setSolution((current) => ({
+          ...current,
+          google_doc_url: result.google_doc_url,
+          google_doc_id: result.google_doc_id,
+        }));
+      }
+      setNotice(result.message || 'Successfully turned in Google Doc and ZIP deliverables to Google Classroom!');
+    } catch (e) {
+      setError(e.message || 'Quick turn-in failed. Please try again.');
+    } finally {
+      setQuickSubmitting(false);
+    }
+  };
+
   const copyCode = (content, index) => {
     navigator.clipboard.writeText(content);
     setCopiedIndex(index);
@@ -224,13 +252,36 @@ export default function SolutionPanel({ assignment }) {
     URL.revokeObjectURL(url);
   };
 
-  const downloadAllFilesBundle = (filesList) => {
-    if (!filesList || !filesList.length) return;
-    filesList.forEach((file, idx) => {
-      setTimeout(() => {
-        downloadSingleFile(file.name || `task_${idx + 1}_solution.py`, file.content);
-      }, idx * 250);
-    });
+  const downloadZipBundle = async () => {
+    try {
+      const token = getToken ? await getToken() : null;
+      let res = await fetch(`/api/backend/classroom/assignments/${assignment.id}/solution/files`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        res = await fetch(`/api/v1/classroom/assignments/${assignment.id}/solution/files`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+      }
+      if (!res.ok) throw new Error('Failed to download zip');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const safeTitle = (assignment.title || 'assignment').replace(/[^a-zA-Z0-9_-]/g, '_');
+      link.download = `${safeTitle}_Code.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('Download zip failed:', e);
+      if (files && files.length) {
+        files.forEach((f, idx) => {
+          setTimeout(() => downloadSingleFile(f.name || `task_${idx + 1}.py`, f.content), idx * 250);
+        });
+      }
+    }
   };
 
   const tasks = solution?.tasks || [];
@@ -239,7 +290,7 @@ export default function SolutionPanel({ assignment }) {
   const screenshots = solution?.terminal_screenshots || [];
   const generatedImages = solution?.generated_images || [];
   const crewAgents = solution?.crew_progress?.agents || [];
-  const state = solution?.status || 'not_started';
+  const state = (solution?.status === 'completed' || Boolean(solution?.validated_content)) ? 'completed' : (solution?.status || 'not_started');
 
   const displayTasks = useMemo(() => {
     if (tasks && tasks.length > 0) {
@@ -418,7 +469,19 @@ export default function SolutionPanel({ assignment }) {
             </p>
           </div>
 
-          <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={handleQuickTurnIn}
+              disabled={quickSubmitting || isGenerating}
+              className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+              style={{ background: '#059669', color: '#ffffff', cursor: 'pointer' }}
+              title="Automatically export Google Doc, ZIP deliverables, and turn in immediately to Google Classroom"
+            >
+              <Icon name="upload" size={13} />
+              <span>{quickSubmitting ? 'Submitting to GCR…' : '⚡ Quick Turn In (Doc + ZIP)'}</span>
+            </button>
+
             {loading ? (
               <span className="inline-flex items-center rounded-full border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-muted">Checking status…</span>
             ) : isGenerating ? (
@@ -941,6 +1004,18 @@ export default function SolutionPanel({ assignment }) {
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={handleQuickTurnIn}
+                disabled={quickSubmitting}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white transition hover:bg-emerald-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ cursor: 'pointer', background: '#059669' }}
+                title="Automatically export Google Doc, ZIP deliverables, and turn in immediately to Google Classroom"
+              >
+                <Icon name="upload" size={15} />
+                <span>{quickSubmitting ? 'Submitting to GCR…' : '⚡ Quick Turn In (Doc + ZIP)'}</span>
+              </button>
+
               {solution.google_doc_url ? (
                 <a
                   href={solution.google_doc_url}
@@ -969,10 +1044,10 @@ export default function SolutionPanel({ assignment }) {
               {files.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => downloadAllFilesBundle(files)}
+                  onClick={downloadZipBundle}
                   className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3.5 text-xs font-semibold text-ink transition hover:bg-paper shadow-sm"
                   style={{ cursor: 'pointer' }}
-                  title="Download all code files"
+                  title="Download all deliverable code files in a single .zip bundle"
                 >
                   <Icon name="download" size={13} />
                   <span>Download Code (.zip)</span>
