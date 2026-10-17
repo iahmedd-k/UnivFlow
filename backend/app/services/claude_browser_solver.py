@@ -526,16 +526,100 @@ def get_student_metadata(
     }
 
 
-def extract_assignment_question_text(db: Session, assignment: Assignment) -> str:
-    """Extract all text content from assignment description and attached materials."""
+def extract_assignment_question_text(
+    db: Session,
+    assignment: Assignment,
+    attachment_paths: Optional[List[str]] = None,
+) -> str:
+    """Extract all text content from assignment description and attached materials (including PDF/DOCX parsing)."""
     parts = []
     if assignment.description and assignment.description.strip():
         parts.append(f"Assignment Description / Instructions:\n{assignment.description.strip()}")
 
     materials = db.query(AssignmentMaterial).filter(AssignmentMaterial.assignment_id == assignment.id).all()
+    processed_paths = set()
+
     for m in materials:
-        if m.content and m.content.strip():
-            parts.append(f"--- Attachment: {m.title or 'Reference Material'} ---\n{m.content.strip()}")
+        m_text = (m.content or "").strip()
+        if not m_text:
+            # Attempt to extract text from matching local file
+            matched_file = None
+            if attachment_paths:
+                for p_str in attachment_paths:
+                    p = Path(p_str)
+                    if f"material_{m.id}" in p.name or (m.title and re.sub(r'[^a-zA-Z0-9]', '', m.title.lower()) in re.sub(r'[^a-zA-Z0-9]', '', p.name.lower())):
+                        matched_file = p
+                        processed_paths.add(str(p.resolve()))
+                        break
+
+            if not matched_file:
+                # Check CLAUDE_MATERIALS_DIR
+                safe_title = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', m.title or "")
+                for candidate in CLAUDE_MATERIALS_DIR.glob(f"assignment_{assignment.id}_*{m.id}*"):
+                    if candidate.is_file() and candidate.stat().st_size > 0:
+                        matched_file = candidate
+                        break
+
+            if matched_file and matched_file.is_file():
+                ext = matched_file.suffix.lower()
+                try:
+                    if ext == ".pdf":
+                        from pypdf import PdfReader
+                        reader = PdfReader(str(matched_file))
+                        extracted_pages = []
+                        for pg in reader.pages:
+                            txt = pg.extract_text()
+                            if txt:
+                                extracted_pages.append(txt.strip())
+                        if extracted_pages:
+                            m_text = "\n\n".join(extracted_pages)
+                    elif ext in (".docx", ".doc"):
+                        import docx
+                        doc = docx.Document(str(matched_file))
+                        m_text = "\n\n".join(para.text for para in doc.paragraphs if para.text.strip())
+                    elif ext in (".txt", ".py", ".c", ".cpp", ".java", ".sql", ".md", ".json"):
+                        m_text = matched_file.read_text(encoding="utf-8", errors="ignore")
+                except Exception as parse_err:
+                    logger.warning("Failed to parse attachment %s text: %s", matched_file, parse_err)
+
+                if m_text:
+                    try:
+                        m.content = m_text[:50000]
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+
+        if m_text:
+            parts.append(f"--- Attachment: {m.title or 'Reference Material'} ---\n{m_text}")
+
+    # Process any remaining attachment_paths that were not mapped to a specific DB material
+    if attachment_paths:
+        for p_str in attachment_paths:
+            resolved_p = str(Path(p_str).resolve())
+            if resolved_p in processed_paths:
+                continue
+            p = Path(p_str)
+            if not p.is_file():
+                continue
+            ext = p.suffix.lower()
+            unmatched_text = ""
+            try:
+                if ext == ".pdf":
+                    from pypdf import PdfReader
+                    reader = PdfReader(str(p))
+                    pg_texts = [pg.extract_text().strip() for pg in reader.pages if pg.extract_text()]
+                    unmatched_text = "\n\n".join(pg_texts)
+                elif ext in (".docx", ".doc"):
+                    import docx
+                    doc = docx.Document(str(p))
+                    unmatched_text = "\n\n".join(para.text for para in doc.paragraphs if para.text.strip())
+                elif ext in (".txt", ".py", ".c", ".cpp", ".java", ".sql", ".md"):
+                    unmatched_text = p.read_text(encoding="utf-8", errors="ignore")
+            except Exception as e:
+                logger.warning("Failed to extract text from standalone attachment %s: %s", p, e)
+
+            if unmatched_text:
+                parts.append(f"--- Attachment File: {p.name} ---\n{unmatched_text}")
 
     return "\n\n".join(parts)
 
@@ -889,7 +973,11 @@ def classify_assignment_domain(
         "er diagram", "erd", "uml diagram", "class diagram", "sequence diagram",
         "use case diagram", "activity diagram", "dfd", "data flow diagram",
         "circuit diagram", "drawio", "draw.io", "flowchart", "schematic diagram",
-        "system architecture diagram", "network topology diagram"
+        "system architecture diagram", "network topology diagram", "software architecture",
+        "architecture design", "modular design", "quality attribute", "quality attributes",
+        "trade-off matrix", "tradeoff matrix", "component diagram", "system design",
+        "diagram design a", "diagram design b", "design diagrams", "two elevator-control",
+        "architectural design", "architectural style", "coupling and cohesion"
     ]
     has_diagram_focus = any(kw in combined for kw in diagram_keywords)
 
@@ -916,12 +1004,12 @@ def classify_assignment_domain(
     # Concrete coding keywords: strict terms that unmistakably indicate runnable software development
     strict_coding_markers = [
         "source code", "runnable code", "compile and run", "test cases",
-        "console output", "terminal output", "lab task", "lab manual",
-        ".py", ".java", ".cpp", ".sql", ".asm", ".cs", ".js", ".ts",
-        "public class", "def ", "import ", "#include", "std::", "main()",
-        "c++", "python script", "java program", "assembly language",
-        "8086", "masm", "emu8086", "sql query", "sql queries", "database query",
-        "react", "compiler", "debugging", "runtime error"
+        "write a program", "write code", "write a python", "write a c++",
+        "write a java", "write an assembly", "implement in python", "implement in c",
+        "implement in java", "implement in c++", ".py", ".java", ".cpp", ".asm", ".cs",
+        "public class", "def ", "#include", "std::", "main()",
+        "python script", "java program", "assembly language",
+        "8086", "masm", "emu8086", "database query", "react", "compiler", "debugging", "runtime error"
     ]
     has_strict_coding = any(kw in combined for kw in strict_coding_markers)
 
@@ -1093,7 +1181,7 @@ def solve_assignment_via_claude_browser(
     ).first()
     meta = get_student_metadata(db, course, user_id=user_id)
     attachment_paths = prepare_assignment_materials(db, assignment, course)
-    extracted_text = extract_assignment_question_text(db, assignment)
+    extracted_text = extract_assignment_question_text(db, assignment, attachment_paths=attachment_paths)
 
     _update_solver_progress(
         db,
@@ -1459,18 +1547,22 @@ def solve_assignment_via_claude_browser(
             )
         elif domain == DOMAIN_DIAGRAM_DESIGN:
             domain_instructions = (
-                "DIAGRAM SPECIFICATION & VISUAL .PNG IMAGE DELIVERABLES (MANDATORY REQUIREMENT):\n"
-                "- You MUST directly generate each architectural, UML, ERD, flowchart, or schema diagram as a visual .png format image.\n"
-                "- For every diagram, label the diagram image clearly: `**Diagram Image (.png):** diagram_task<N>.png` and provide the visual diagram directly in .png image format (`![Diagram: <Title>](data:image/png;base64,...)` or direct visual diagram artifact).\n"
-                "- Alongside the visual .png image, provide the valid Draw.io XML companion block enclosed in a ```drawio code fence (<mxfile>...</mxfile>) so it can be saved as an editable companion file.\n"
-                "- Do NOT output ASCII art or text boxes. The diagram must be a real visual .png image generated by you (Claude).\n"
+                "SYSTEM ARCHITECTURE & DIAGRAM SPECIFICATION (MANDATORY REQUIREMENTS):\n"
+                "- This is a SYSTEM DESIGN, SOFTWARE ARCHITECTURE, OR DIAGRAMMING assignment.\n"
+                "- ZERO TERMINAL SCREENSHOT DIRECTIVE: Do NOT generate terminal commands, terminal execution code blocks, compiler commands, or 'Not applicable' terminal placeholders. Terminal output is strictly irrelevant for architecture and design assignments.\n"
+                "- DIRECT VISUAL DIAGRAM GENERATION (.PNG IMAGE): You MUST directly generate and embed each architectural, UML, ERD, component, or system diagram as a visual .png format image: `**Diagram Image (.png):** diagram_task<N>.png` followed by `![Diagram: <Title>](data:image/png;base64,...)` or direct visual diagram artifact.\n"
+                "- STANDALONE DRAW.IO XML COMPANION CODE: Underneath the visual diagram image, provide the valid, well-formed Draw.io XML companion block enclosed in a ```drawio code fence (<mxfile host=\"app.diagrams.net\">...</mxfile>) so it can be saved by our automated backend as an editable companion file.\n"
+                "- STRICT PROHIBITION ON MANUAL DRAW.IO INSTRUCTIONS: Under NO circumstances should you instruct the student to open draw.io, paste XML, or export PNGs (e.g. NEVER write 'In draw.io, choose Extras -> Edit Diagram', 'paste the XML and click OK', 'Export as PNG', or 'Not applicable. Export from draw.io'). The student report must be completely finished, polished, and ready to submit without manual steps!\n"
+                "- Do NOT output ASCII art or text boxes in place of diagrams. The diagram must be a complete visual .png image.\n"
+                "- For conceptual tasks, quality attribute analyses, trade-off matrices, and written recommendations: provide rich Markdown comparison tables, rigorous definitions, and comprehensive architectural justifications.\n"
             )
             report_structure = (
-                "MANDATORY REPORT STRUCTURE (FOLLOW STRICTLY):\n"
-                "Format your entire response in polished Markdown. For every diagram in the assignment, use this exact layout:\n\n"
-                "# Task N: [Exact Diagram / Architecture Title]\n"
-                "## 1. System Requirements & Specification\n"
-                "[Detailed requirements, entity specifications, and constraints]\n\n"
+                "MANDATORY REPORT STRUCTURE (SYSTEM ARCHITECTURE & DIAGRAM LABS - FOLLOW STRICTLY):\n"
+                "Format your entire response in polished Markdown. For each task in the lab/assignment, use the layout matching its task type:\n\n"
+                "--- If the task requires a DIAGRAM or MODULAR ARCHITECTURE (e.g., Task 3) ---\n"
+                "# Task N: [Exact Task Title from Lab Manual]\n"
+                "## 1. Problem Statement & System Requirements\n"
+                "[Detailed problem statement, architectural objectives, and component requirements]\n\n"
                 "## 2. Visual Diagram Image (.png)\n"
                 "**Diagram Image (.png):** `diagram_taskN.png`\n"
                 "![Visual Diagram (Task N)](data:image/png;base64,...)\n\n"
@@ -1478,8 +1570,16 @@ def solve_assignment_via_claude_browser(
                 "```drawio\n"
                 "<mxfile host=\"app.diagrams.net\">...</mxfile>\n"
                 "```\n\n"
-                "## 4. Structural Analysis & Component Breakdown\n"
-                "[Detailed explanation of entities, connections, protocols, design decisions, and workflows]\n\n"
+                "## 4. Structural Analysis & Component Rationale\n"
+                "[Detailed explanation of entities, connections, cohesion and coupling analysis, and architectural decisions]\n\n"
+                "--- If the task requires QUALITY ATTRIBUTES, A TRADE-OFF MATRIX, or A WRITTEN RECOMMENDATION (e.g., Tasks 1, 2, 4) ---\n"
+                "# Task N: [Exact Task Title from Lab Manual]\n"
+                "## 1. Problem Statement / Question\n"
+                "[Detailed problem statement as given in the manual]\n\n"
+                "## 2. Comprehensive Solution / Trade-Off Matrix / Recommendation\n"
+                "[Structured Markdown tables, quality attribute definitions with justifications, or a professional written recommendation referencing the matrix and diagrams]\n\n"
+                "## 3. In-Depth Discussion & Complexity / Trade-Off Analysis\n"
+                "[Theoretical justification, system-level trade-offs, and strategic engineering takeaways]\n\n"
             )
         elif domain == DOMAIN_QUANTITATIVE_MATH:
             domain_instructions = (
@@ -1504,34 +1604,53 @@ def solve_assignment_via_claude_browser(
             )
         else:
             domain_instructions = (
-                "CODE IMPLEMENTATION & RUNNABLE DELIVERABLES:\n"
-                "- For every programming task, provide complete, bug-free, and production-ready source code in a language-tagged code fence (e.g. ```java, ```python, ```cpp, ```sql, ```assembly).\n"
-                "- Do NOT use placeholders, ellipsis (...), or incomplete snippets. Provide complete, standalone source files with thorough comments.\n\n"
-                "TERMINAL OUTPUT SCREENSHOT IMAGES (.PNG FORMAT - MANDATORY REQUIREMENT FOR EVERY TASK):\n"
-                "- You MUST directly generate the authentic terminal execution screenshot image in .png format for EACH task.\n"
-                "- For each task, provide the full terminal execution session showing the exact command line executed (e.g. `$ python task1.py` or `$ gcc task1.c && ./a.out`), simulated interactive inputs, and comprehensive stdout/stderr results demonstrating successful execution with exit code 0.\n"
-                "- Under each task, label the screenshot clearly: `**Terminal Screenshot (.png):** task<N>_output.png`\n"
-                "- Provide the visual terminal session inside a ```terminal code fence or embedded .png image block so it directly embeds as a terminal output screenshot image into the student's submission report.\n"
+                "CODE IMPLEMENTATION & TASK MODALITY DELIVERABLES:\n"
+                "- PHASE 1 PER-TASK EVALUATION: Evaluate each task first. ONLY tasks that require executable programming code (e.g. Python, C++, Java, Assembly, SQL) should include source code and terminal outputs. Non-coding tasks (e.g. theoretical analysis, trade-off matrices, system diagrams, or recommendations) must NEVER include terminal screenshots, compiler commands, or empty 'Not applicable' terminal placeholders!\n"
+                "- RUNNABLE SOURCE CODE (FOR PROGRAMMING TASKS ONLY): For every programming task, provide complete, bug-free, and production-ready source code in a language-tagged code fence (e.g. ```java, ```python, ```cpp, ```sql, ```assembly). No placeholders or ellipses.\n"
+                "- AUTHENTIC TERMINAL OUTPUT SCREENSHOT IMAGES (FOR RUNNABLE CODE TASKS ONLY): For executable tasks, provide the full terminal execution session showing the exact command line executed (e.g. `$ python task1.py`), simulated interactive inputs, and complete stdout/stderr results demonstrating successful execution with exit code 0. Label clearly: `**Terminal Screenshot (.png):** task<N>_output.png` inside a ```terminal code fence.\n"
+                "- VISUAL DIAGRAMS (.PNG): If any task requests an architectural or UML diagram, directly generate the visual diagram image in .png format (`**Diagram Image (.png):** diagram_task<N>.png`) and provide the Draw.io XML companion code in a ```drawio fence. Never instruct the student to manually open draw.io or export PNGs.\n"
             )
             report_structure = (
-                "MANDATORY REPORT STRUCTURE (FOLLOW STRICTLY):\n"
-                "Format your entire response in polished Markdown. For every task in the lab/assignment, use this exact layout:\n\n"
+                "MANDATORY REPORT STRUCTURE (CODING LABS - FOLLOW STRICTLY):\n"
+                "Format your entire response in polished Markdown. For each task in the lab/assignment, use the appropriate layout:\n\n"
+                "--- For EXECUTABLE PROGRAMMING TASKS ---\n"
                 "# Task N: [Exact Task Title from Lab Manual]\n"
                 "## 1. Problem Statement / Question\n"
                 "[Detailed problem statement, objective, and requirements as given in the manual]\n\n"
-                "## 2. Terminal Output Screenshot (.png)\n"
+                "## 2. Source Code Implementation\n"
+                "**File:** `taskN_[short_name].[ext]`\n"
+                "```[language]\n"
+                "[complete runnable source code]\n"
+                "```\n\n"
+                "## 3. Terminal Output Screenshot (.png)\n"
                 "**Terminal Screenshot (.png):** `taskN_output.png`\n"
                 "```terminal\n"
                 "$ [command]\n"
                 "[realistic terminal execution output, test cases, and verification results]\n"
                 "```\n\n"
-                "## 3. Source Code Implementation\n"
-                "**File:** `taskN_[short_name].[ext]`\n"
-                "```[language]\n"
-                "[complete runnable source code]\n"
-                "```\n\n"
                 "## 4. Discussion & Complexity Analysis\n"
                 "[Theoretical explanation, algorithm complexity (Time & Space), design decisions, and key takeaways]\n\n"
+                "--- For CONCEPTUAL / TRADE-OFF MATRIX / RECOMMENDATION TASKS ---\n"
+                "# Task N: [Exact Task Title from Lab Manual]\n"
+                "## 1. Problem Statement / Question\n"
+                "[Detailed problem statement as given in the manual]\n\n"
+                "## 2. Comprehensive Solution / Trade-Off Matrix / Recommendation\n"
+                "[Structured Markdown tables, quality attribute definitions with justifications, or a professional written recommendation. OMIT all terminal screenshot headings.]\n\n"
+                "## 3. Discussion & Architectural Analysis\n"
+                "[Theoretical explanation, architectural decisions, and key takeaways]\n\n"
+                "--- For DIAGRAM TASKS ---\n"
+                "# Task N: [Exact Task Title from Lab Manual]\n"
+                "## 1. Problem Statement / Specification\n"
+                "[System requirements and architectural constraints]\n\n"
+                "## 2. Visual Diagram Image (.png)\n"
+                "**Diagram Image (.png):** `diagram_taskN.png`\n"
+                "![Visual Diagram (Task N)](data:image/png;base64,...)\n\n"
+                "## 3. Architectural Schema Deliverable (Draw.io XML Companion)\n"
+                "```drawio\n"
+                "<mxfile host=\"app.diagrams.net\">...</mxfile>\n"
+                "```\n\n"
+                "## 4. Structural Analysis & Component Breakdown\n"
+                "[Component breakdown, coupling/cohesion analysis, and design decisions]\n\n"
             )
 
         prompt_text = (
@@ -1545,8 +1664,15 @@ def solve_assignment_via_claude_browser(
             f"- Assignment Classification: {domain.upper()}\n\n"
             f"{questions_block}\n"
             f"EXPERT PLANNING & EXECUTION INSTRUCTIONS:\n"
-            f"1. PLANNING PHASE: Thoroughly examine the assignment title, questions, and attached reference materials. Identify every discrete task, exercise, or problem statement requested.\n"
-            f"2. MODALITY COMPLIANCE: Adhere strictly to the {domain.upper()} deliverable requirements below. Do not mix unrelated formats (e.g. never generate terminal commands or code blocks for theoretical or quantitative hand calculation questions).\n"
+            f"1. PHASE 1: MODALITY & DELIVERABLE EVALUATION (MANDATORY FIRST STEP):\n"
+            f"   - Before writing any answers, evaluate every discrete task in the assignment to determine its true modality:\n"
+            f"     a) EXECUTABLE CODING TASKS: Tasks that explicitly require writing runnable code (Python, C++, Java, Assembly, SQL) to run in a compiler/terminal.\n"
+            f"        -> For these tasks ONLY, provide runnable source code and authentic terminal execution output.\n"
+            f"     b) SYSTEM ARCHITECTURE & DIAGRAM TASKS: Tasks requesting diagrams, UML, ERD, flowcharts, or system design.\n"
+            f"        -> Directly generate the visual diagram image in .PNG format. STRICTLY NEVER generate terminal commands, compiler output, or terminal screenshot blocks for diagrams.\n"
+            f"     c) CONCEPTUAL, TRADE-OFF MATRIX & RECOMMENDATION TASKS: Tasks evaluating quality attributes, trade-off matrices, architectural comparisons, or written recommendations.\n"
+            f"        -> Provide structured Markdown tables and detailed analytical answers. STRICTLY DO NOT generate terminal screenshot blocks, terminal code fences, or 'Not applicable' placeholder headings for conceptual tasks. Completely omit terminal output from non-coding tasks!\n"
+            f"2. MODALITY COMPLIANCE: Adhere strictly to the deliverable requirements of each task. Never mix unrelated formats (e.g. never generate terminal commands or terminal screenshot blocks for theoretical questions, trade-off matrices, or hand calculations).\n"
             f"3. STRICT SINGLE-ASSIGNMENT FOCUS & ZERO-QUESTION DIRECTIVE:\n"
             f"   - You must solve ONLY this specific assignment: '{assignment.title}' for the course '{meta['course_name']}'.\n"
             f"   - If any materials from previous sessions or other courses appear in context, IGNORE THEM COMPLETELY.\n"
@@ -1940,6 +2066,14 @@ def solve_assignment_via_claude_browser(
 
                     # Retrieve the authentic visual diagram image generated by Claude
                     diag_png_uri = claude_direct_images.get(d_task) or claude_direct_images.get(f"diagram_{d_idx}") or claude_direct_images.get(str(d_idx))
+                    if not diag_png_uri and d_content:
+                        try:
+                            from app.services.browser_tool_runner import BrowserToolRunner
+                            render_res = BrowserToolRunner.render_diagram(d_lang, d_content, title=f"Diagram {d_task} — {d_name}")
+                            if render_res and render_res.get("data_uri"):
+                                diag_png_uri = render_res["data_uri"]
+                        except Exception as render_err:
+                            logger.warning("Failed to auto-render diagram %s: %s", d_name, render_err)
 
                     execution_results.append({
                         "task": d_task,
@@ -2022,6 +2156,15 @@ def solve_assignment_via_claude_browser(
 
                     if is_diagram:
                         diag_img = claude_direct_images.get(task_key) or claude_direct_images.get(str(source_file.get("task"))) or claude_direct_images.get(f"diagram_{source_file.get('task')}")
+                        if not diag_img and source_file.get("content"):
+                            try:
+                                from app.services.browser_tool_runner import BrowserToolRunner
+                                render_res = BrowserToolRunner.render_diagram(lang, source_file["content"], title=source_file["name"])
+                                if render_res and render_res.get("data_uri"):
+                                    diag_img = render_res["data_uri"]
+                            except Exception as render_err:
+                                logger.warning("Failed to render diagram %s: %s", source_file["name"], render_err)
+
                         execution_results.append({
                             "task": source_file["task"],
                             "filename": source_file["name"],

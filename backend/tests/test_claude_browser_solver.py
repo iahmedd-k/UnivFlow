@@ -20,6 +20,7 @@ from app.services.claude_browser_solver import (
     _has_display,
     _get_headless_mode,
     is_heavy_ml_assignment,
+    extract_assignment_question_text,
     classify_assignment_domain,
     dismiss_claude_overlays_and_modals,
     DOMAIN_HEAVY_ML,
@@ -626,6 +627,22 @@ def test_classify_assignment_domain():
     )
     assert domain == DOMAIN_QUANTITATIVE_MATH
 
+    # 6. Architecture & System Design Labs (e.g. Elevator Control, Quality Attributes, Modular Design)
+    domain = classify_assignment_domain(
+        title="Lab Task 2",
+        description="",
+        extracted_text="Lab Task 2: Two Elevator-Control System Designs\nTask 1: Identify Relevant Quality Attributes\nTask 2: Quality Attribute Trade-off Matrix\nTask 3: Modular Design Diagrams with Rationale\nTask 4: Written Recommendation",
+        course_name="BSCS-VII-A (Monday 06:00 - 09:00 PM)",
+    )
+    assert domain == DOMAIN_DIAGRAM_DESIGN
+
+    domain = classify_assignment_domain(
+        title="Lab Task 2: Two Elevator-Control System Designs",
+        description="Analyze quality attributes, trade-off matrix, and draw modular design diagrams.",
+        course_name="Software Architecture",
+    )
+    assert domain == DOMAIN_DIAGRAM_DESIGN
+
 
 def test_dismiss_claude_overlays_and_modals():
     """Verify overlay and modal dismiss logic executes without errors."""
@@ -1028,6 +1045,34 @@ graph TD
     drawio_files = [f for f in files if f.get("language") in ("drawio", "xml") or f.get("name", "").endswith(".drawio.xml")]
     assert len(drawio_files) >= 1
     assert "<mxfile" in drawio_files[0]["content"]
+
+
+def test_extract_assignment_question_text(tmp_path):
+    """Verify extract_assignment_question_text extracts text from description and local materials."""
+    mock_db = MagicMock()
+    mock_assignment = Assignment(
+        id=999,
+        title="Lab Task 2",
+        description="Analyze elevator design architecture."
+    )
+    mock_mat = AssignmentMaterial(
+        id=555,
+        assignment_id=999,
+        title="Lab_Manual.txt",
+        material_type="local_upload",
+        content=""
+    )
+    mock_db.query().filter().all.return_value = [mock_mat]
+
+    # Create dummy text file
+    sample_file = tmp_path / "assignment_999_material_555_Lab_Manual.txt"
+    sample_file.write_text("Task 1: Quality Attributes\nTask 2: Trade-off Matrix\nTask 3: Modular Design Diagrams", encoding="utf-8")
+
+    text = extract_assignment_question_text(mock_db, mock_assignment, attachment_paths=[str(sample_file)])
+    assert "Analyze elevator design architecture." in text
+    assert "Task 1: Quality Attributes" in text
+    assert "Task 3: Modular Design Diagrams" in text
+
 
 
 

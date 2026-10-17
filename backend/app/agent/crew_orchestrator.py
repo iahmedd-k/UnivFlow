@@ -82,12 +82,12 @@ DOMAIN_PLAYBOOK = """\
 DOMAIN_DECISION_ORDER = """\
 Decide domain_type with this prioritized order (first match wins):
 1. Is a model being trained or evaluated (PyTorch, TensorFlow, deep learning, GPU training pipeline)? -> HEAVY_ML.
-2. Is the main output an architectural schema, ER diagram, UML model, or flowchart? -> DIAGRAM_DESIGN.
+2. Is the main output an architectural schema, ER diagram, UML model, system design, modular design, trade-off matrix, quality attributes analysis, or flowchart? -> DIAGRAM_DESIGN (even if titled 'Lab' or 'Lab Task').
 3. Are the core tasks mathematical problem-solving, calculus, algebra, statistics, proofs, physics, or discrete math? -> QUANTITATIVE_MATH.
 4. Is the primary deliverable relational schemas, DDL, SQL tables, or database queries? -> SQL_DATABASE.
 5. Is the primary deliverable statistical data cleaning, EDA, or visualization on a dataset? -> DATA_ANALYSIS.
-6. Is the primary deliverable runnable programming code (C++, Python, Java, Assembly, algorithms, lab tasks)? -> CODING_LAB.
-   (Note: If a coding lab includes brief conceptual or viva questions, classify it as CODING_LAB, not MIXED.)
+6. Is the primary deliverable runnable programming code (C++, Python, Java, Assembly, data structures, algorithms)? -> CODING_LAB.
+   (Note: Only classify as CODING_LAB when actual executable source code is being implemented. If it is an architectural/system design lab or conceptual analysis, classify as DIAGRAM_DESIGN or THEORY_ACADEMIC.)
 7. Does the assignment require SUBSTANTIVE, independent deliverables across multiple domains (e.g. both a multi-page literature review AND a full software system)? -> MIXED.
 8. Otherwise (essays, case studies, humanities, ethics, business, management, conceptual explanations) -> THEORY_ACADEMIC.
 """
@@ -116,7 +116,9 @@ PLANNER_PROMPT = (
     "- Never invent requirements. If something is unclear, missing or contradictory (e.g. no dataset, no language specified, unreadable question), "
     "record it in missing_information and state your reasonable choice in assumptions.\n"
     "- Honour explicit instructions in the assignment (language, tool, citation style, word limit) by copying them into constraints.\n"
-    "- requires_code / requires_terminal_output / requires_diagram must be true if ANY part needs them.\n"
+    "- requires_code: true ONLY if runnable programming code must be written.\n"
+    "- requires_terminal_output: true ONLY if the assignment contains executable programming code intended to run in a terminal. If the lab is conceptual, architecture, diagram, or hand calculations, set to false.\n"
+    "- requires_diagram: true if an architecture, UML, ER, flowchart, or design diagram is requested.\n"
     "- artifacts_required lists the final files/items the student needs, using only: \"theory_text\", \"code_file\", \"terminal_screenshot\", \"colab_notebook\", \"diagram_image\", \"drawio_xml\".\n"
     "- reference_diagram_available is true ONLY if the supplied materials really contain a sample diagram; then describe its notation, shapes, colours, labelling and layout in reference_diagram_notes. Otherwise false and empty string.\n"
     "- tools_required lists concrete tools only (e.g. 'GCC', 'Python 3', 'MySQL', 'Draw.io', 'Google Colab').\n"
@@ -180,7 +182,9 @@ CODING_PROMPT = (
     "produced as a clearly named, fenced block that the platform renders/saves. Always include the exact file name shown in the format.\n\n"
 
     "=== A) CODING_LAB / SQL_DATABASE / DATA_ANALYSIS (code files + terminal screenshots) ===\n"
-    "For EACH task produce exactly this structure:\n"
+    "PER-TASK MODALITY RULE: Only generate source code and terminal screenshots for tasks that are actually EXECUTABLE programming tasks. "
+    "For tasks that are conceptual questions, quality attribute analyses, trade-off matrices, or written recommendations, provide structured Markdown tables and detailed analytical answers; NEVER generate terminal screenshot blocks, terminal commands, or 'Not applicable' terminal placeholders for non-executable tasks.\n\n"
+    "For EACH executable programming task produce exactly this structure:\n"
     "## Task <N>: <Task Title / Objective>\n"
     "### 1. Problem Statement / Question\n"
     "Clear statement of the problem, objectives, input/output requirements.\n"
@@ -253,9 +257,9 @@ REPORTING_PROMPT = (
     "- THEORY_ACADEMIC / QUANTITATIVE_MATH: the complete, polished, ready-to-submit written solution - Title, Executive Summary, "
     "every question answered in full under its own numbered heading, Real-World Applications, Conclusion, References. "
     "Omit all code, compiler and terminal headings.\n"
-    "- CODING_LAB / SQL_DATABASE / DATA_ANALYSIS: for each task keep Problem Statement -> `**File:**` code block -> `**Screenshot:**` terminal block. "
+    "- CODING_LAB / SQL_DATABASE / DATA_ANALYSIS: evaluate modality per task. For executable coding tasks, keep Problem Statement -> `**File:**` code block -> `**Screenshot:**` terminal block. "
     "Verify that every code file has a matching terminal screenshot block, that the commands use the exact file name, and that the output "
-    "matches what the code would really print. Keep code blocks and file/screenshot name lines intact.\n"
+    "matches what the code would really print. For conceptual, trade-off, or recommendation tasks, omit terminal screenshot and code headings completely.\n"
     "- DIAGRAM_DESIGN: keep, for each diagram, the `**Diagram image:**` line, the complete ```drawio XML block and the component breakdown. "
     "Confirm the XML is well-formed and (if reference_diagram_available is true) that the style still matches the reference.\n"
     "- HEAVY_ML: return ONLY the single notebook - the `**Notebook file:**` line followed by the one ```python percent-format block. "
