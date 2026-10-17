@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -119,6 +120,11 @@ def list_assignments(
         .filter(
             Assignment.user_id == user_id,
             Course.user_id == user_id,
+            # Classroom courseWorkMaterials and announcements are stored in the
+            # same table so Study Assistant can index them. They are not
+            # coursework submissions and must never appear in Assignment Studio.
+            (Assignment.work_type.is_(None))
+            | (~func.upper(Assignment.work_type).in_(("MATERIAL", "ANNOUNCEMENT"))),
         )
         .filter(
             (Assignment.due_at >= since_dt) | 
