@@ -164,8 +164,8 @@ export const api = {
   },
 
   // Dashboard
-  getOverview: async (token = null) => {
-    return fetchFromApi('/dashboard/overview', token);
+  getOverview: async (token = null, noCache = false) => {
+    return fetchFromApi('/dashboard/overview', token, noCache ? { noCache: true } : {});
   },
 
   getUpcoming: async (days = 7, token = null) => {
@@ -174,6 +174,10 @@ export const api = {
 
   getAttendanceSummary: async (token = null) => {
     return fetchFromApi('/dashboard/attendance-summary', token);
+  },
+
+  dismissActiveCrewRun: async (assignmentId, token = null) => {
+    return fetchFromApi(`/dashboard/active-crew-runs/${assignmentId}/dismiss`, token, { method: 'POST', noCache: true });
   },
 
   // Classroom & Courses

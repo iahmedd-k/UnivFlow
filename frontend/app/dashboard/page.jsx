@@ -35,7 +35,7 @@ export default function DashboardOverview() {
   const loadData = async (cancelled = false) => {
     try {
       const token = await getToken();
-      const results = await Promise.allSettled([api.getOverview(token), api.getUpcoming(7, token)]);
+      const results = await Promise.allSettled([api.getOverview(token, true), api.getUpcoming(7, token)]);
       if (cancelled) return;
       if (results[0].status === 'fulfilled') setOverview(results[0].value);
       else if (!overview) setError(results[0].reason?.message || 'Your overview could not be loaded.');
@@ -70,6 +70,21 @@ export default function DashboardOverview() {
 
   const [turningInId, setTurningInId] = useState(null);
   const [turnInNotice, setTurnInNotice] = useState('');
+  const [dismissingId, setDismissingId] = useState(null);
+
+  const handleDismissRun = async (assignmentId) => {
+    if (dismissingId) return;
+    setDismissingId(assignmentId);
+    try {
+      const token = await getToken();
+      await api.dismissActiveCrewRun(assignmentId, token);
+      await loadData(false);
+    } catch (err) {
+      console.warn('Failed to dismiss run:', err);
+    } finally {
+      setDismissingId(null);
+    }
+  };
 
   const handleDashboardQuickTurnIn = async (assignmentId) => {
     if (turningInId) return;
@@ -107,7 +122,7 @@ export default function DashboardOverview() {
       ...(upcoming?.assignments || []).map((item) => ({ ...item, kind: 'Assignment', href: '/dashboard/assignments', date: item.due_at, tone: 'bg-info-bg text-info' })),
       ...(upcoming?.classes || []).map((item) => ({ ...item, kind: 'Class', title: item.subject, href: '/dashboard/timetable', date: item.date, tone: 'bg-violet-light text-violet' })),
       ...(upcoming?.exams || []).map((item) => ({ ...item, kind: 'Exam', href: '/dashboard/timetable', date: item.date, tone: 'bg-violet-light text-violet' })),
-      ...(upcoming?.quizzes || []).map((item) => ({ ...item, kind: 'Quiz', href: '/dashboard/timetable', date: item.date, tone: 'bg-warning-bg text-warning' })),
+
     ];
     const start = new Date();
     start.setHours(0, 0, 0, 0);
@@ -173,12 +188,8 @@ export default function DashboardOverview() {
 
         <div className="flex flex-col gap-3">
           {activeRuns.map((run) => {
-            const agents = run.crew_progress?.agents || [
-              { id: 'planner', status: 'running', summary: '' },
-              { id: 'theory_research', status: 'queued', summary: '' },
-              { id: 'coder_diagram', status: 'queued', summary: '' },
-              { id: 'reporter_fixer', status: 'queued', summary: '' },
-            ];
+            const hasAgents = Array.isArray(run.crew_progress?.agents) && run.crew_progress.agents.length > 0;
+            const hasSteps = run.crew_progress && typeof run.crew_progress.current_step === 'number' && typeof run.crew_progress.total_steps === 'number';
             const roleTitles = {
               planner: '1. Planner',
               theory_research: '2. Theory & Research',
@@ -193,32 +204,71 @@ export default function DashboardOverview() {
                     <strong className="block text-sm font-semibold text-ink">{run.title}</strong>
                     <small className="text-xs text-muted">{run.course_name} · Due {formatDate(run.due_at)}</small>
                   </div>
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-warning-bg px-2 py-1 text-xs font-semibold text-warning">
-                    <span className="size-1.5 animate-spin rounded-full border-2 border-line border-t-violet" />
-                    <span>CrewAI Solving in Progress</span>
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-warning-bg px-2.5 py-1 text-xs font-semibold text-warning">
+                      <span className="size-1.5 animate-spin rounded-full border-2 border-line border-t-violet" />
+                      <span>{hasSteps ? (run.crew_progress.step_title || 'Solving in Progress') : 'Solving in Progress'}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleDismissRun(run.assignment_id)}
+                      disabled={dismissingId === run.assignment_id}
+                      className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-2 py-1 text-xs font-medium text-muted hover:bg-surface-secondary hover:text-ink disabled:opacity-50"
+                      title="Dismiss run from dashboard"
+                    >
+                      {dismissingId === run.assignment_id ? (
+                        <span className="size-2.5 animate-spin rounded-full border-2 border-line border-t-ink" />
+                      ) : (
+                        <Icon name="close" size={12} />
+                      )}
+                      <span>Dismiss</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                  {agents.map((ag) => {
-                    const isDone = ag.status === 'completed';
-                    const isRunning = ag.status === 'running';
-                    return (
-                      <div
-                        key={ag.id}
-                        className={`rounded-lg border px-3 py-2 ${isDone ? 'border-brand-border bg-brand-bg' : isRunning ? 'border-violet/30 bg-violet-light/50' : 'border-line bg-paper'}`}
-                      >
-                        <div className={`flex items-center gap-1.5 text-xs font-semibold ${isDone ? 'text-brand-hover' : isRunning ? 'text-violet-dark' : 'text-muted'}`}>
-                          {isDone ? <Icon name="checkCircle" size={12} /> : isRunning ? <span className="size-1.5 animate-spin rounded-full border-2 border-line border-t-violet" /> : <span className="size-1.5 rounded-full bg-subtle" />}
-                          <span>{roleTitles[ag.id] || ag.id}</span>
+                {hasAgents ? (
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                    {run.crew_progress.agents.map((ag) => {
+                      const isDone = ag.status === 'completed';
+                      const isRunning = ag.status === 'running';
+                      return (
+                        <div
+                          key={ag.id}
+                          className={`rounded-lg border px-3 py-2 ${isDone ? 'border-brand-border bg-brand-bg' : isRunning ? 'border-violet/30 bg-violet-light/50' : 'border-line bg-paper'}`}
+                        >
+                          <div className={`flex items-center gap-1.5 text-xs font-semibold ${isDone ? 'text-brand-hover' : isRunning ? 'text-violet-dark' : 'text-muted'}`}>
+                            {isDone ? <Icon name="checkCircle" size={12} /> : isRunning ? <span className="size-1.5 animate-spin rounded-full border-2 border-line border-t-violet" /> : <span className="size-1.5 rounded-full bg-subtle" />}
+                            <span>{roleTitles[ag.id] || ag.id}</span>
+                          </div>
+                          <small className="mt-1 block text-xs capitalize text-muted">
+                            {isDone ? 'Completed' : isRunning ? 'Working…' : 'Queued'}
+                          </small>
                         </div>
-                        <small className="mt-1 block text-xs capitalize text-muted">
-                          {isDone ? 'Completed' : isRunning ? 'Working…' : 'Queued'}
-                        </small>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                ) : hasSteps ? (
+                  <div className="flex flex-col gap-2 rounded-lg border border-line bg-paper p-3">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-ink">Step {run.crew_progress.current_step} of {run.crew_progress.total_steps}: {run.crew_progress.step_title}</span>
+                      <span className="text-muted">{Math.round((run.crew_progress.current_step / run.crew_progress.total_steps) * 100)}%</span>
+                    </div>
+                    <div className="h-2 w-full overflow-hidden rounded-full border border-line bg-surface">
+                      <div
+                        className="h-full rounded-full bg-violet transition-all duration-500"
+                        style={{ width: `${Math.min(100, (run.crew_progress.current_step / run.crew_progress.total_steps) * 100)}%` }}
+                      />
+                    </div>
+                    {run.crew_progress.detail && (
+                      <p className="text-xs text-muted truncate">{run.crew_progress.detail}</p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 rounded-lg border border-line bg-paper p-3 text-xs text-muted">
+                    <span className="size-2 animate-spin rounded-full border-2 border-line border-t-violet" />
+                    <span>Autonomous solver pipeline active. Initializing context and tools...</span>
+                  </div>
+                )}
               </div>
             );
           })}

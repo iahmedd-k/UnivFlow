@@ -1,9 +1,12 @@
 import json
+import logging
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
+
+logger = logging.getLogger(__name__)
 
 from app.db.database import get_db
 from app.db.repositories import (
@@ -50,7 +53,7 @@ def _get_semester_start_dt(
     user_id: str = "legacy",
 ) -> Optional[datetime]:
     """Get semester start date from database settings if configured"""
-    val = override
+    val = override if isinstance(override, str) else None
     if not val:
         setting = db.query(Setting).filter(
             Setting.key == f"classroom:{user_id}:semester_start_date"
@@ -67,7 +70,10 @@ def _get_semester_start_dt(
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt
         except Exception:
-            raise HTTPException(status_code=400, detail="Invalid 'since' date format. Use YYYY-MM-DD or ISO 8601.")
+            if override:
+                raise HTTPException(status_code=400, detail="Invalid 'since' date format. Use YYYY-MM-DD or ISO 8601.")
+            logger.warning("Invalid semester_start_date setting for user %s: %s", user_id, val)
+            return None
     return None
 
 
@@ -191,17 +197,69 @@ def get_dashboard_overview(
     active_crew_runs = []
     ready_for_review_solutions = []
 
+    now_utc = datetime.now(timezone.utc)
+    stale_threshold = timedelta(minutes=20)
+
     for a in data["all_assignments"]:
         sol = solution_by_assign.get(a.id)
-        if a.status == AssignmentStatus.GENERATING or (sol and not sol.validated_content and sol.ai_provider and not sol.validation_errors):
+
+        # An assignment is ONLY in an active solver run if its status is GENERATING
+        # and it has not timed out (inactive for > 20 mins)
+        is_generating = False
+        crew_progress = None
+
+        if a.status == AssignmentStatus.GENERATING:
             progress_key = f"assignment_crew_progress_{a.id}"
             progress_row = db.query(Setting).filter(Setting.key == progress_key).first()
-            crew_progress = None
             if progress_row and progress_row.value:
                 try:
                     crew_progress = json.loads(progress_row.value)
                 except Exception:
                     crew_progress = None
+
+            # Determine last activity timestamp
+            last_activity = sol.generated_at if (sol and sol.generated_at) else (a.updated_at or a.created_at)
+            if isinstance(crew_progress, dict) and crew_progress.get("updated_at"):
+                try:
+                    updated_dt = datetime.fromisoformat(crew_progress["updated_at"])
+                    if updated_dt.tzinfo is None:
+                        updated_dt = updated_dt.replace(tzinfo=timezone.utc)
+                    if last_activity:
+                        if last_activity.tzinfo is None:
+                            last_activity = last_activity.replace(tzinfo=timezone.utc)
+                        last_activity = max(last_activity, updated_dt)
+                    else:
+                        last_activity = updated_dt
+                except Exception:
+                    pass
+
+            if last_activity and last_activity.tzinfo is None:
+                last_activity = last_activity.replace(tzinfo=timezone.utc)
+
+            # Auto-recover stale generating assignments
+            if last_activity and (now_utc - last_activity) > stale_threshold:
+                logger.info("Auto-recovering stale GENERATING assignment %s (inactive > 20m)", a.id)
+                a.status = AssignmentStatus.DRAFT
+                if sol and not sol.validated_content:
+                    sol.validation_errors = "Generation session timed out."
+                try:
+                    db.commit()
+                except Exception as commit_err:
+                    db.rollback()
+                    logger.warning("Could not commit stale auto-recovery for assignment %s: %s", a.id, commit_err)
+            else:
+                # Check if crew_progress indicates completion or failure
+                is_finished = False
+                if isinstance(crew_progress, dict):
+                    if crew_progress.get("error") or crew_progress.get("status") == "failed":
+                        is_finished = True
+                    elif crew_progress.get("current_step") and crew_progress.get("total_steps"):
+                        if crew_progress["current_step"] >= crew_progress["total_steps"]:
+                            is_finished = True
+                if not is_finished:
+                    is_generating = True
+
+        if is_generating:
             active_crew_runs.append({
                 "assignment_id": a.id,
                 "title": a.title,
@@ -211,7 +269,7 @@ def get_dashboard_overview(
                 "crew_progress": crew_progress,
                 "generated_at": sol.generated_at if sol else None,
             })
-        elif a.status == AssignmentStatus.READY_FOR_REVIEW or (sol and sol.validated_content):
+        elif (a.status == AssignmentStatus.READY_FOR_REVIEW or (sol and sol.validated_content)) and a.status not in (AssignmentStatus.SUBMITTED, AssignmentStatus.APPROVED):
             sub = db.query(Submission).filter(Submission.assignment_id == a.id).first()
             ready_for_review_solutions.append({
                 "assignment_id": a.id,
@@ -481,3 +539,34 @@ def get_assignments_by_status(
         "by_status": by_status,
         "total": len(all_assignments),
     }
+
+
+@router.post("/active-crew-runs/{assignment_id}/dismiss", response_model=dict)
+def dismiss_active_crew_run(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_current_user),
+):
+    """Dismiss or cancel a stuck or unwanted active crew solver run."""
+    user_id = str((user or {}).get("id") or "dev_student_user")
+    assignment = db.query(Assignment).filter(
+        Assignment.id == assignment_id,
+        or_(Assignment.user_id == user_id, Assignment.user_id.is_(None))
+    ).first()
+    if not assignment:
+        assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    if assignment.status == AssignmentStatus.GENERATING:
+        assignment.status = AssignmentStatus.DRAFT
+
+    sol = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+    if sol and not sol.validated_content:
+        sol.validation_errors = "Solver run dismissed by user."
+
+    progress_key = f"assignment_crew_progress_{assignment_id}"
+    db.query(Setting).filter(Setting.key == progress_key).delete()
+    db.commit()
+
+    return {"success": True, "message": "Assignment solver run dismissed successfully."}
