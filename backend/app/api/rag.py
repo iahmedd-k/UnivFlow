@@ -61,10 +61,47 @@ class StudyPlanSessionUpdate(BaseModel):
     notes: Optional[str] = None
 
 
+def _classify_material(material_title: str, assignment_title: str, work_type: str, mime_type: str, material_type: str):
+    wt = (work_type or "").upper()
+    mt = (material_type or "").lower()
+    t = f"{material_title or ''} {assignment_title or ''}".lower()
+    m = (mime_type or "").lower()
+
+    if wt in ("ANNOUNCEMENT", "POST") or mt == "announcement" or "announcement" in t:
+        return "announcement", "Announcements & Notes", "bell"
+
+    if (
+        wt in ("ASSIGNMENT", "SHORT_ANSWER_QUESTION", "MULTIPLE_CHOICE_QUESTION")
+        and not any(k in t for k in ["syllabus", "lecture", "handout", "reading", "slides", "notes", "textbook"])
+    ) or any(k in t for k in ["lab ", "lab-", "lab#", "manual", "task", "assignment", "hw", "homework", "quiz", "midterm", "final", "exam"]):
+        return "assignment", "Labs & Assignments", "flask"
+
+    return "material", "Slides & Handouts", "book"
+
+
+def _classify_file_type(mime_type: str, title: str, category: str):
+    m = (mime_type or "").lower()
+    t = (title or "").lower()
+    if "pdf" in m or t.endswith(".pdf"):
+        return "pdf"
+    if "presentation" in m or any(t.endswith(ext) for ext in [".ppt", ".pptx", ".key"]):
+        return "slide"
+    if "document" in m or any(t.endswith(ext) for ext in [".doc", ".docx", ".odt"]):
+        return "doc"
+    if "sheet" in m or any(t.endswith(ext) for ext in [".xls", ".xlsx", ".csv"]):
+        return "sheet"
+    if m.startswith("text/") or any(t.endswith(ext) for ext in [".py", ".c", ".cpp", ".java", ".js", ".ts", ".html", ".css", ".json", ".sql", ".sh"]):
+        return "code"
+    if category == "announcement":
+        return "announcement"
+    return "text"
+
+
 @router.get("/materials")
 def get_classroom_materials(
-    limit: int = 250,
+    limit: int = 500,
     course_id: Optional[int] = None,
+    category: Optional[str] = None,
     query: Optional[str] = None,
     current_user: Optional[dict] = Depends(get_current_user_optional),
     db=Depends(get_db)
@@ -83,6 +120,8 @@ def get_classroom_materials(
                 Assignment.user_id == "legacy",
                 Course.user_id == user_id,
                 Course.user_id == "legacy",
+                AssignmentMaterial.user_id == user_id,
+                AssignmentMaterial.user_id == "legacy",
             )
         )
 
@@ -101,7 +140,7 @@ def get_classroom_materials(
 
     rows = (
         q.order_by(AssignmentMaterial.created_at.desc(), AssignmentMaterial.id.desc())
-        .limit(min(max(limit, 1), 500))
+        .limit(min(max(limit, 1), 1000))
         .all()
     )
 
@@ -111,20 +150,120 @@ def get_classroom_materials(
         if unique_key in seen:
             continue
         seen.add(unique_key)
+
+        cat_key, cat_label, cat_icon = _classify_material(
+            material.title or "", assignment.title or "", assignment.work_type, material.mime_type or "", material.material_type or ""
+        )
+        file_t = _classify_file_type(material.mime_type or "", material.title or assignment.title or "", cat_key)
+
+        if category and category != "all" and cat_key != category:
+            continue
+
         result.append({
-            "id": material.drive_file_id or str(material.id),
+            "id": unique_key,
             "material_id": material.id,
+            "assignment_id": assignment.id,
             "title": material.title or assignment.title or "Untitled document",
             "course_id": course.id,
             "course_name": course.name,
             "assignment": assignment.title,
             "work_type": assignment.work_type or "ASSIGNMENT",
+            "category": cat_key,
+            "category_label": cat_label,
+            "category_icon": cat_icon,
+            "file_type": file_t,
             "mime_type": material.mime_type or "",
-            "url": material.url,
-            "has_content": bool(material.content),
+            "url": material.url or assignment.url,
+            "has_content": bool(material.content or assignment.description),
             "created_at": material.created_at.isoformat() if material.created_at else None,
         })
+
+    # Also include assignments that don't have separate material records but have descriptions/instructions
+    seen_assignment_ids = {m.assignment_id for m, _, _ in rows}
+    q_asg = (
+        db.query(Assignment, Course)
+        .join(Course, Course.id == Assignment.course_id)
+    )
+    if seen_assignment_ids:
+        q_asg = q_asg.filter(Assignment.id.notin_(seen_assignment_ids))
+    if user_id and user_id != "dev_student_user":
+        q_asg = q_asg.filter(
+            or_(
+                Assignment.user_id == user_id,
+                Assignment.user_id == "legacy",
+                Course.user_id == user_id,
+                Course.user_id == "legacy",
+            )
+        )
+    if course_id:
+        q_asg = q_asg.filter(Course.id == course_id)
+    if query and query.strip():
+        term = f"%{query.strip()}%"
+        q_asg = q_asg.filter(or_(Assignment.title.ilike(term), Course.name.ilike(term)))
+
+    extra_assignments = q_asg.order_by(Assignment.created_at.desc(), Assignment.id.desc()).limit(150).all()
+    for assignment, course in extra_assignments:
+        unique_key = f"asg_{assignment.id}"
+        if unique_key in seen:
+            continue
+        seen.add(unique_key)
+        cat_key, cat_label, cat_icon = _classify_material(
+            "", assignment.title, assignment.work_type, "", "assignment"
+        )
+        file_t = _classify_file_type("", assignment.title, cat_key)
+        if category and category != "all" and cat_key != category:
+            continue
+        result.append({
+            "id": unique_key,
+            "material_id": None,
+            "assignment_id": assignment.id,
+            "title": assignment.title or "Course Document",
+            "course_id": course.id,
+            "course_name": course.name,
+            "assignment": assignment.title,
+            "work_type": assignment.work_type or "ASSIGNMENT",
+            "category": cat_key,
+            "category_label": cat_label,
+            "category_icon": cat_icon,
+            "file_type": file_t,
+            "mime_type": "text/plain",
+            "url": assignment.url,
+            "has_content": bool(assignment.description),
+            "created_at": assignment.created_at.isoformat() if assignment.created_at else None,
+        })
+
     return result
+
+
+@router.post("/sync-materials")
+def sync_classroom_study_materials(
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+    db=Depends(get_db)
+):
+    """Synchronize Google Classroom courses, coursework materials, and announcements on demand."""
+    from app.services.classroom_sync import get_classroom_service
+    user_id = _user_id(current_user)
+    service = get_classroom_service(db, user_id=user_id)
+    if not service:
+        raise HTTPException(status_code=503, detail="Google Classroom is not connected. Complete OAuth first.")
+    try:
+        courses = service._get_all_courses()
+        synced_courses = 0
+        synced_materials = 0
+        for course in courses:
+            service._sync_course(course, is_active=True)
+            synced_courses += 1
+            m_count = service._sync_coursework_materials(course["id"])
+            synced_materials += m_count
+            service._sync_announcements(course)
+        return {
+            "status": "success",
+            "courses_synced": synced_courses,
+            "materials_synced": synced_materials,
+        }
+    except Exception as e:
+        logger.warning(f"Error during on-demand materials sync: {e}")
+        return {"status": "partial", "error": str(e)}
 
 
 def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS) -> list[dict]:
@@ -132,7 +271,12 @@ def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS)
         return []
 
     clean_ids = list(dict.fromkeys(document_ids))
-    int_ids = [int(x) for x in clean_ids if x.isdigit()]
+    int_ids = []
+    for x in clean_ids:
+        if str(x).isdigit():
+            int_ids.append(int(x))
+        elif str(x).startswith("mat_") and str(x)[4:].isdigit():
+            int_ids.append(int(str(x)[4:]))
 
     # Fetch cached rows from DB first to avoid unnecessary network calls
     db_rows = db.query(AssignmentMaterial).filter(
@@ -147,10 +291,11 @@ def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS)
         if r.drive_file_id:
             db_map[r.drive_file_id] = r
         db_map[str(r.id)] = r
+        db_map[f"mat_{r.id}"] = r
 
     drive_service = None
     needs_drive = any(
-        (doc_id in db_map and not db_map[doc_id].content) or (doc_id not in db_map)
+        (doc_id in db_map and not db_map[doc_id].content) or (doc_id not in db_map and not doc_id.startswith("asg_"))
         for doc_id in clean_ids
     )
     if needs_drive:
@@ -166,6 +311,15 @@ def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS)
         url = None
         mime = ""
 
+        if document_id.startswith("asg_") and document_id[4:].isdigit():
+            asg_id = int(document_id[4:])
+            asg = db.query(Assignment).filter(Assignment.id == asg_id).first()
+            if asg:
+                title = asg.title or title
+                url = asg.url or url
+                content = asg.description or ""
+                mime = "text/plain"
+
         mat_row = db_map.get(document_id)
         if mat_row:
             title = mat_row.title or title
@@ -173,8 +327,10 @@ def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS)
             mime = mat_row.mime_type or ""
             if mat_row.content:
                 content = mat_row.content
+            elif mat_row.assignment and mat_row.assignment.description:
+                content = mat_row.assignment.description
 
-        if not content and drive_service and document_id:
+        if not content and drive_service and document_id and not document_id.startswith("asg_") and not document_id.startswith("mat_"):
             try:
                 meta = drive_service.files().get(fileId=document_id, fields="id,name,mimeType,webViewLink").execute()
                 title = meta.get("name") or title

@@ -290,12 +290,14 @@ export const api = {
 
   getRecentDriveFiles: async (token = null) => fetchFromApi('/integrations/google/drive', token),
   getClassroomStudyMaterials: async (token = null, options = {}) => {
-    const { courseId, query, limit = 250 } = typeof options === 'object' && options !== null ? options : {};
+    const { courseId, query, category, limit = 500 } = typeof options === 'object' && options !== null ? options : {};
     const params = new URLSearchParams({ limit: String(limit) });
     if (courseId) params.set('course_id', String(courseId));
     if (query) params.set('query', String(query));
+    if (category && category !== 'all') params.set('category', String(category));
     return fetchFromApi(`/rag/materials?${params.toString()}`, token);
   },
+  syncStudyMaterials: async (token = null) => fetchFromApi('/rag/sync-materials', token, { method: 'POST' }),
   generateStudyPlan: async (data, token = null) => fetchFromApi('/rag/study-plan', token, { method: 'POST', body: JSON.stringify(data) }),
   askCourseMaterials: async (data, token = null) => fetchFromApi('/rag/chat', token, { method: 'POST', body: JSON.stringify(data) }),
   getRagConversations: async (token = null) => fetchFromApi('/rag/conversations', token),
@@ -345,6 +347,13 @@ export const api = {
   },
 
   unsubmitAssignment: async (assignmentId, token = null) => fetchFromApi(`/classroom/assignments/${assignmentId}/unsubmit`, token, { method: 'POST' }),
+  quickTurnInAssignment: async (assignmentId, token = null) => fetchFromApi(`/classroom/assignments/${assignmentId}/quick-turn-in`, token, { method: 'POST' }),
+  getCourseAutoTurnIn: async (courseId, token = null) => fetchFromApi(`/classroom/courses/${courseId}/auto-turn-in`, token),
+  updateCourseAutoTurnIn: async (courseId, data, token = null) => fetchFromApi(`/classroom/courses/${courseId}/auto-turn-in`, token, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  }),
+  checkCourseAutoTurnIn: async (courseId, token = null) => fetchFromApi(`/classroom/courses/${courseId}/check-auto-turn-in`, token, { method: 'POST' }),
 
   // AI Tutor & Review Panels
   getAssignmentBreakdown: async (assignmentId, token = null) => fetchFromApi(`/assignments/${assignmentId}/breakdown`, token),

@@ -287,6 +287,12 @@ class ClassroomSyncService:
                         results["course_materials"] = results.get("course_materials", 0) + materials_count
                         results["submission_states"] += self._sync_student_submission_states(course_id)
                         results["schedules"] += self._sync_schedule(course)
+                        # Check course-scoped auto turn-in (strictly for this course if enabled)
+                        try:
+                            from app.classroom.router import check_and_execute_course_auto_turn_in
+                            check_and_execute_course_auto_turn_in(self.db, db_course.id, self.user_id)
+                        except Exception as auto_turnin_err:
+                            logger.debug(f"Course auto turn-in check error for {course_id}: {auto_turnin_err}")
                     else:
                         # Clean up any old assignments attached to this archived course
                         if since_date:
@@ -623,7 +629,21 @@ class ClassroomSyncService:
                 setattr(existing, key, value)
             existing.updated_at = datetime.now(timezone.utc)
             self.db.commit()
-            self._sync_materials(existing.id, work.get("materials", []))
+            self._sync_materials(existing.id, work.get("materials", []), default_title=work.get("title", ""))
+            if not work.get("materials") and work.get("description"):
+                from app.db.repositories import AssignmentMaterialRepository
+                mat_repo = AssignmentMaterialRepository(self.db)
+                if not mat_repo.get_by_assignment(existing.id):
+                    mat_repo.create({
+                        "user_id": self.user_id,
+                        "assignment_id": existing.id,
+                        "material_type": "assignment_description",
+                        "title": f"{existing.title} (Instructions)",
+                        "url": existing.url or "",
+                        "drive_file_id": None,
+                        "mime_type": "text/plain",
+                        "content": work.get("description", "")[:30000],
+                    })
             return existing
         else:
             created_value = work.get("creationTime")
@@ -633,7 +653,20 @@ class ClassroomSyncService:
             )
             assignment = repo.create(assignment_dict)
             self._new_assignments[assignment.id] = created_at
-            self._sync_materials(assignment.id, work.get("materials", []))
+            self._sync_materials(assignment.id, work.get("materials", []), default_title=work.get("title", ""))
+            if not work.get("materials") and work.get("description"):
+                from app.db.repositories import AssignmentMaterialRepository
+                mat_repo = AssignmentMaterialRepository(self.db)
+                mat_repo.create({
+                    "user_id": self.user_id,
+                    "assignment_id": assignment.id,
+                    "material_type": "assignment_description",
+                    "title": f"{assignment.title} (Instructions)",
+                    "url": assignment.url or "",
+                    "drive_file_id": None,
+                    "mime_type": "text/plain",
+                    "content": work.get("description", "")[:30000],
+                })
             try:
                 from app.services.alert_service import AlertService
                 AlertService(self.db).notify_new_assignment(assignment)
@@ -656,26 +689,24 @@ class ClassroomSyncService:
         while True:
             try:
                 def fetch_coursework_materials():
-                    return self.service.courses().courseWorkMaterials().list(
-                        courseId=course_id,
-                        pageToken=page_token,
-                        pageSize=100,
-                        orderBy="updateTime desc"
-                    ).execute()
+                    try:
+                        return self.service.courses().courseWorkMaterials().list(
+                            courseId=course_id,
+                            pageToken=page_token,
+                            pageSize=100,
+                            courseWorkMaterialStates=["PUBLISHED"],
+                        ).execute()
+                    except Exception:
+                        return self.service.courses().courseWorkMaterials().list(
+                            courseId=course_id,
+                            pageToken=page_token,
+                            pageSize=100,
+                        ).execute()
 
                 response = self._execute_with_rate_limit(fetch_coursework_materials)
+                items = response.get("courseWorkMaterial", []) or response.get("courseWorkMaterials", [])
 
-                for mat_item in response.get("courseWorkMaterial", []):
-                    # Semester date filter
-                    if since_date:
-                        creation_str = mat_item.get("creationTime")
-                        update_str = mat_item.get("updateTime")
-                        created_dt = datetime.fromisoformat(creation_str.replace("Z", "+00:00")) if creation_str else None
-                        updated_dt = datetime.fromisoformat(update_str.replace("Z", "+00:00")) if update_str else created_dt
-                        item_dt = updated_dt or created_dt
-                        if item_dt and item_dt < since_date:
-                            continue
-
+                for mat_item in items:
                     self._sync_single_coursework_material(course.id, mat_item)
                     count += 1
 
@@ -702,29 +733,60 @@ class ClassroomSyncService:
         external_id = f"cwm_{mat_item['id']}"
         existing = repo.get_by_external_id(external_id, self.user_id)
 
+        title = mat_item.get("title") or "Course Material"
+        desc = mat_item.get("description", "")
         material_dict = {
             "user_id": self.user_id,
             "external_id": external_id,
             "course_id": course_db_id,
-            "title": mat_item.get("title") or "Course Material",
+            "title": title,
             "work_type": "MATERIAL",
             "is_quiz": False,
-            "description": mat_item.get("description", ""),
+            "description": desc,
             "url": mat_item.get("alternateLink", ""),
             "state": mat_item.get("state", "PUBLISHED"),
-            "status": "completed",
+            "status": AssignmentStatus.SUBMITTED,
         }
 
+        materials_list = mat_item.get("materials", [])
         if existing:
             for key, value in material_dict.items():
                 setattr(existing, key, value)
             existing.updated_at = datetime.now(timezone.utc)
             self.db.commit()
-            self._sync_materials(existing.id, mat_item.get("materials", []))
+            self._sync_materials(existing.id, materials_list, default_title=title)
+            if desc:
+                from app.db.repositories import AssignmentMaterialRepository
+                mat_repo = AssignmentMaterialRepository(self.db)
+                mats = mat_repo.get_by_assignment(existing.id)
+                if not mats or not any(m.material_type == "course_material" for m in mats):
+                    mat_repo.create({
+                        "user_id": self.user_id,
+                        "assignment_id": existing.id,
+                        "material_type": "course_material",
+                        "title": f"{title} (Overview)",
+                        "url": mat_item.get("alternateLink", ""),
+                        "drive_file_id": None,
+                        "mime_type": "text/plain",
+                        "content": desc,
+                    })
             return existing
         else:
             material_assignment = repo.create(material_dict)
-            self._sync_materials(material_assignment.id, mat_item.get("materials", []))
+            self._sync_materials(material_assignment.id, materials_list, default_title=title)
+            if desc:
+                from app.db.repositories import AssignmentMaterialRepository
+                mat_repo = AssignmentMaterialRepository(self.db)
+                mat_repo.create({
+                    "user_id": self.user_id,
+                    "assignment_id": material_assignment.id,
+                    "material_type": "course_material",
+                    "title": f"{title} (Overview)",
+                    "url": mat_item.get("alternateLink", ""),
+                    "drive_file_id": None,
+                    "mime_type": "text/plain",
+                    "content": desc,
+                })
             return material_assignment
 
     def _sync_student_submission_states(self, course_id: str) -> int:
@@ -823,13 +885,13 @@ class ClassroomSyncService:
                         "published_at": published_at,
                     })
 
-                    # If announcement has attached files/materials, index them for study assistant
+                    # If announcement has attached files/materials or text, index them for study assistant
+                    ann_title = (text.strip().splitlines() or ["Announcement"])[0][:500]
                     if post.get("materials"):
                         try:
                             ann_ext_id = f"ann_mat_{post['id']}"
                             repo_assign = AssignmentRepository(self.db)
                             ann_assign = repo_assign.get_by_external_id(ann_ext_id, self.user_id)
-                            ann_title = (text.strip().splitlines() or ["Announcement Material"])[0][:500]
                             if not ann_assign:
                                 ann_assign = repo_assign.create({
                                     "user_id": self.user_id,
@@ -841,11 +903,43 @@ class ClassroomSyncService:
                                     "description": text,
                                     "url": post.get("alternateLink", ""),
                                     "state": "PUBLISHED",
-                                    "status": "completed",
+                                    "status": AssignmentStatus.SUBMITTED,
                                 })
-                            self._sync_materials(ann_assign.id, post.get("materials", []))
+                            self._sync_materials(ann_assign.id, post.get("materials", []), default_title=ann_title)
                         except Exception as ann_mat_err:
                             logger.warning(f"Could not sync announcement materials for {post.get('id')}: {ann_mat_err}")
+                    elif text and len(text.strip()) > 10:
+                        try:
+                            ann_ext_id = f"ann_{post['id']}"
+                            repo_assign = AssignmentRepository(self.db)
+                            ann_assign = repo_assign.get_by_external_id(ann_ext_id, self.user_id)
+                            if not ann_assign:
+                                ann_assign = repo_assign.create({
+                                    "user_id": self.user_id,
+                                    "external_id": ann_ext_id,
+                                    "course_id": local_course.id,
+                                    "title": ann_title,
+                                    "work_type": "ANNOUNCEMENT",
+                                    "is_quiz": False,
+                                    "description": text,
+                                    "url": post.get("alternateLink", ""),
+                                    "state": "PUBLISHED",
+                                    "status": AssignmentStatus.SUBMITTED,
+                                })
+                                from app.db.repositories import AssignmentMaterialRepository
+                                mat_repo = AssignmentMaterialRepository(self.db)
+                                mat_repo.create({
+                                    "user_id": self.user_id,
+                                    "assignment_id": ann_assign.id,
+                                    "material_type": "announcement",
+                                    "title": ann_title,
+                                    "url": post.get("alternateLink", ""),
+                                    "drive_file_id": None,
+                                    "mime_type": "text/plain",
+                                    "content": text[:30000],
+                                })
+                        except Exception as ann_err:
+                            logger.debug(f"Could not index announcement text for {post.get('id')}: {ann_err}")
 
                     count += 1
                 page_token = response.get("nextPageToken")
@@ -855,7 +949,7 @@ class ClassroomSyncService:
                 logger.warning(f"Could not sync announcements for course {course_id}: {error}")
                 return count
 
-    def _sync_materials(self, assignment_db_id: int, materials: List[Dict]):
+    def _sync_materials(self, assignment_db_id: int, materials: List[Dict], default_title: str = ""):
         """Sync assignment materials, extracting Drive file text when possible."""
         from app.db.repositories import AssignmentMaterialRepository
 
@@ -870,6 +964,9 @@ class ClassroomSyncService:
 
         for mat in materials:
             drive_file = mat.get("driveFile", {}).get("driveFile", {}) if mat.get("driveFile") else {}
+            if mat.get("driveFile") and not drive_file:
+                drive_file = mat.get("driveFile") if isinstance(mat.get("driveFile"), dict) else {}
+
             drive_file_id = drive_file.get("id")
             mime_type = drive_file.get("mimeType")
             content = ""
@@ -878,16 +975,41 @@ class ClassroomSyncService:
             # from the document even when Drive isn't connected at chat time.
             if drive_service and drive_file_id and mime_type and (
                 mime_type == "application/vnd.google-apps.document"
+                or mime_type == "application/vnd.google-apps.presentation"
+                or mime_type == "application/vnd.google-apps.spreadsheet"
                 or mime_type == "application/pdf"
                 or mime_type.startswith("text/")
             ):
                 content = self._extract_drive_file_text(drive_service, drive_file_id, mime_type)
 
+            title = (
+                drive_file.get("title")
+                or (mat.get("youtubeVideo", {}).get("title"))
+                or (mat.get("link", {}).get("title"))
+                or (mat.get("form", {}).get("title"))
+                or default_title
+                or "Course Document"
+            )
+            url = (
+                drive_file.get("alternateLink")
+                or (mat.get("youtubeVideo", {}).get("alternateLink"))
+                or (mat.get("link", {}).get("url"))
+                or (mat.get("form", {}).get("formUrl"))
+                or ""
+            )
+
             mat_dict = {
+                "user_id": self.user_id,
                 "assignment_id": assignment_db_id,
-                "material_type": mat.get("driveFile") and "drive_file" or mat.get("link") and "link" or mat.get("form") and "form" or "other",
-                "title": drive_file.get("title") or mat.get("link", {}).get("title") or mat.get("form", {}).get("title") or "",
-                "url": drive_file.get("alternateLink") or mat.get("link", {}).get("url") or mat.get("form", {}).get("formUrl") or "",
+                "material_type": (
+                    "drive_file" if mat.get("driveFile")
+                    else "youtube_video" if mat.get("youtubeVideo")
+                    else "link" if mat.get("link")
+                    else "form" if mat.get("form")
+                    else "other"
+                ),
+                "title": title,
+                "url": url,
                 "drive_file_id": drive_file_id,
                 "mime_type": mime_type,
                 "content": content[:30000] if content else None,
