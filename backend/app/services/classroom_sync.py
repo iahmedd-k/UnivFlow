@@ -155,12 +155,18 @@ class ClassroomSyncService:
             if mime_type == "application/vnd.google-apps.document":
                 data = drive_service.files().export_media(fileId=file_id, mimeType="text/plain").execute()
                 return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+            if mime_type == "application/vnd.google-apps.presentation":
+                data = drive_service.files().export_media(fileId=file_id, mimeType="text/plain").execute()
+                return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+            if mime_type == "application/vnd.google-apps.spreadsheet":
+                data = drive_service.files().export_media(fileId=file_id, mimeType="text/csv").execute()
+                return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
             if mime_type == "application/pdf":
                 data = drive_service.files().get_media(fileId=file_id).execute()
                 from pypdf import PdfReader
                 pdf = PdfReader(io.BytesIO(data if isinstance(data, bytes) else bytes(data)))
                 return "\n".join(page.extract_text() or "" for page in pdf.pages)
-            if mime_type and mime_type.startswith("text/"):
+            if mime_type and (mime_type.startswith("text/") or mime_type in ("application/json", "application/javascript")):
                 data = drive_service.files().get_media(fileId=file_id).execute()
                 return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
         except Exception as e:
@@ -255,8 +261,9 @@ class ClassroomSyncService:
                     # Create the account-owned course before upserting its coursework.
                     db_course = self._sync_course(course, is_active=True)
 
-                    # 1. Sync coursework and announcements with since_date filter
+                    # 1. Sync coursework, materials, and announcements with since_date filter
                     assignments_count = self._sync_coursework(course_id, since_date=since_date)
+                    materials_count = self._sync_coursework_materials(course_id, since_date=since_date)
                     announcements_count = self._sync_announcements(course, since_date=since_date)
                     
                     # Determine if course has active activity in current semester
@@ -266,7 +273,7 @@ class ClassroomSyncService:
                     is_active_semester = True
                     if since_date:
                         is_updated_in_semester = c_update_dt and c_update_dt >= since_date
-                        has_semester_items = (assignments_count > 0) or (announcements_count > 0)
+                        has_semester_items = (assignments_count > 0) or (announcements_count > 0) or (materials_count > 0)
                         if not is_updated_in_semester and not has_semester_items:
                             is_active_semester = False
 
@@ -277,6 +284,7 @@ class ClassroomSyncService:
                         results["courses"] += 1
                         results["assignments"] += assignments_count
                         results["announcements"] += announcements_count
+                        results["course_materials"] = results.get("course_materials", 0) + materials_count
                         results["submission_states"] += self._sync_student_submission_states(course_id)
                         results["schedules"] += self._sync_schedule(course)
                     else:
@@ -633,6 +641,92 @@ class ClassroomSyncService:
                 logger.warning(f"Could not dispatch new assignment notification for {assignment.id}: {e}")
             return assignment
 
+    def _sync_coursework_materials(self, course_id: str, since_date: Optional[datetime] = None) -> int:
+        """Sync course documents, slides, handouts, and reading materials from Classroom courseWorkMaterials."""
+        course = self.db.query(Course).filter(
+            Course.external_id == course_id,
+            Course.user_id == self.user_id,
+        ).first()
+        if not course:
+            return 0
+
+        count = 0
+        page_token = None
+
+        while True:
+            try:
+                def fetch_coursework_materials():
+                    return self.service.courses().courseWorkMaterials().list(
+                        courseId=course_id,
+                        pageToken=page_token,
+                        pageSize=100,
+                        orderBy="updateTime desc"
+                    ).execute()
+
+                response = self._execute_with_rate_limit(fetch_coursework_materials)
+
+                for mat_item in response.get("courseWorkMaterial", []):
+                    # Semester date filter
+                    if since_date:
+                        creation_str = mat_item.get("creationTime")
+                        update_str = mat_item.get("updateTime")
+                        created_dt = datetime.fromisoformat(creation_str.replace("Z", "+00:00")) if creation_str else None
+                        updated_dt = datetime.fromisoformat(update_str.replace("Z", "+00:00")) if update_str else created_dt
+                        item_dt = updated_dt or created_dt
+                        if item_dt and item_dt < since_date:
+                            continue
+
+                    self._sync_single_coursework_material(course.id, mat_item)
+                    count += 1
+
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    break
+
+            except HttpError as e:
+                status = getattr(e.resp, "status", None)
+                if status in (403, 404):
+                    logger.info(f"courseWorkMaterials not accessible for course {course_id} (HTTP {status}): {e.reason}")
+                else:
+                    logger.warning(f"Error fetching courseWorkMaterials for {course_id}: {e}")
+                break
+            except Exception as e:
+                logger.warning(f"Unexpected error in _sync_coursework_materials for {course_id}: {e}")
+                break
+
+        return count
+
+    def _sync_single_coursework_material(self, course_db_id: int, mat_item: Dict) -> Assignment:
+        """Sync a single courseWorkMaterial record and its attached files."""
+        repo = AssignmentRepository(self.db)
+        external_id = f"cwm_{mat_item['id']}"
+        existing = repo.get_by_external_id(external_id, self.user_id)
+
+        material_dict = {
+            "user_id": self.user_id,
+            "external_id": external_id,
+            "course_id": course_db_id,
+            "title": mat_item.get("title") or "Course Material",
+            "work_type": "MATERIAL",
+            "is_quiz": False,
+            "description": mat_item.get("description", ""),
+            "url": mat_item.get("alternateLink", ""),
+            "state": mat_item.get("state", "PUBLISHED"),
+            "status": "completed",
+        }
+
+        if existing:
+            for key, value in material_dict.items():
+                setattr(existing, key, value)
+            existing.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
+            self._sync_materials(existing.id, mat_item.get("materials", []))
+            return existing
+        else:
+            material_assignment = repo.create(material_dict)
+            self._sync_materials(material_assignment.id, mat_item.get("materials", []))
+            return material_assignment
+
     def _sync_student_submission_states(self, course_id: str) -> int:
         """Update this account's own turned-in/returned state for every course item."""
         course = self.db.query(Course).filter(
@@ -728,6 +822,31 @@ class ClassroomSyncService:
                         "fingerprint": fingerprint,
                         "published_at": published_at,
                     })
+
+                    # If announcement has attached files/materials, index them for study assistant
+                    if post.get("materials"):
+                        try:
+                            ann_ext_id = f"ann_mat_{post['id']}"
+                            repo_assign = AssignmentRepository(self.db)
+                            ann_assign = repo_assign.get_by_external_id(ann_ext_id, self.user_id)
+                            ann_title = (text.strip().splitlines() or ["Announcement Material"])[0][:500]
+                            if not ann_assign:
+                                ann_assign = repo_assign.create({
+                                    "user_id": self.user_id,
+                                    "external_id": ann_ext_id,
+                                    "course_id": local_course.id,
+                                    "title": ann_title,
+                                    "work_type": "ANNOUNCEMENT",
+                                    "is_quiz": False,
+                                    "description": text,
+                                    "url": post.get("alternateLink", ""),
+                                    "state": "PUBLISHED",
+                                    "status": "completed",
+                                })
+                            self._sync_materials(ann_assign.id, post.get("materials", []))
+                        except Exception as ann_mat_err:
+                            logger.warning(f"Could not sync announcement materials for {post.get('id')}: {ann_mat_err}")
+
                     count += 1
                 page_token = response.get("nextPageToken")
                 if not page_token:

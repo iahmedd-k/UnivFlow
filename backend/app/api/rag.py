@@ -32,7 +32,7 @@ router = APIRouter(prefix="/rag", tags=["RAG"])
 
 class ChatRequest(BaseModel):
     document_id: str | None = None
-    document_ids: list[str] = Field(default_factory=list, max_length=12)
+    document_ids: list[str] = Field(default_factory=list, max_length=100)
     query: str
     syllabus: str | None = None
     # Previous turns so the assistant can answer in conversation context.
@@ -45,7 +45,7 @@ class ChatRequest(BaseModel):
 
 class StudyPlanRequest(BaseModel):
     syllabus: str = Field(min_length=10, max_length=12000)
-    document_ids: list[str] = Field(default_factory=list, max_length=12)
+    document_ids: list[str] = Field(default_factory=list, max_length=100)
     exam_title: str | None = Field(default=None, max_length=300)
     exam_date: str | None = Field(default=None, max_length=30)
     start_date: str | None = Field(default=None, max_length=30)
@@ -62,106 +62,167 @@ class StudyPlanSessionUpdate(BaseModel):
 
 
 @router.get("/materials")
-def get_classroom_materials(limit: int = 100, db=Depends(get_db)):
-    rows = (db.query(AssignmentMaterial, Assignment, Course).join(Assignment, Assignment.id == AssignmentMaterial.assignment_id)
-            .join(Course, Course.id == Assignment.course_id)
-            .filter(
-                or_(
-                    # Google Drive materials (content fetched lazily from Drive on read)
-                    and_(
-                        AssignmentMaterial.drive_file_id.isnot(None),
-                        or_(
-                            AssignmentMaterial.mime_type.in_(
-                                ["application/vnd.google-apps.document", "application/pdf"]
-                            ),
-                            AssignmentMaterial.mime_type.like("text/%")
-                        )
-                    ),
-                    # Local uploads (content already extracted and stored in DB)
-                    and_(
-                        AssignmentMaterial.drive_file_id.is_(None),
-                        AssignmentMaterial.content.isnot(None)
-                    )
-                )
+def get_classroom_materials(
+    limit: int = 250,
+    course_id: Optional[int] = None,
+    query: Optional[str] = None,
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+    db=Depends(get_db)
+):
+    user_id = _user_id(current_user)
+    q = (
+        db.query(AssignmentMaterial, Assignment, Course)
+        .join(Assignment, Assignment.id == AssignmentMaterial.assignment_id)
+        .join(Course, Course.id == Assignment.course_id)
+    )
+
+    if user_id and user_id != "dev_student_user":
+        q = q.filter(
+            or_(
+                Assignment.user_id == user_id,
+                Assignment.user_id == "legacy",
+                Course.user_id == user_id,
+                Course.user_id == "legacy",
             )
-            .order_by(AssignmentMaterial.created_at.desc()).limit(min(max(limit, 1), 200)).all())
+        )
+
+    if course_id:
+        q = q.filter(Course.id == course_id)
+
+    if query and query.strip():
+        term = f"%{query.strip()}%"
+        q = q.filter(
+            or_(
+                AssignmentMaterial.title.ilike(term),
+                Assignment.title.ilike(term),
+                Course.name.ilike(term),
+            )
+        )
+
+    rows = (
+        q.order_by(AssignmentMaterial.created_at.desc(), AssignmentMaterial.id.desc())
+        .limit(min(max(limit, 1), 500))
+        .all()
+    )
+
     seen, result = set(), []
     for material, assignment, course in rows:
-        if material.drive_file_id in seen and material.drive_file_id is not None:
+        unique_key = material.drive_file_id or f"mat_{material.id}"
+        if unique_key in seen:
             continue
-        if material.drive_file_id is not None:
-            seen.add(material.drive_file_id)
-        result.append({"id": material.drive_file_id or str(material.id), "title": material.title or assignment.title, "course_id": assignment.course_id, "course_name": course.name, "assignment": assignment.title, "mime_type": material.mime_type, "url": material.url})
+        seen.add(unique_key)
+        result.append({
+            "id": material.drive_file_id or str(material.id),
+            "material_id": material.id,
+            "title": material.title or assignment.title or "Untitled document",
+            "course_id": course.id,
+            "course_name": course.name,
+            "assignment": assignment.title,
+            "work_type": assignment.work_type or "ASSIGNMENT",
+            "mime_type": material.mime_type or "",
+            "url": material.url,
+            "has_content": bool(material.content),
+            "created_at": material.created_at.isoformat() if material.created_at else None,
+        })
     return result
 
 
 def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS) -> list[dict]:
     if not document_ids:
         return []
-    
-    materials = []
-    drive_service = None
-    try:
-        drive_service = get_drive_service(db)
-    except Exception as e:
-        # No Google credential connected: we cannot fetch Drive content.
-        # Log once and continue so DB-stored content (local uploads) still works.
-        logger.warning(f"Could not load Google Drive service for RAG: {e}")
 
-    for document_id in dict.fromkeys(document_ids):
+    clean_ids = list(dict.fromkeys(document_ids))
+    int_ids = [int(x) for x in clean_ids if x.isdigit()]
+
+    # Fetch cached rows from DB first to avoid unnecessary network calls
+    db_rows = db.query(AssignmentMaterial).filter(
+        or_(
+            AssignmentMaterial.drive_file_id.in_(clean_ids),
+            AssignmentMaterial.id.in_(int_ids) if int_ids else False
+        )
+    ).all()
+
+    db_map = {}
+    for r in db_rows:
+        if r.drive_file_id:
+            db_map[r.drive_file_id] = r
+        db_map[str(r.id)] = r
+
+    drive_service = None
+    needs_drive = any(
+        (doc_id in db_map and not db_map[doc_id].content) or (doc_id not in db_map)
+        for doc_id in clean_ids
+    )
+    if needs_drive:
+        try:
+            drive_service = get_drive_service(db)
+        except Exception as e:
+            logger.warning(f"Could not load Google Drive service for RAG: {e}")
+
+    materials = []
+    for document_id in clean_ids:
         content = ""
         title = "Course material"
         url = None
+        mime = ""
 
-        if drive_service:
+        mat_row = db_map.get(document_id)
+        if mat_row:
+            title = mat_row.title or title
+            url = mat_row.url or url
+            mime = mat_row.mime_type or ""
+            if mat_row.content:
+                content = mat_row.content
+
+        if not content and drive_service and document_id:
             try:
                 meta = drive_service.files().get(fileId=document_id, fields="id,name,mimeType,webViewLink").execute()
-                title = meta.get("name", "Course material")
-                url = meta.get("webViewLink")
+                title = meta.get("name") or title
+                url = meta.get("webViewLink") or url
                 mime = meta.get("mimeType", "")
+
                 if mime == "application/vnd.google-apps.document":
                     data = drive_service.files().export_media(fileId=document_id, mimeType="text/plain").execute()
                     content = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
-                elif mime == "application/pdf":
+                elif mime == "application/vnd.google-apps.presentation":
+                    data = drive_service.files().export_media(fileId=document_id, mimeType="text/plain").execute()
+                    content = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+                elif mime == "application/vnd.google-apps.spreadsheet":
+                    data = drive_service.files().export_media(fileId=document_id, mimeType="text/csv").execute()
+                    content = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+                elif mime == "application/pdf" or title.lower().endswith(".pdf"):
                     data = drive_service.files().get_media(fileId=document_id).execute()
                     from pypdf import PdfReader
                     pdf = PdfReader(io.BytesIO(data if isinstance(data, bytes) else bytes(data)))
                     content = "\n".join(page.extract_text() or "" for page in pdf.pages)
-                elif mime.startswith("text/"):
+                elif mime.startswith("text/") or title.lower().endswith((".txt", ".md", ".py", ".c", ".cpp", ".java", ".h", ".cs", ".json", ".csv", ".html", ".css", ".js", ".ts")):
                     data = drive_service.files().get_media(fileId=document_id).execute()
                     content = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
 
-                # Cache extracted Drive content to DB so subsequent reads don't
-                # need to re-fetch from the Drive API.
-                if content:
+                if content and mat_row:
                     try:
-                        mat_row = db.query(AssignmentMaterial).filter(
-                            AssignmentMaterial.drive_file_id == document_id
-                        ).first()
-                        if mat_row:
-                            mat_row.content = content[:max_chars]
-                            mat_row.title = mat_row.title or title
-                            mat_row.url = mat_row.url or url
-                            db.add(mat_row)
-                            db.commit()
+                        mat_row.content = content[:max_chars]
+                        mat_row.title = mat_row.title or title
+                        mat_row.url = mat_row.url or url
+                        db.add(mat_row)
+                        db.commit()
                     except Exception as cache_err:
                         db.rollback()
                         logger.warning(f"Could not cache Drive content for {document_id}: {cache_err}")
             except Exception as e:
-                logger.warning(f"Drive API fetch failed for {document_id}: {e}")
+                logger.warning(f"Drive fetch failed for {document_id}: {e}")
 
-        # If content wasn't fetched from Drive, fall back to DB AssignmentMaterial record
-        if not content:
-            mat_row = db.query(AssignmentMaterial).filter(
-                (AssignmentMaterial.drive_file_id == document_id) | (AssignmentMaterial.id == (int(document_id) if document_id.isdigit() else -1))
-            ).first()
-            if mat_row:
-                title = mat_row.title or title
-                url = mat_row.url or url
-                content = mat_row.content or f"Material: {mat_row.title}\nLink: {mat_row.url}"
+        if not content and mat_row and mat_row.url:
+            content = f"Material Title: {title}\nURL: {mat_row.url}"
 
         if title or content:
-            materials.append({"id": document_id, "title": title, "url": url, "content": content[:max_chars]})
+            materials.append({
+                "id": document_id,
+                "title": title,
+                "url": url,
+                "mime_type": mime,
+                "content": (content or "")[:max_chars]
+            })
 
     return materials
 
@@ -565,10 +626,13 @@ async def rag_chat(request: ChatRequest, db=Depends(get_db), clerk_user: Optiona
             context_parts.append(f"User academic context: {request.academic_context}")
         if request.syllabus:
             context_parts.append(f"Exam syllabus: {request.syllabus[:12000]}")
+        max_total_chars = 36000
+        per_doc_limit = max(1500, max_total_chars // max(len(materials), 1))
         for item in materials:
+            snippet = (item.get('content') or '').strip()
             context_parts.append(
                 f"SOURCE DOCUMENT: {item['title']} ({item['id']})\n"
-                f"FULL CONTENT:\n{item['content']}"
+                f"CONTENT:\n{snippet[:per_doc_limit] if snippet else '[Metadata only / no text body extracted]'}"
             )
         context_parts.extend(_retrieve_passages(materials, request.query, limit=8))
         system_prompt = (

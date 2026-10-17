@@ -289,7 +289,13 @@ export const api = {
   },
 
   getRecentDriveFiles: async (token = null) => fetchFromApi('/integrations/google/drive', token),
-  getClassroomStudyMaterials: async (token = null) => fetchFromApi('/rag/materials?limit=12', token),
+  getClassroomStudyMaterials: async (token = null, options = {}) => {
+    const { courseId, query, limit = 250 } = typeof options === 'object' && options !== null ? options : {};
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (courseId) params.set('course_id', String(courseId));
+    if (query) params.set('query', String(query));
+    return fetchFromApi(`/rag/materials?${params.toString()}`, token);
+  },
   generateStudyPlan: async (data, token = null) => fetchFromApi('/rag/study-plan', token, { method: 'POST', body: JSON.stringify(data) }),
   askCourseMaterials: async (data, token = null) => fetchFromApi('/rag/chat', token, { method: 'POST', body: JSON.stringify(data) }),
   getRagConversations: async (token = null) => fetchFromApi('/rag/conversations', token),
