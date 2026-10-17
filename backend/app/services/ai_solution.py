@@ -1236,10 +1236,52 @@ def export_solution_to_google_doc(
             
             # Parse sections and headings
             lines = clean_markdown.splitlines()
-            current_chunk = []
+            current_chunk: List[str] = []
             in_code_fence = False
             fence_lang = ""
             fence_lines = []
+            in_table = False
+            table_lines: List[str] = []
+
+            def flush_chunk():
+                nonlocal current_chunk
+                if current_chunk:
+                    text_block = "\n".join(current_chunk).strip()
+                    if text_block:
+                        docs_service.append_styled_block(doc_id, f"{text_block}\n\n", style_type="NORMAL")
+                    current_chunk = []
+
+            def flush_table():
+                nonlocal in_table, table_lines
+                if not in_table or not table_lines:
+                    in_table = False
+                    table_lines = []
+                    return
+                header_row: List[str] = []
+                data_rows: List[List[str]] = []
+                for tline in table_lines:
+                    raw_cells = [c.strip() for c in tline.strip().strip('|').split('|')]
+                    if all(re.match(r'^:?-+:?$', c) for c in raw_cells if c):
+                        continue
+                    if not header_row:
+                        header_row = raw_cells
+                    else:
+                        data_rows.append(raw_cells)
+
+                if header_row or data_rows:
+                    flush_chunk()
+                    if hasattr(docs_service, "insert_table"):
+                        docs_service.insert_table(doc_id, headers=header_row, rows=data_rows)
+                    else:
+                        fallback_lines = []
+                        if header_row:
+                            fallback_lines.append("• " + " | ".join(header_row))
+                        for r in data_rows:
+                            fallback_lines.append("• " + " — ".join(r))
+                        docs_service.append_styled_block(doc_id, "\n".join(fallback_lines) + "\n\n", style_type="NORMAL")
+
+                in_table = False
+                table_lines = []
 
             for line in lines:
                 h1_match = re.match(r"^#\s+(.+)$", line)
@@ -1247,11 +1289,9 @@ def export_solution_to_google_doc(
                 fence_match = re.match(r"^```([a-zA-Z0-9_\-]*)", line)
 
                 if fence_match:
+                    flush_table()
                     if not in_code_fence:
-                        # Flush preceding normal text
-                        if current_chunk:
-                            docs_service.append_styled_block(doc_id, "\n".join(current_chunk) + "\n\n", style_type="NORMAL")
-                            current_chunk = []
+                        flush_chunk()
                         in_code_fence = True
                         fence_lang = fence_match.group(1).lower().strip()
                         fence_lines = []
@@ -1259,7 +1299,7 @@ def export_solution_to_google_doc(
                         in_code_fence = False
                         code_content = "\n".join(fence_lines).strip()
                         
-                        # If this is a diagram block, check if we have a rendered image for it!
+                        # If this is a diagram block, check if we have Claude's generated PNG image for it!
                         is_drawio = fence_lang in ("drawio", "drawio.xml", "xml", "mxfile", "mxgraph") or ("<mxfile" in code_content or "<mxGraphModel" in code_content)
                         is_diagram = fence_lang in ("mermaid", "plantuml", "graphviz", "dot", "mmd", "puml", "svg") or is_drawio
                         if is_diagram:
@@ -1273,17 +1313,9 @@ def export_solution_to_google_doc(
                                         break
                                     except Exception:
                                         pass
-                            if not matched_png:
-                                from app.services.browser_tool_runner import BrowserToolRunner
-                                try:
-                                    if is_drawio:
-                                        diag_res = BrowserToolRunner.render_drawio_diagram(code_content)
-                                    else:
-                                        diag_res = BrowserToolRunner.render_diagram(fence_lang, code_content)
-                                    if diag_res.get("png_bytes"):
-                                        matched_png = diag_res["png_bytes"]
-                                except Exception as rerr:
-                                    logger.warning(f"On-the-fly diagram render failed: {rerr}")
+
+                            # Diagram images must ONLY be generated directly by Claude as PNG images.
+                            # Manual / dashboard diagram generator fallbacks are strictly disabled.
 
                             if matched_png:
                                 docs_service.insert_image_from_bytes(
@@ -1296,7 +1328,8 @@ def export_solution_to_google_doc(
                                     doc_id,
                                     f"Figure: Visual Educational Diagram Architecture ({diag_filename} attached)\n\n",
                                     style_type="NORMAL",
-                                    italic=True
+                                    italic=True,
+                                    alignment="CENTER",
                                 )
 
                             # Upload the diagram XML as a companion file deliverable to Google Drive
@@ -1332,24 +1365,94 @@ def export_solution_to_google_doc(
                     fence_lines.append(line)
                     continue
 
+                # Table row detection outside code fences
+                if re.match(r'^\s*\|.*\|\s*$', line):
+                    in_table = True
+                    table_lines.append(line)
+                    continue
+                elif in_table:
+                    flush_table()
+
+                # Filter out raw horizontal rules (--- or ***) to prevent ugly hyphen lines
+                if re.match(r'^\s*[-*_]{3,}\s*$', line):
+                    flush_chunk()
+                    continue
+
+                # Intercept Claude's direct markdown PNG images and embed into Google Docs
+                img_match = re.search(r"!\[(.*?)\]\((data:image/[^;]+;base64,[A-Za-z0-9+/=]+|https?://[^\)]+)\)", line)
+                if img_match:
+                    flush_chunk()
+
+                    caption = img_match.group(1).strip() or "Visual Diagram"
+                    img_src = img_match.group(2).strip()
+
+                    if img_src.startswith("data:image"):
+                        try:
+                            b64_data = img_src.split("base64,")[1]
+                            img_bytes = base64.b64decode(b64_data)
+                            safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', caption.lower())[:40] or "claude_diagram"
+                            inserted = docs_service.insert_image_from_bytes(
+                                document_id=doc_id,
+                                image_bytes=img_bytes,
+                                filename=f"{safe_name}.png",
+                                width_pt=460,
+                            )
+                            if inserted:
+                                docs_service.append_styled_block(
+                                    doc_id,
+                                    f"Figure: {caption}\n\n",
+                                    style_type="NORMAL",
+                                    italic=True,
+                                    alignment="CENTER",
+                                )
+                        except Exception as img_err:
+                            logger.warning(f"Failed to insert Claude markdown diagram image into doc: {img_err}")
+                    elif img_src.startswith("http"):
+                        try:
+                            import urllib.request
+                            req = urllib.request.Request(img_src, headers={"User-Agent": "Mozilla/5.0"})
+                            with urllib.request.urlopen(req, timeout=10) as resp:
+                                img_bytes = resp.read()
+                            inserted = docs_service.insert_image_from_bytes(
+                                document_id=doc_id,
+                                image_bytes=img_bytes,
+                                filename="claude_diagram.png",
+                                width_pt=460,
+                            )
+                            if inserted:
+                                docs_service.append_styled_block(
+                                    doc_id,
+                                    f"Figure: {caption}\n\n",
+                                    style_type="NORMAL",
+                                    italic=True,
+                                    alignment="CENTER",
+                                )
+                        except Exception as url_err:
+                            logger.warning(f"Failed to fetch and insert diagram URL image into doc: {url_err}")
+
+                    remaining = line[:img_match.start()] + line[img_match.end():]
+                    if remaining.strip():
+                        current_chunk.append(remaining.strip())
+                    continue
+
                 if h1_match:
-                    if current_chunk:
-                        docs_service.append_styled_block(doc_id, "\n".join(current_chunk) + "\n\n", style_type="NORMAL")
-                        current_chunk = []
-                    docs_service.append_styled_block(doc_id, f"\n{h1_match.group(1)}\n", style_type="HEADING_1")
+                    flush_chunk()
+                    h1_text = h1_match.group(1).strip()
+                    if h1_text:
+                        docs_service.append_styled_block(doc_id, f"{h1_text}\n", style_type="HEADING_1", space_above=14, space_below=6)
                 elif h2_match:
-                    if current_chunk:
-                        docs_service.append_styled_block(doc_id, "\n".join(current_chunk) + "\n\n", style_type="NORMAL")
-                        current_chunk = []
-                    docs_service.append_styled_block(doc_id, f"\n{h2_match.group(1)}\n", style_type="HEADING_2")
+                    flush_chunk()
+                    h2_text = h2_match.group(1).strip()
+                    if h2_text:
+                        docs_service.append_styled_block(doc_id, f"{h2_text}\n", style_type="HEADING_2", space_above=10, space_below=4)
                 else:
                     if line.strip():
                         current_chunk.append(line)
-                    elif current_chunk:
+                    elif current_chunk and current_chunk[-1] != "":
                         current_chunk.append("")
 
-            if current_chunk:
-                docs_service.append_styled_block(doc_id, "\n".join(current_chunk) + "\n\n", style_type="NORMAL")
+            flush_table()
+            flush_chunk()
 
             # Also embed any remaining standalone diagram results
             for res in execution_results:

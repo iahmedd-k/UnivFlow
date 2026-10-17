@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from sqlalchemy import or_, func
+from sqlalchemy import or_, and_, func
 from app.db.database import get_db
 from app.integrations.google_drive import get_drive_service
 from app.core.config import settings
@@ -68,13 +68,20 @@ def get_classroom_materials(limit: int = 100, db=Depends(get_db)):
             .filter(
                 or_(
                     # Google Drive materials (content fetched lazily from Drive on read)
-                    and_(AssignmentMaterial.drive_file_id.isnot(None),
-                         AssignmentMaterial.mime_type.in_(
-                             ["application/vnd.google-apps.document", "application/pdf"]
-                         ) | AssignmentMaterial.mime_type.like("text/%")),
+                    and_(
+                        AssignmentMaterial.drive_file_id.isnot(None),
+                        or_(
+                            AssignmentMaterial.mime_type.in_(
+                                ["application/vnd.google-apps.document", "application/pdf"]
+                            ),
+                            AssignmentMaterial.mime_type.like("text/%")
+                        )
+                    ),
                     # Local uploads (content already extracted and stored in DB)
-                    and_(AssignmentMaterial.drive_file_id.is_(None),
-                         AssignmentMaterial.content.isnot(None))
+                    and_(
+                        AssignmentMaterial.drive_file_id.is_(None),
+                        AssignmentMaterial.content.isnot(None)
+                    )
                 )
             )
             .order_by(AssignmentMaterial.created_at.desc()).limit(min(max(limit, 1), 200)).all())

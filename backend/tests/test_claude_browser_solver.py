@@ -905,6 +905,8 @@ Message passing enables independent processes to coordinate without shared state
 </mxfile>
 ```
 
+![Visual Diagram: Distributed Memory Architecture](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==)
+
 # Conclusion
 Independent memory scales more effectively than shared bus memory.
 """
@@ -917,9 +919,8 @@ Independent memory scales more effectively than shared bus memory.
     mock_docs_svc.drive_service = MagicMock()
     mock_docs_svc.upload_file.return_value = {"id": "drive_xml_123", "webViewLink": "https://drive.google.com/file/d/drive_xml_123/view"}
 
-    # Mock BrowserToolRunner render to return a dummy png
-    with patch("app.services.ai_solution.get_google_docs_service", return_value=mock_docs_svc), \
-         patch("app.services.browser_tool_runner.BrowserToolRunner.render_drawio_diagram", return_value={"png_bytes": b"fake_png_data"}):
+    # Run without BrowserToolRunner mock (Claude direct image is used)
+    with patch("app.services.ai_solution.get_google_docs_service", return_value=mock_docs_svc):
         result = export_solution_to_google_doc(
             db=mock_db,
             assignment=mock_assignment,
@@ -935,11 +936,66 @@ Independent memory scales more effectively than shared bus memory.
     for block_text in appended_blocks:
         assert "<mxfile" not in block_text
         assert "<mxGraphModel" not in block_text
+        assert "data:image/png;base64" not in block_text
 
     # Verify diagram image was inserted
     assert mock_docs_svc.insert_image_from_bytes.called is True
     # Verify companion XML file was uploaded to Drive
     assert mock_docs_svc.upload_file.called is True
+
+
+def test_export_solution_to_google_doc_embeds_claude_direct_png_images():
+    """Verify markdown images generated directly by Claude are embedded via insert_image_from_bytes and not dumped as text."""
+    mock_db = MagicMock()
+    mock_course = Course(id=1, external_id="course_1", name="Software Engineering", section="VII-A", teacher_name="Dr. Akbar")
+    mock_assignment = Assignment(id=21, external_id="assign_21", course_id=1, title="Workflow Assignment", description="Workflow theory")
+    mock_setting = Setting(key="clerk_user_1", value=json.dumps({"name": "Test Student", "student_id": "232530"}))
+
+    def query_side_effect(model):
+        q = MagicMock()
+        if model == Course:
+            q.filter.return_value.first.return_value = mock_course
+        elif model == Assignment:
+            q.filter.return_value.first.return_value = mock_assignment
+        elif model == Setting:
+            q.filter.return_value.first.return_value = mock_setting
+        else:
+            q.filter.return_value.first.return_value = None
+            q.filter.return_value.all.return_value = []
+        return q
+
+    mock_db.query.side_effect = query_side_effect
+
+    solution_with_claude_img = """
+# Task 1: System Workflow Analysis
+Theoretical breakdown of the order fulfillment workflow.
+
+## Visual Workflow Diagram (.png)
+**Diagram Image (.png):** `diagram_task1.png`
+![Visual Diagram: Order Fulfillment](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==)
+
+## Discussion
+All steps proceed sequentially through the message queue.
+"""
+    mock_docs_svc = MagicMock()
+    mock_docs_svc.create_document.return_value = {"documentId": "doc_img_789"}
+    mock_docs_svc.create_academic_intro_page.return_value = True
+    mock_docs_svc.append_styled_block.return_value = True
+    mock_docs_svc.insert_image_from_bytes.return_value = True
+
+    with patch("app.services.ai_solution.get_google_docs_service", return_value=mock_docs_svc):
+        res = export_solution_to_google_doc(
+            db=mock_db,
+            assignment=mock_assignment,
+            solution_content=solution_with_claude_img,
+            user_id="test_user"
+        )
+
+    assert res is not None
+    assert mock_docs_svc.insert_image_from_bytes.called is True
+    # Verify base64 data URI was NEVER passed to append_styled_block as plain text
+    for call in mock_docs_svc.append_styled_block.call_args_list:
+        assert "data:image/png;base64" not in call.args[1]
 
 
 def test_theory_assignment_diagram_extraction_and_deliverable_packaging():

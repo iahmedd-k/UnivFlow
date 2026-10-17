@@ -457,6 +457,128 @@ class GoogleDocsService:
             logger.warning(f"Failed to append styled block: {e}")
             return self.append_text(document_id, text)
 
+    def insert_table(
+        self,
+        document_id: str,
+        headers: List[str],
+        rows: List[List[str]],
+    ) -> bool:
+        """
+        Inserts a native Google Docs table with styled headers and formatted cells.
+        Gracefully falls back to structured formatted text if the Google Docs API table creation fails.
+        """
+        if not headers and not rows:
+            return False
+
+        all_rows: List[List[str]] = []
+        if headers:
+            all_rows.append(headers)
+        all_rows.extend(rows)
+
+        total_rows = len(all_rows)
+        total_cols = max(len(r) for r in all_rows) if all_rows else 0
+        if total_rows == 0 or total_cols == 0:
+            return False
+
+        try:
+            # 1. Insert blank table structure
+            target_index = self.get_document_end_index(document_id)
+            insert_table_req = {
+                "insertTable": {
+                    "rows": total_rows,
+                    "columns": total_cols,
+                    "location": {"index": target_index}
+                }
+            }
+            self.docs_service.documents().batchUpdate(
+                documentId=document_id,
+                body={"requests": [insert_table_req]}
+            ).execute()
+
+            # 2. Retrieve document to locate the new table cells
+            doc = self.get_document(document_id)
+            if not doc:
+                return False
+
+            table_element = None
+            for elem in reversed(doc.get("body", {}).get("content", [])):
+                if "table" in elem:
+                    table_element = elem["table"]
+                    break
+
+            if not table_element:
+                return False
+
+            # 3. Populate cells in reverse order to preserve earlier indices
+            cell_requests = []
+            table_rows = table_element.get("tableRows", [])
+            for r_idx in range(len(table_rows) - 1, -1, -1):
+                row_data = all_rows[r_idx] if r_idx < len(all_rows) else []
+                t_row = table_rows[r_idx]
+                cells = t_row.get("tableCells", [])
+                for c_idx in range(len(cells) - 1, -1, -1):
+                    cell_val = row_data[c_idx] if c_idx < len(row_data) else ""
+                    clean_cell_text, _ = self._parse_inline_markdown(str(cell_val).strip())
+                    clean_cell_text = clean_cell_text or " "
+
+                    t_cell = cells[c_idx]
+                    content_list = t_cell.get("content", [])
+                    if not content_list:
+                        continue
+                    first_p = content_list[0]
+                    p_start = first_p.get("startIndex", 1)
+
+                    cell_requests.append({
+                        "insertText": {
+                            "location": {"index": p_start},
+                            "text": clean_cell_text
+                        }
+                    })
+
+                    # If this is header row, apply bold styling
+                    if headers and r_idx == 0 and clean_cell_text.strip():
+                        cell_requests.append({
+                            "updateTextStyle": {
+                                "range": {"startIndex": p_start, "endIndex": p_start + len(clean_cell_text)},
+                                "textStyle": {
+                                    "bold": True,
+                                    "fontSize": {"magnitude": 10.5, "unit": "PT"},
+                                    "weightedFontFamily": {"fontFamily": "Calibri"}
+                                },
+                                "fields": "bold,fontSize,weightedFontFamily"
+                            }
+                        })
+                    elif clean_cell_text.strip():
+                        cell_requests.append({
+                            "updateTextStyle": {
+                                "range": {"startIndex": p_start, "endIndex": p_start + len(clean_cell_text)},
+                                "textStyle": {
+                                    "fontSize": {"magnitude": 10, "unit": "PT"},
+                                    "weightedFontFamily": {"fontFamily": "Calibri"}
+                                },
+                                "fields": "fontSize,weightedFontFamily"
+                            }
+                        })
+
+            if cell_requests:
+                self.docs_service.documents().batchUpdate(
+                    documentId=document_id,
+                    body={"requests": cell_requests}
+                ).execute()
+
+            # Append trailing spacing after table
+            self.append_styled_block(document_id, "\n", style_type="NORMAL", space_above=4, space_below=8)
+            return True
+
+        except Exception as e:
+            logger.warning(f"Native table insertion failed: {e}. Falling back to formatted tabular block.")
+            fallback_lines = []
+            if headers:
+                fallback_lines.append("• " + " | ".join(headers))
+            for r in rows:
+                fallback_lines.append("• " + " — ".join(r))
+            return self.append_styled_block(document_id, "\n".join(fallback_lines) + "\n\n", style_type="NORMAL")
+
     def create_academic_intro_page(
         self,
         document_id: str,
@@ -567,7 +689,7 @@ class GoogleDocsService:
             sec_str = f"Section: {section.strip()}" if not section.lower().startswith("section") else section.strip()
             self.append_styled_block(
                 document_id,
-                f"{roll_str}\n{sec_str}\n\n\n",
+                f"{roll_str}\n{sec_str}\n\n",
                 font_family="Calibri",
                 font_size=14,
                 bold=False,
@@ -609,7 +731,7 @@ class GoogleDocsService:
             dated_str = f"Dated: {submission_date.strip()}" if not submission_date.lower().startswith("dated") else submission_date.strip()
             self.append_styled_block(
                 document_id,
-                f"{dated_str}\n\n\n",
+                f"{dated_str}\n\n",
                 font_family="Calibri",
                 font_size=14,
                 bold=False,
