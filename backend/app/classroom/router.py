@@ -146,6 +146,53 @@ def save_classroom_settings(
     }
 
 
+class StudentProfilePayload(BaseModel):
+    student_name: str
+    roll_no: str
+    university: Optional[str] = "AIR UNIVERSITY, ISLAMABAD"
+    department: Optional[str] = "Department of Computer Science & Information Technology"
+    section: Optional[str] = ""
+
+
+@router.get("/student-profile", response_model=dict)
+def get_student_profile(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Get student academic identity for document cover pages, Google Docs naming, and terminal prompts"""
+    from app.services.claude_browser_solver import get_student_metadata
+    user_id = _classroom_user_id(clerk_user)
+    meta = get_student_metadata(db, course=None, user_id=user_id)
+    return {
+        "student_name": meta.get("student_name", "Student"),
+        "roll_no": meta.get("roll_no", ""),
+        "university": meta.get("university", "AIR UNIVERSITY, ISLAMABAD"),
+        "department": meta.get("department", "Department of Computer Science & Information Technology"),
+        "section": meta.get("section", ""),
+    }
+
+
+@router.put("/student-profile", response_model=dict)
+def update_student_profile(
+    payload: StudentProfilePayload,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Save student full name, roll/reg no, and institutional info for Google Docs and terminal outputs"""
+    user_id = _classroom_user_id(clerk_user)
+    setting_key = f"student_profile_{user_id}"
+    setting = db.query(Setting).filter(Setting.key == setting_key).first()
+    if not setting:
+        setting = Setting(key=setting_key, description=f"Student academic profile for {user_id}")
+        db.add(setting)
+
+    data = payload.dict()
+    setting.value = json.dumps(data)
+    db.commit()
+    return {"message": "Student profile updated successfully", "profile": data}
+
+
+
 @router.get("/announcements", response_model=List[dict])
 def get_classroom_announcements(
     course_id: Optional[int] = Query(None),

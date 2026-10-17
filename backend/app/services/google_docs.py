@@ -332,12 +332,18 @@ class GoogleDocsService:
             if space_above is not None:
                 para_style["spaceAbove"] = {"magnitude": space_above, "unit": "PT"}
                 para_fields.append("spaceAbove")
+            elif style_type == "CODE":
+                para_style["spaceAbove"] = {"magnitude": 0, "unit": "PT"}
+                para_fields.append("spaceAbove")
             elif para_named_style:
                 para_style["spaceAbove"] = {"magnitude": 14, "unit": "PT"}
                 para_fields.append("spaceAbove")
 
             if space_below is not None:
                 para_style["spaceBelow"] = {"magnitude": space_below, "unit": "PT"}
+                para_fields.append("spaceBelow")
+            elif style_type == "CODE":
+                para_style["spaceBelow"] = {"magnitude": 0, "unit": "PT"}
                 para_fields.append("spaceBelow")
             elif para_named_style:
                 para_style["spaceBelow"] = {"magnitude": 6, "unit": "PT"}
@@ -349,6 +355,9 @@ class GoogleDocsService:
 
             if line_spacing is not None:
                 para_style["lineSpacing"] = line_spacing
+                para_fields.append("lineSpacing")
+            elif style_type == "CODE":
+                para_style["lineSpacing"] = 100
                 para_fields.append("lineSpacing")
 
             if para_fields:
@@ -400,7 +409,7 @@ class GoogleDocsService:
                 text_style["fontSize"] = {"magnitude": 11, "unit": "PT"}
                 fields.append("fontSize")
             elif style_type == "CODE":
-                text_style["fontSize"] = {"magnitude": 9.5, "unit": "PT"}
+                text_style["fontSize"] = {"magnitude": 8.5, "unit": "PT"}
                 fields.append("fontSize")
 
             if font_family:

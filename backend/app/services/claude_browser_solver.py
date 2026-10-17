@@ -467,9 +467,13 @@ def get_student_metadata(
     """Extract standard student and institutional metadata for Air University submissions."""
     profile_row = None
     if user_id:
-        profile_row = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
+        profile_row = db.query(Setting).filter(
+            Setting.key.in_([f"student_profile_{user_id}", f"clerk_user_{user_id}", "student_profile_legacy"])
+        ).order_by(Setting.id.desc()).first()
     else:
-        profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).order_by(Setting.id.desc()).first()
+        profile_row = db.query(Setting).filter(
+            (Setting.key.like("student_profile_%")) | (Setting.key.like("clerk_user_%"))
+        ).order_by(Setting.id.desc()).first()
 
     profile = {}
     if profile_row and hasattr(profile_row, "value") and isinstance(profile_row.value, str):
@@ -494,11 +498,11 @@ def get_student_metadata(
         except Exception:
             pass
 
-    student_name = " ".join(
+    student_name = profile.get("student_name") or " ".join(
         part for part in (profile.get("first_name"), profile.get("last_name")) if isinstance(part, str) and part.strip() and part.strip() != "."
     ).strip() or (profile.get("name") if isinstance(profile.get("name"), str) else None) or "Student"
 
-    roll_no = profile.get("student_id") or profile.get("roll_no") or profile.get("rollNumber") or ""
+    roll_no = profile.get("roll_no") or profile.get("student_id") or profile.get("rollNumber") or ""
     if not isinstance(roll_no, str):
         roll_no = str(roll_no) if roll_no else ""
 
@@ -1487,9 +1491,12 @@ def solve_assignment_via_claude_browser(
         if not student_user:
             student_user = "student"
 
+        roll_no_clean = re.sub(r"[^a-zA-Z0-9]+", "", str(meta.get("roll_no") or "").strip().lower())
         lab_dir_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", (assignment.title or "lab_tasks").strip().lower()).strip("_")
         lab_dir_slug = lab_dir_slug[:28] if lab_dir_slug else "lab_tasks"
-        shell_prompt = f"{student_user}@air-desktop:~/{lab_dir_slug}$"
+
+        terminal_dir = f"{roll_no_clean}_{lab_dir_slug}" if roll_no_clean else f"{student_user}_{lab_dir_slug}"
+        shell_prompt = f"{student_user}@air-desktop:~/{terminal_dir}$"
 
         # 5. Classify assignment domain & build tailored academic prompt
         questions_block = ""

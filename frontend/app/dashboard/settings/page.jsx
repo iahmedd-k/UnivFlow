@@ -18,6 +18,49 @@ export default function SettingsPage() {
   const [browserError, setBrowserError] = useState('');
   const [browserNotice, setBrowserNotice] = useState('');
 
+  // Student Academic Profile state
+  const [studentName, setStudentName] = useState('');
+  const [rollNo, setRollNo] = useState('');
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileSuccess, setProfileSuccess] = useState('');
+  const [profileError, setProfileError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const token = await getToken();
+        const p = await api.getStudentProfile(token);
+        if (active && p) {
+          setStudentName(p.student_name || '');
+          setRollNo(p.roll_no || '');
+        }
+      } catch (err) {
+        console.error('Failed to load student profile:', err);
+      }
+    })();
+    return () => { active = false; };
+  }, [getToken]);
+
+  const handleSaveProfile = async (e) => {
+    e.preventDefault();
+    setSavingProfile(true);
+    setProfileSuccess('');
+    setProfileError('');
+    try {
+      const token = await getToken();
+      await api.updateStudentProfile({
+        student_name: studentName.trim(),
+        roll_no: rollNo.trim(),
+      }, token);
+      setProfileSuccess('Academic identity saved! Google Docs and terminal outputs will use this name and Reg ID.');
+    } catch (err) {
+      setProfileError(err.message || 'Could not save student profile.');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
   const loadEmail = useCallback(async () => {
     try {
       const token = await getToken();
@@ -358,7 +401,72 @@ export default function SettingsPage() {
       {error && <div className="rounded-lg border border-[#f1dede] bg-[#fff8f8] px-3 py-2.5 text-xs text-[#a04a4a]" role="alert">{error}</div>}
       {success && <div className="rounded-lg border border-[#d8eee4] bg-[#f3fbf7] px-3 py-2.5 text-xs text-[#43816b]" role="status">{success}</div>}
       {browserError && <div className="rounded-lg border border-[#f1dede] bg-[#fff8f8] px-3 py-2.5 text-xs text-[#a04a4a]" role="alert">{browserError}</div>}
-      {browserNotice && <div className="rounded-lg border border-[#d8eee4] bg-[#f3fbf7] px-3 py-2.5 text-xs text-[#43816b]" role="status">{browserNotice}</div>}
+      {/* Student Academic Profile Section */}
+      <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm">
+        <header className="border-b border-[#f0f0f3] px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">STUDENT ACADEMIC PROFILE</p>
+            <h2 className="text-[13px] font-semibold text-[#343746]">Full Name & Registration ID</h2>
+          </div>
+          {rollNo && studentName ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#f3fbf7] px-2.5 py-1 text-xs font-semibold text-[#3a8369] border border-[#d8eee4]">
+              <span className="h-1.5 w-1.5 rounded-full bg-[#3a8369]" /> {rollNo} · {studentName}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#fff8f8] px-2.5 py-1 text-xs font-medium text-[#a04a4a] border border-[#f1dede]">
+              Profile Incomplete
+            </span>
+          )}
+        </header>
+        <div className="p-5 flex flex-col gap-4">
+          <p className="rounded-lg bg-[#faf9fe] border border-[#e8e7f8] p-3 text-xs leading-relaxed text-[#686c80]">
+            Used automatically on official Google Docs cover pages, Google Doc filenames (<code className="font-mono text-[#5142c1]">&lt;Name&gt;_&lt;Assignment&gt;_&lt;RegID&gt;</code>), and authentic terminal execution screenshot directories.
+          </p>
+
+          {profileError && <div className="rounded-md border border-[#f1dede] bg-[#fff8f8] px-3 py-2 text-xs text-[#a04a4a]">{profileError}</div>}
+          {profileSuccess && <div className="rounded-md border border-[#d8eee4] bg-[#f3fbf7] px-3 py-2 text-xs text-[#43816b]">{profileSuccess}</div>}
+
+          <form onSubmit={handleSaveProfile} className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-2xl">
+            <div>
+              <label htmlFor="studentName" className="mb-1 block text-xs font-medium text-[#696d7d]">
+                Full Student Name
+              </label>
+              <input
+                type="text"
+                id="studentName"
+                className="w-full rounded-md border border-[#e4e4eb] bg-white px-3 py-2 text-xs text-[#343746] outline-none focus:border-[#6657d9] focus:ring-2 focus:ring-[#6657d9]/20"
+                value={studentName}
+                onChange={(e) => setStudentName(e.target.value)}
+                placeholder="e.g. Ahmed Khan"
+                required
+              />
+            </div>
+            <div>
+              <label htmlFor="rollNo" className="mb-1 block text-xs font-medium text-[#696d7d]">
+                Registration ID / Roll No
+              </label>
+              <input
+                type="text"
+                id="rollNo"
+                className="w-full rounded-md border border-[#e4e4eb] bg-white px-3 py-2 text-xs font-mono text-[#343746] outline-none focus:border-[#6657d9] focus:ring-2 focus:ring-[#6657d9]/20"
+                value={rollNo}
+                onChange={(e) => setRollNo(e.target.value)}
+                placeholder="e.g. 232530"
+                required
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <button
+                type="submit"
+                disabled={savingProfile || !studentName.trim() || !rollNo.trim()}
+                className="inline-flex min-h-9 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-4 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55"
+              >
+                {savingProfile ? 'Saving…' : 'Save Academic Identity'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </section>
 
       <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm">
         <header className="border-b border-[#f0f0f3] px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">

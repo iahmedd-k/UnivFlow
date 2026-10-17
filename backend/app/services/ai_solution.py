@@ -1192,13 +1192,16 @@ def export_solution_to_google_doc(
         course = db.query(Course).filter(Course.id == assignment.course_id).first()
         course_name = course.name if course else "Course"
 
-        doc_title = f"{assignment.title} - Solution ({datetime.now().strftime('%Y-%m-%d')})"
         owner_id = user_id or assignment.user_id
         profile_row = None
         if owner_id:
-            profile_row = db.query(Setting).filter(Setting.key == f"clerk_user_{owner_id}").first()
+            profile_row = db.query(Setting).filter(
+                Setting.key.in_([f"student_profile_{owner_id}", f"clerk_user_{owner_id}", "student_profile_legacy"])
+            ).order_by(Setting.id.desc()).first()
         if not profile_row:
-            profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).first()
+            profile_row = db.query(Setting).filter(
+                (Setting.key.like("student_profile_%")) | (Setting.key.like("clerk_user_%"))
+            ).order_by(Setting.id.desc()).first()
 
         profile = {}
         if profile_row and hasattr(profile_row, "value") and isinstance(profile_row.value, str):
@@ -1223,11 +1226,11 @@ def export_solution_to_google_doc(
             except Exception:
                 pass
 
-        student_name = " ".join(
+        student_name = profile.get("student_name") or " ".join(
             part for part in (profile.get("first_name"), profile.get("last_name")) if isinstance(part, str) and part.strip() and part.strip() != "."
         ).strip() or (profile.get("name") if isinstance(profile.get("name"), str) else None) or "Ahmed Khan"
 
-        roll_no = profile.get("student_id") or profile.get("roll_no") or profile.get("rollNumber") or ""
+        roll_no = profile.get("roll_no") or profile.get("student_id") or profile.get("rollNumber") or ""
         if not isinstance(roll_no, str):
             roll_no = str(roll_no) if roll_no else ""
 
@@ -1239,6 +1242,12 @@ def export_solution_to_google_doc(
                 roll_no = user_email.split("@")[0]
         if not roll_no:
             roll_no = "232530"
+
+        # Format doc title: StudentName_AssignmentName_RegID
+        clean_name = re.sub(r"[^\w\s-]", "", student_name).strip().replace(" ", "_")
+        clean_title = re.sub(r"[^\w\s-]", "", assignment.title or "Assignment").strip().replace(" ", "_")
+        clean_roll = re.sub(r"[^\w\s-]", "", roll_no).strip()
+        doc_title = f"{clean_name}_{clean_title}_{clean_roll}" if clean_roll else f"{clean_name}_{clean_title}"
 
         uni_name = profile.get("university") or "AIR UNIVERSITY , ISLAMABAD"
         instructor = (course.teacher_name if course and hasattr(course, "teacher_name") and isinstance(course.teacher_name, str) and course.teacher_name.strip() else "") or "Ali Arshad"

@@ -151,6 +151,18 @@ export const api = {
     return fetchFromApi('/auth/notification-email', token, { method: 'DELETE' });
   },
 
+  // Student Academic Profile
+  getStudentProfile: async (token = null) => {
+    return fetchFromApi('/classroom/student-profile', token);
+  },
+
+  updateStudentProfile: async (data, token = null) => {
+    return fetchFromApi('/classroom/student-profile', token, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
   // Dashboard
   getOverview: async (token = null) => {
     return fetchFromApi('/dashboard/overview', token);
