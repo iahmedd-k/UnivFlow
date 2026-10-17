@@ -93,6 +93,10 @@ EDGE_CASES = (
     "or a written explanation, and state clearly that it was not run on hardware.\n"
     "E3. Vague task: choose the most reasonable reading and write the assumption into the task's answers file and the plan's assumptions.\n"
     "E4. Lab manual contradicts the task statement: FOLLOW THE TASK STATEMENT and note the conflict in the answers and assumptions.\n"
+    "E5. Repeated, skipped, or nested numbering: preserve the exact source labels and order; distinguish items by their parent task and title instead of renumbering or merging them.\n"
+    "E6. Conditional or choice-based tasks (for example, 'choose one' or 'if applicable'): capture the condition and every stated option in the existing requirements entry; do not silently choose or omit an option.\n"
+    "E7. Rubric or marks detail: copy stated weights and criteria faithfully, including partial-credit criteria; never calculate missing weights or treat an unstated total as authoritative.\n"
+    "E8. Cross-task references: record a dependency only when one task explicitly needs an earlier result; preserve the reference in requirements when it is informational rather than a true prerequisite.\n"
 )
 
 # ---------------------------------------------------------------------------
@@ -181,6 +185,11 @@ PLANNER_PROMPT = (
     "required language/tool/format, citation style, and submission instruction. Do not skip sub-parts (a, b, c...). "
     "Note which tasks ask direct questions or explanations (has_questions). "
     "Also check whether the supplied materials contain any SAMPLE or EXAMPLE DIAGRAM (image, description, or XML) that shows the expected diagram style.\n\n"
+    "SOURCE-TO-PLAN WORKFLOW\n"
+    "Keep a complete mental inventory of the assignment statement, rubric, manuals, supplied examples and other references before routing. "
+    "Separate requirements explicitly stated in those sources from interpretation; place uncertainty in the existing assumptions or missing_information fields. "
+    "When labels repeat or a task refers to another task, preserve the original label and enough parent/title context in the existing requirements text to keep each part unambiguous. "
+    "Do not add schema keys or change the routing and domain decisions defined below.\n\n"
     "STEP 2 - IDENTIFY LAB vs ASSIGNMENT AND PICK THE TRACK\n"
     + TRACK_CLASSIFIER +
     "\nSTEP 3 - CLASSIFY THE DOMAIN\n"

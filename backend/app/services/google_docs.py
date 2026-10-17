@@ -91,6 +91,37 @@ class GoogleDocsService:
         last_element = content[-1]
         return max(1, last_element.get("endIndex", 1) - 1)
 
+    @staticmethod
+    def _normalize_code_for_report(text: str) -> str:
+        """Clean model-generated code whitespace while preserving meaningful indentation and content."""
+        normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+        normalized = normalized.replace("\u00a0", " ").replace("\u2007", " ").replace("\u202f", " ")
+        normalized = normalized.expandtabs(4)
+        lines = [line.rstrip() for line in normalized.split("\n")]
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        had_trailing_newline = bool(lines and not lines[-1].strip())
+        while lines and not lines[-1].strip():
+            lines.pop()
+
+        indents = [len(line) - len(line.lstrip(" ")) for line in lines if line.strip()]
+        if indents:
+            common_indent = min(indents)
+            if common_indent:
+                lines = [line[common_indent:] if line.strip() else "" for line in lines]
+
+        compact_lines = []
+        previous_blank = False
+        for line in lines:
+            is_blank = not line.strip()
+            if is_blank and previous_blank:
+                continue
+            compact_lines.append("" if is_blank else line)
+            previous_blank = is_blank
+
+        cleaned = "\n".join(compact_lines)
+        return cleaned + ("\n" if had_trailing_newline and cleaned else "")
+
     def create_document(self, title: str, content: str = "") -> Optional[Dict]:
         """Create a new Google Doc"""
         try:
@@ -296,7 +327,7 @@ class GoogleDocsService:
         if style_type != "CODE":
             clean_text, styled_spans = self._parse_inline_markdown(text)
         else:
-            clean_text, styled_spans = text, []
+            clean_text, styled_spans = self._normalize_code_for_report(text), []
 
         if not clean_text:
             return True
@@ -844,6 +875,43 @@ class GoogleDocsService:
                 documentId=document_id,
                 body={"requests": requests}
             ).execute()
+            if alignment:
+                try:
+                    updated_doc = self.get_document(document_id)
+                    for block in (updated_doc or {}).get("body", {}).get("content", []):
+                        paragraph = block.get("paragraph") or {}
+                        has_target_image = any(
+                            "inlineObjectElement" in element
+                            and element.get("startIndex", -1) >= target_index
+                            and element.get("startIndex", -1) < target_index + 2
+                            for element in paragraph.get("elements", [])
+                        )
+                        if not has_target_image:
+                            continue
+                        paragraph_style = {"alignment": alignment}
+                        paragraph_fields = ["alignment"]
+                        if space_above is not None:
+                            paragraph_style["spaceAbove"] = {"magnitude": space_above, "unit": "PT"}
+                            paragraph_fields.append("spaceAbove")
+                        if space_below is not None:
+                            paragraph_style["spaceBelow"] = {"magnitude": space_below, "unit": "PT"}
+                            paragraph_fields.append("spaceBelow")
+                        self.docs_service.documents().batchUpdate(
+                            documentId=document_id,
+                            body={"requests": [{
+                                "updateParagraphStyle": {
+                                    "range": {
+                                        "startIndex": block.get("startIndex", target_index),
+                                        "endIndex": block.get("endIndex", target_index + 2),
+                                    },
+                                    "paragraphStyle": paragraph_style,
+                                    "fields": ",".join(paragraph_fields),
+                                }
+                            }]}
+                        ).execute()
+                        break
+                except Exception as alignment_err:
+                    logger.warning("Could not apply paragraph alignment to image %s: %s", filename, alignment_err)
             logger.info(f"Successfully inserted image {filename} into doc {document_id}")
             return True
         except Exception as e:
