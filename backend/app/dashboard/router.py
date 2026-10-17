@@ -570,3 +570,29 @@ def dismiss_active_crew_run(
     db.commit()
 
     return {"success": True, "message": "Assignment solver run dismissed successfully."}
+
+
+@router.post("/clear-timetable", response_model=dict)
+def clear_dashboard_timetable(
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_current_user),
+):
+    """Clear all timetable entries and upcoming schedules from dashboard (CRUD Reset)"""
+    from app.db.models import TimetableEntry, ClassSchedule
+    from app.core.redis import invalidate_attendance_summary_cache
+    user_id = str((user or {}).get("id") or "dev_student_user")
+
+    tt_count = db.query(TimetableEntry).filter(
+        (TimetableEntry.user_id == user_id) | (TimetableEntry.user_id == "legacy") | (TimetableEntry.user_id.is_(None))
+    ).delete(synchronize_session=False)
+
+    now_utc = datetime.now(timezone.utc)
+    sch_count = db.query(ClassSchedule).filter(
+        ClassSchedule.external_id.like("portal-sch:%"),
+        (ClassSchedule.user_id == user_id) | (ClassSchedule.user_id == "legacy") | (ClassSchedule.user_id.is_(None)),
+        ClassSchedule.start_time >= now_utc
+    ).delete(synchronize_session=False)
+
+    db.commit()
+    invalidate_attendance_summary_cache()
+    return {"success": True, "deleted_classes": tt_count, "deleted_schedules": sch_count}

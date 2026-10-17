@@ -71,6 +71,26 @@ export default function DashboardOverview() {
   const [turningInId, setTurningInId] = useState(null);
   const [turnInNotice, setTurnInNotice] = useState('');
   const [dismissingId, setDismissingId] = useState(null);
+  const [showClearTimetable, setShowClearTimetable] = useState(false);
+  const [clearingTimetable, setClearingTimetable] = useState(false);
+  const [timetableNotice, setTimetableNotice] = useState('');
+
+  const handleDashboardClearTimetable = async () => {
+    setClearingTimetable(true);
+    setError('');
+    setTimetableNotice('');
+    try {
+      const token = await getToken();
+      await api.clearDashboardTimetable(token);
+      setTimetableNotice('Timetable schedule cleared successfully.');
+      setShowClearTimetable(false);
+      await loadData(false);
+    } catch (err) {
+      setError(err.message || 'Could not clear timetable.');
+    } finally {
+      setClearingTimetable(false);
+    }
+  };
 
   const handleDismissRun = async (assignmentId) => {
     if (dismissingId) return;
@@ -160,6 +180,18 @@ export default function DashboardOverview() {
       <Icon name="alert" size={17}/>
       <div><strong className="font-semibold">We couldn’t load your latest overview.</strong><p className="mt-0.5 text-rose/80">{error}</p></div>
     </div>}
+
+    {timetableNotice && (
+      <div className="mb-5 flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-emerald-800">
+        <div className="flex items-center gap-2">
+          <Icon name="checkCircle" size={14} />
+          <span>{timetableNotice}</span>
+        </div>
+        <button type="button" onClick={() => setTimetableNotice('')} className="text-emerald-700 hover:text-emerald-900">
+          <Icon name="close" size={12} />
+        </button>
+      </div>
+    )}
 
     <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Academic overview">
       <StatCard label="Active courses" value={loading ? '—' : overview?.courses_count ?? 0} detail="Across your semester" tone="bg-violet-light text-violet" icon="book" />
@@ -383,10 +415,65 @@ export default function DashboardOverview() {
     <section className="mt-6">
       <div className="mb-3"><p className="text-xs font-semibold uppercase leading-snug tracking-wider text-label">Jump back in</p><h2 className="mt-1 text-sm font-semibold tracking-tight text-heading">Your workspace</h2></div>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-      <Link href="/dashboard/timetable" className="flex min-h-16 items-center gap-2.5 rounded-lg border border-border bg-surface p-3 text-inherit transition hover:-translate-y-px hover:border-violet-light"><span className="grid size-7 shrink-0 place-items-center rounded-lg bg-violet-light text-violet"><Icon name="calendar" size={18}/></span><span className="flex min-w-0 flex-1 flex-col gap-1"><strong className="text-xs font-semibold text-body">Weekly Timetable</strong><small className="truncate text-xs text-subtle">Routine, classroom venues & timings</small></span><Icon name="arrowUpRight" size={15}/></Link>
-      <Link href="/dashboard/attendance" className="flex min-h-16 items-center gap-2.5 rounded-lg border border-border bg-surface p-3 text-inherit transition hover:-translate-y-px hover:border-violet-light"><span className="grid size-7 shrink-0 place-items-center rounded-lg bg-success-bg text-success"><Icon name="clipboardCheck" size={18}/></span><span className="flex min-w-0 flex-1 flex-col gap-1"><strong className="text-xs font-semibold text-body">Attendance Tracker</strong><small className="truncate text-xs text-subtle">75% policy eligibility & recovery math</small></span><Icon name="arrowUpRight" size={15}/></Link>
-      <Link href="/dashboard/assignments" className="flex min-h-16 items-center gap-2.5 rounded-lg border border-border bg-surface p-3 text-inherit transition hover:-translate-y-px hover:border-violet-light"><span className="grid size-7 shrink-0 place-items-center rounded-lg bg-info-bg text-info"><Icon name="listChecks" size={18}/></span><span className="flex min-w-0 flex-1 flex-col gap-1"><strong className="text-xs font-semibold text-body">Assignments Studio</strong><small className="truncate text-xs text-subtle">AI solving, code execution & turn-in</small></span><Icon name="arrowUpRight" size={15}/></Link>
+        <div className="flex min-h-16 items-center justify-between gap-2.5 rounded-lg border border-border bg-surface p-3 transition hover:border-violet-light">
+          <Link href="/dashboard/timetable" className="flex min-w-0 flex-1 items-center gap-2.5 text-inherit no-underline">
+            <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-violet-light text-violet"><Icon name="calendar" size={18}/></span>
+            <span className="flex min-w-0 flex-1 flex-col gap-1">
+              <strong className="text-xs font-semibold text-body">Weekly Timetable</strong>
+              <small className="truncate text-xs text-subtle">Routine, venues & timings</small>
+            </span>
+          </Link>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setShowClearTimetable(true)}
+              disabled={clearingTimetable}
+              className="inline-flex min-h-7 items-center gap-1 rounded-md border border-rose-200 bg-rose-50/60 px-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+              title="Clear all classes from timetable"
+            >
+              <Icon name="trash" size={12} />
+              <span>Clear</span>
+            </button>
+            <Link href="/dashboard/timetable" className="text-subtle hover:text-body">
+              <Icon name="arrowUpRight" size={15}/>
+            </Link>
+          </div>
+        </div>
+        <Link href="/dashboard/attendance" className="flex min-h-16 items-center gap-2.5 rounded-lg border border-border bg-surface p-3 text-inherit transition hover:-translate-y-px hover:border-violet-light"><span className="grid size-7 shrink-0 place-items-center rounded-lg bg-success-bg text-success"><Icon name="clipboardCheck" size={18}/></span><span className="flex min-w-0 flex-1 flex-col gap-1"><strong className="text-xs font-semibold text-body">Attendance Tracker</strong><small className="truncate text-xs text-subtle">75% policy eligibility & recovery math</small></span><Icon name="arrowUpRight" size={15}/></Link>
+        <Link href="/dashboard/assignments" className="flex min-h-16 items-center gap-2.5 rounded-lg border border-border bg-surface p-3 text-inherit transition hover:-translate-y-px hover:border-violet-light"><span className="grid size-7 shrink-0 place-items-center rounded-lg bg-info-bg text-info"><Icon name="listChecks" size={18}/></span><span className="flex min-w-0 flex-1 flex-col gap-1"><strong className="text-xs font-semibold text-body">Assignments Studio</strong><small className="truncate text-xs text-subtle">AI solving, code execution & turn-in</small></span><Icon name="arrowUpRight" size={15}/></Link>
       </div>
     </section>
+
+    {/* Clear Timetable Confirmation Modal on Dashboard */}
+    {showClearTimetable && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+        <div className="bg-surface rounded-2xl max-w-sm w-full p-6 shadow-xl border border-border animate-in fade-in zoom-in-95 duration-150">
+          <div className="flex items-center gap-3 text-rose mb-3">
+            <span className="grid size-9 place-items-center rounded-xl bg-rose-bg text-rose"><Icon name="alert" size={18} /></span>
+            <h3 className="font-bold text-heading text-sm">Clear Weekly Timetable?</h3>
+          </div>
+          <p className="text-xs text-muted leading-relaxed mb-5">
+            This will wipe your timetable routine and upcoming class schedules. You can import an updated timetable or sync from your portal anytime.
+          </p>
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setShowClearTimetable(false)}
+              className="px-3.5 py-2 text-xs font-medium text-muted hover:text-body"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={clearingTimetable}
+              onClick={handleDashboardClearTimetable}
+              className="px-4 py-2 text-xs font-semibold rounded-lg bg-rose text-white hover:bg-rose-dark disabled:opacity-50 transition"
+            >
+              {clearingTimetable ? 'Clearing…' : 'Yes, Clear Timetable'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
   </div>;
 }

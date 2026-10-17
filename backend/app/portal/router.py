@@ -1743,7 +1743,48 @@ def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_
         except Exception:
             pass
 
-    for item in timetable_entries:
+    from app.timetable.router import _validate_timetable_candidate
+    from app.core.redis import invalidate_attendance_summary_cache
+
+    # 100% Validation Check: Filter out rough or dump extractions
+    validated_items = []
+    for raw_item in (timetable_entries or []):
+        cand = {
+            "subject": raw_item.get("subject"),
+            "weekdays": [raw_item.get("weekday")],
+            "start_time": raw_item.get("start_time"),
+            "end_time": raw_item.get("end_time"),
+            "room": raw_item.get("room"),
+            "teacher": raw_item.get("teacher"),
+        }
+        v = _validate_timetable_candidate(cand)
+        if v:
+            validated_items.append({
+                "subject": v["subject"],
+                "weekday": v["weekdays"][0],
+                "start_time": v["start_time"],
+                "end_time": v["end_time"],
+                "room": v.get("room") or raw_item.get("room") or "Main Campus",
+                "teacher": v.get("teacher") or raw_item.get("teacher"),
+            })
+
+    if validated_items:
+        # Clean Override Reset: Wipe previous portal timetable entries and future schedules
+        db.query(TimetableEntry).filter(
+            (TimetableEntry.user_id == user_id) |
+            (TimetableEntry.user_id == "legacy") |
+            (TimetableEntry.user_id.is_(None)) |
+            (TimetableEntry.external_id.like("portal-tt:%"))
+        ).delete(synchronize_session=False)
+
+        db.query(ClassSchedule).filter(
+            ClassSchedule.external_id.like("portal-sch:%"),
+            (ClassSchedule.user_id == user_id) | (ClassSchedule.user_id == "legacy") | (ClassSchedule.user_id.is_(None)),
+            ClassSchedule.date >= datetime.combine(today, dtime.min).replace(tzinfo=timezone.utc)
+        ).delete(synchronize_session=False)
+        db.flush()
+
+    for item in validated_items:
         subj = item["subject"].strip()
         weekday = item["weekday"]
         st = item["start_time"]
@@ -1835,6 +1876,10 @@ def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_
             pass
 
     db.flush()
+    try:
+        invalidate_attendance_summary_cache()
+    except Exception:
+        pass
 
 
 def _ingest_report_data(db: Session, report: dict, source_url: str, user_id: str = "dev_student_user"):

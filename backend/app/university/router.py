@@ -77,6 +77,118 @@ def get_exam(exam_id: int, db: Session = Depends(get_db)):
     }
 
 
+from pydantic import BaseModel, Field
+import hashlib
+
+
+class ExamInput(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    course_id: Optional[int] = None
+    date: Optional[datetime] = None
+    time: Optional[str] = Field(default="", max_length=50)
+    room: Optional[str] = Field(default="", max_length=100)
+    status: Optional[str] = Field(default="scheduled", max_length=50)
+
+
+class ExamUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=500)
+    date: Optional[datetime] = None
+    time: Optional[str] = Field(default=None, max_length=50)
+    room: Optional[str] = Field(default=None, max_length=100)
+    status: Optional[str] = Field(default=None, max_length=50)
+
+
+class QuizInput(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    course_id: Optional[int] = None
+    date: Optional[datetime] = None
+    time: Optional[str] = Field(default="", max_length=50)
+    room: Optional[str] = Field(default="", max_length=100)
+    status: Optional[str] = Field(default="scheduled", max_length=50)
+
+
+class QuizUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=500)
+    date: Optional[datetime] = None
+    time: Optional[str] = Field(default=None, max_length=50)
+    room: Optional[str] = Field(default=None, max_length=100)
+    status: Optional[str] = Field(default=None, max_length=50)
+
+
+@router.post("/exams", response_model=dict)
+def create_exam(item: ExamInput, db: Session = Depends(get_db)):
+    """Create a new exam (CRUD Create)"""
+    ext_id = f"manual-exam:{hashlib.sha256(item.title.encode('utf-8')).hexdigest()[:16]}:{int(datetime.now(timezone.utc).timestamp())}"
+    exam = Exam(
+        user_id="legacy",
+        external_id=ext_id,
+        course_id=item.course_id,
+        title=item.title.strip(),
+        date=item.date,
+        time=item.time.strip() if item.time else None,
+        room=item.room.strip() if item.room else None,
+        status=item.status or "scheduled",
+    )
+    db.add(exam)
+    db.commit()
+    db.refresh(exam)
+    return {
+        "id": exam.id,
+        "external_id": exam.external_id,
+        "course_id": exam.course_id,
+        "title": exam.title,
+        "date": exam.date,
+        "time": exam.time,
+        "room": exam.room,
+        "status": exam.status,
+        "created_at": exam.created_at,
+        "updated_at": exam.updated_at,
+    }
+
+
+@router.put("/exams/{exam_id}", response_model=dict)
+def update_exam(exam_id: int, item: ExamUpdate, db: Session = Depends(get_db)):
+    """Update an exam (CRUD Update)"""
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+    if item.title is not None:
+        exam.title = item.title.strip()
+    if item.date is not None:
+        exam.date = item.date
+    if item.time is not None:
+        exam.time = item.time.strip()
+    if item.room is not None:
+        exam.room = item.room.strip()
+    if item.status is not None:
+        exam.status = item.status
+    db.commit()
+    db.refresh(exam)
+    return {
+        "id": exam.id,
+        "external_id": exam.external_id,
+        "course_id": exam.course_id,
+        "title": exam.title,
+        "date": exam.date,
+        "time": exam.time,
+        "room": exam.room,
+        "status": exam.status,
+        "created_at": exam.created_at,
+        "updated_at": exam.updated_at,
+    }
+
+
+@router.delete("/exams/{exam_id}", response_model=dict)
+def delete_exam(exam_id: int, db: Session = Depends(get_db)):
+    """Delete an exam (CRUD Delete)"""
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+    db.delete(exam)
+    db.commit()
+    return {"deleted": True, "id": exam_id}
+
+
 @router.get("/quizzes", response_model=List[dict])
 def get_quizzes(
     days: int = Query(30, ge=1, le=365),
@@ -120,6 +232,80 @@ def get_quiz(quiz_id: int, db: Session = Depends(get_db)):
         "created_at": quiz.created_at,
         "updated_at": quiz.updated_at,
     }
+
+
+@router.post("/quizzes", response_model=dict)
+def create_quiz(item: QuizInput, db: Session = Depends(get_db)):
+    """Create a new quiz (CRUD Create)"""
+    ext_id = f"manual-quiz:{hashlib.sha256(item.title.encode('utf-8')).hexdigest()[:16]}:{int(datetime.now(timezone.utc).timestamp())}"
+    quiz = Quiz(
+        user_id="legacy",
+        external_id=ext_id,
+        course_id=item.course_id,
+        title=item.title.strip(),
+        date=item.date,
+        time=item.time.strip() if item.time else None,
+        room=item.room.strip() if item.room else None,
+        status=item.status or "scheduled",
+    )
+    db.add(quiz)
+    db.commit()
+    db.refresh(quiz)
+    return {
+        "id": quiz.id,
+        "external_id": quiz.external_id,
+        "course_id": quiz.course_id,
+        "title": quiz.title,
+        "date": quiz.date,
+        "time": quiz.time,
+        "room": quiz.room,
+        "status": quiz.status,
+        "created_at": quiz.created_at,
+        "updated_at": quiz.updated_at,
+    }
+
+
+@router.put("/quizzes/{quiz_id}", response_model=dict)
+def update_quiz(quiz_id: int, item: QuizUpdate, db: Session = Depends(get_db)):
+    """Update a quiz (CRUD Update)"""
+    quiz = db.query(Quiz).filter(Quiz.id == quiz_id).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    if item.title is not None:
+        quiz.title = item.title.strip()
+    if item.date is not None:
+        quiz.date = item.date
+    if item.time is not None:
+        quiz.time = item.time.strip()
+    if item.room is not None:
+        quiz.room = item.room.strip()
+    if item.status is not None:
+        quiz.status = item.status
+    db.commit()
+    db.refresh(quiz)
+    return {
+        "id": quiz.id,
+        "external_id": quiz.external_id,
+        "course_id": quiz.course_id,
+        "title": quiz.title,
+        "date": quiz.date,
+        "time": quiz.time,
+        "room": quiz.room,
+        "status": quiz.status,
+        "created_at": quiz.created_at,
+        "updated_at": quiz.updated_at,
+    }
+
+
+@router.delete("/quizzes/{quiz_id}", response_model=dict)
+def delete_quiz(quiz_id: int, db: Session = Depends(get_db)):
+    """Delete a quiz (CRUD Delete)"""
+    quiz = db.query(Quiz).filter(Quiz.id == quiz_id).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    db.delete(quiz)
+    db.commit()
+    return {"deleted": True, "id": quiz_id}
 
 
 @router.get("/announcements", response_model=List[dict])

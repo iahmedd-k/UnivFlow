@@ -198,6 +198,12 @@ export const api = {
 
   getTimetableClasses: async (token = null) => fetchFromApi('/timetable/classes', token),
 
+  getTimetableClassById: async (id, token = null) => fetchFromApi(`/timetable/classes/${id}`, token),
+
+  createSingleTimetableClass: async (entry, token = null) => fetchFromApi('/timetable/classes/single', token, {
+    method: 'POST', body: JSON.stringify(entry),
+  }),
+
   getTodaysClasses: async (token = null) => fetchFromApi('/timetable/today', token),
 
   parseTimetableImage: async (file, token = null) => {
@@ -206,13 +212,15 @@ export const api = {
     return fetchFromApi('/timetable/parse-image', token, { method: 'POST', body: form });
   },
 
-  saveTimetableClasses: async (entries, token = null) => fetchFromApi('/timetable/classes', token, {
+  saveTimetableClasses: async (entries, token = null, override = true) => fetchFromApi(`/timetable/classes?override=${override ? 'true' : 'false'}`, token, {
     method: 'POST', body: JSON.stringify(entries),
   }),
 
   deleteTimetableClass: async (id, token = null) => fetchFromApi(`/timetable/classes/${id}`, token, { method: 'DELETE' }),
 
   clearAllTimetableClasses: async (token = null) => fetchFromApi('/timetable/classes/all', token, { method: 'DELETE' }),
+
+  clearDashboardTimetable: async (token = null) => fetchFromApi('/dashboard/clear-timetable', token, { method: 'POST' }),
 
   getPortalSettings: async (token = null) => fetchFromApi('/portal/settings', token, { noCache: true }),
 

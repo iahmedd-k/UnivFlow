@@ -28,6 +28,8 @@ export default function TimetablePage() {
   const [viewMode, setViewMode] = useState('day'); // 'table' | 'day' | 'week'
   const [showAddModal, setShowAddModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [form, setForm] = useState({
     subject: '',
     weekdays: [currentDayOfWeek],
@@ -217,6 +219,23 @@ export default function TimetablePage() {
     }
   };
 
+  const handleClearTimetable = async () => {
+    setClearing(true);
+    setError('');
+    setNotice('');
+    try {
+      const token = await getToken();
+      await api.clearAllTimetableClasses(token);
+      await loadData();
+      setShowClearConfirm(false);
+      setNotice('Weekly timetable cleared successfully.');
+    } catch (err) {
+      setError(err.message || 'Could not clear timetable.');
+    } finally {
+      setClearing(false);
+    }
+  };
+
   return (
     <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-[#292d3a]">
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
@@ -236,6 +255,16 @@ export default function TimetablePage() {
           <button type="button" disabled={syncing || loading} onClick={handleSyncPortal} className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-neutral-200 bg-white px-3 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 disabled:opacity-50">
             <Icon name="refresh" size={15} className={syncing ? 'animate-spin' : ''} />
             {syncing ? 'Syncing…' : 'Sync'}
+          </button>
+          <button
+            type="button"
+            disabled={classes.length === 0 || loading || clearing}
+            onClick={() => setShowClearConfirm(true)}
+            className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-white px-3 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+            title="Clear all classes from timetable"
+          >
+            <Icon name="trash" size={14} />
+            {clearing ? 'Clearing…' : 'Clear Timetable'}
           </button>
         </div>
       </header>
@@ -641,7 +670,7 @@ export default function TimetablePage() {
             </div>
             <div className="space-y-4">
               <p className="text-xs text-neutral-600 leading-relaxed">
-                Upload a timetable image or PDF. Uniflow will try to extract course titles, times, rooms, and instructor names.
+                Upload a timetable image or PDF. Uniflow validates subject names, weekdays, and time slots with 100% precision. Validated classes will cleanly override and replace your current routine.
               </p>
               <label className="block">
                 <span className="text-xs font-medium text-neutral-700 block mb-1">Select File</span>
@@ -672,9 +701,41 @@ export default function TimetablePage() {
                   onClick={handleParseFile}
                   className="px-4 py-2 text-xs font-semibold rounded-lg bg-neutral-900 text-white hover:bg-neutral-800 disabled:opacity-50 transition"
                 >
-                  {saving ? 'Processing Image…' : 'Extract & Save'}
+                  {saving ? 'Processing Image…' : 'Extract & Override'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear Timetable Confirmation Modal */}
+      {showClearConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-xl border border-neutral-100 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3 text-rose-600 mb-3">
+              <span className="grid size-9 place-items-center rounded-xl bg-rose-50 text-rose-600"><Icon name="alert" size={18} /></span>
+              <h3 className="font-bold text-neutral-900 text-sm">Clear Weekly Timetable?</h3>
+            </div>
+            <p className="text-xs text-neutral-600 leading-relaxed mb-5">
+              This will permanently remove all {classes.length} scheduled lectures from your weekly routine. You can import an updated timetable or sync from your portal again whenever you like.
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowClearConfirm(false)}
+                className="px-3.5 py-2 text-xs font-medium text-neutral-600 hover:text-neutral-900"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={clearing}
+                onClick={handleClearTimetable}
+                className="px-4 py-2 text-xs font-semibold rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50 transition"
+              >
+                {clearing ? 'Clearing…' : 'Yes, Clear Timetable'}
+              </button>
             </div>
           </div>
         </div>

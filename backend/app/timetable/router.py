@@ -103,6 +103,108 @@ def _clean_time_string(t: str, default_val: str = "09:00") -> str:
     return cleaned if cleaned else default_val
 
 
+BLACK_LISTED_KEYWORDS = {
+    "free", "break", "lunch", "none", "null", "asctimetables", "timetable", "schedule",
+    "class schedule", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "mon", "tue", "wed", "thu", "fri", "sat", "sun", "fall", "spring", "summer",
+    "shift", "shift-i", "shift-ii", "shift 1", "shift 2", "morning", "evening", "semester",
+    "section", "room", "teacher", "faculty", "instructor", "page", "dept", "department",
+    "curriculum", "air university", "au", "day", "time", "venue", "slot", "slots", "period",
+    "class", "classes", "recess", "holiday", "off", "tbd", "tba", "n/a", "na",
+}
+
+NOISE_SUBSTRINGS = [
+    "shift-i", "shift-ii", "shift 1", "shift 2", "shift-1", "shift-2", "shift-ll",
+    "department of", "air university", "class schedule", "asctimetables", "w.e.f",
+    "semester fall", "semester spring", "semester summer", "morning shift", "evening shift",
+    "time table", "weekly timetable",
+]
+
+ROOM_REGEX = re.compile(
+    r"^(?:(?:room|rm|lab|hall|venue|auditorium|audi|c|b|a|d|e)[- ]?\d{1,4}[a-z]?|"
+    r"c[- ]?\d{2,4}|lab[- ]?\d{1,2}|auditorium[- ]?\d{0,2}|main campus)$",
+    re.IGNORECASE,
+)
+
+
+def _validate_timetable_candidate(item: dict) -> Optional[dict]:
+    """
+    Strict 100% validation check for timetable class candidates.
+    Discards rough or dump OCR extractions (headers, room-only cells, invalid times, etc.)
+    """
+    if not isinstance(item, dict):
+        return None
+
+    # 1. Subject validation
+    raw_subj = str(item.get("subject") or "").strip()
+    cleaned = re.sub(r"^[0-9]+[.\-)]\s*", "", raw_subj)
+    cleaned = re.sub(r"^(?:CS[- ]?|VFM[- ]?)", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" /-,:;|.")
+
+    if len(cleaned) < 3 or len(cleaned) > 150:
+        return None
+
+    # Must contain at least 3 alphabetic letters
+    letters = re.findall(r"[A-Za-z]", cleaned)
+    if len(letters) < 3:
+        return None
+
+    lower_sub = cleaned.lower()
+    if lower_sub in BLACK_LISTED_KEYWORDS:
+        return None
+    if ROOM_REGEX.match(lower_sub):
+        return None
+    if any(noise in lower_sub for noise in NOISE_SUBSTRINGS):
+        return None
+
+    # 2. Weekdays validation
+    raw_wks = item.get("weekdays")
+    if not isinstance(raw_wks, (list, tuple, set)):
+        if isinstance(raw_wks, (int, str)) and str(raw_wks).isdigit():
+            raw_wks = [int(raw_wks)]
+        else:
+            return None
+
+    wks = [int(w) for w in raw_wks if str(w).isdigit() and 0 <= int(w) <= 6]
+    if not wks:
+        return None
+    valid_weekdays = sorted(list(set(wks)))
+
+    # 3. Start time and End time validation
+    st = _time24(item.get("start_time"))
+    et = _time24(item.get("end_time"))
+    if not st or not et:
+        return None
+    time_fmt = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+    if not time_fmt.match(st) or not time_fmt.match(et):
+        return None
+
+    sh, sm = map(int, st.split(":"))
+    eh, em = map(int, et.split(":"))
+    dur = (eh * 60 + em) - (sh * 60 + sm)
+    if dur < 30 or dur > 240:
+        return None
+
+    # Clean teacher and room
+    raw_teacher = str(item.get("teacher") or "").strip()
+    raw_teacher = re.sub(r"^(?:teacher|faculty|instructor)\s*[:\-]?\s*", "", raw_teacher, flags=re.IGNORECASE)
+    clean_teacher = re.sub(r"\s+", " ", raw_teacher).strip(" /-,:;|.")[:150]
+
+    raw_room = str(item.get("room") or "").strip()
+    raw_room = re.sub(r"^(?:room|venue|classroom|lab)\s*[:\-]?\s*", "", raw_room, flags=re.IGNORECASE)
+    clean_room = re.sub(r"\s+", " ", raw_room).strip(" /-,:;|.")[:100]
+
+    return {
+        "subject": cleaned,
+        "weekdays": valid_weekdays,
+        "start_time": st,
+        "end_time": et,
+        "teacher": clean_teacher,
+        "room": clean_room,
+        "section": str(item.get("section") or "").strip()[:50],
+    }
+
+
 def _ocr_box(image: Image.Image, box: tuple[int, int, int, int]) -> str:
     """Crop and OCR a specific bounding box with contrast enhancement"""
     try:
@@ -345,16 +447,18 @@ def _parse_spatial_timetable(payload_bytes: bytes) -> tuple[str, list[dict]]:
 
             clean_rm = re.sub(r"\s+", " ", raw_room).strip(" /-,:")
 
-            if clean_subj and clean_subj.lower() not in ("free", "break"):
-                extracted_classes.append({
-                    "subject": clean_subj[:255],
-                    "weekdays": [w_day],
-                    "start_time": start_time,
-                    "end_time": end_time,
-                    "teacher": clean_teach[:255],
-                    "room": clean_rm[:100],
-                    "section": ""
-                })
+            candidate = {
+                "subject": clean_subj,
+                "weekdays": [w_day],
+                "start_time": start_time,
+                "end_time": end_time,
+                "teacher": clean_teach,
+                "room": clean_rm,
+                "section": ""
+            }
+            validated = _validate_timetable_candidate(candidate)
+            if validated:
+                extracted_classes.append(validated)
 
     return semester_name, extracted_classes
 
@@ -397,28 +501,9 @@ Rules:
                         if isinstance(parsed, dict) and "classes" in parsed and isinstance(parsed["classes"], list):
                             valid_classes = []
                             for c in parsed["classes"]:
-                                subj = (c.get("subject") or "").strip()
-                                if not subj or subj.lower() in ("free", "break", "lunch", "none", "null"):
-                                    continue
-                                wk = [int(w) for w in c.get("weekdays", []) if isinstance(w, (int, str)) and str(w).isdigit() and 0 <= int(w) <= 6]
-                                if not wk:
-                                    wk = [0]
-                                st = _clean_time_string(c.get("start_time"), "09:00")
-                                et = _clean_time_string(c.get("end_time"), "10:30")
-                                if et <= st:
-                                    sh, sm = map(int, st.split(":"))
-                                    eh = min(sh + 1, 23)
-                                    et = f"{eh:02d}:{sm:02d}"
-
-                                valid_classes.append({
-                                    "subject": subj[:255],
-                                    "weekdays": sorted(list(set(wk))),
-                                    "start_time": st,
-                                    "end_time": et,
-                                    "teacher": str(c.get("teacher") or "")[:255].strip(),
-                                    "room": str(c.get("room") or "")[:100].strip(),
-                                    "section": str(c.get("section") or "")[:120].strip(),
-                                })
+                                validated = _validate_timetable_candidate(c)
+                                if validated:
+                                    valid_classes.append(validated)
                             if valid_classes:
                                 return {
                                     "semester_name": parsed.get("semester_name") or "",
@@ -457,16 +542,18 @@ def _parse_lines_fallback(text: str) -> List[dict]:
         room = room_match.group(0).strip() if room_match else ""
         details = re.sub(r"(?:teacher|faculty|instructor|room|classroom|venue)\s*[:\-#]\s*[^,;|]+", " ", details, flags=re.IGNORECASE)
         subject = re.sub(r"\s+", " ", details).strip(" |,;:-")
-        if subject and subject.lower() not in ("free", "break"):
-            candidates.append({
-                "subject": subject[:255],
-                "weekdays": days,
-                "start_time": start_time,
-                "end_time": end_time,
-                "teacher": teacher[:255],
-                "room": room[:100],
-                "section": ""
-            })
+        candidate = {
+            "subject": subject,
+            "weekdays": days,
+            "start_time": start_time,
+            "end_time": end_time,
+            "teacher": teacher,
+            "room": room,
+            "section": ""
+        }
+        validated = _validate_timetable_candidate(candidate)
+        if validated:
+            candidates.append(validated)
     return candidates
 
 
@@ -494,7 +581,7 @@ async def parse_timetable_image(
 ):
     """
     Parse an uploaded timetable image or PDF using intelligent grid slicing + AI extraction.
-    Automatically saves valid class rows to the database by default.
+    Strictly validates all candidate classes and overrides the previous timetable upon auto-save.
     """
     content_type = (image.content_type or "").lower()
     is_pdf = content_type == "application/pdf" or (image.filename or "").lower().endswith(".pdf")
@@ -554,37 +641,56 @@ async def parse_timetable_image(
             else:
                 candidates = _parse_lines_fallback(raw_text)
 
-    # If auto_save is enabled and we found classes, save them immediately
+    # 100% Validation Check: Filter out rough, dump or incomplete OCR candidates
+    validated_candidates = []
+    seen = set()
+    for item in candidates:
+        validated = _validate_timetable_candidate(item)
+        if not validated:
+            continue
+        for weekday in validated["weekdays"]:
+            class_key = (
+                validated["subject"].strip().lower(),
+                weekday,
+                validated["start_time"],
+                validated["end_time"]
+            )
+            if class_key not in seen:
+                seen.add(class_key)
+                validated_candidates.append({
+                    **validated,
+                    "weekdays": [weekday]
+                })
+
+    # Clean Override Reset: When saving a new timetable image, cleanly wipe previous entries
     saved_entries = []
-    if auto_save and candidates:
-        for item in candidates:
+    if auto_save and validated_candidates:
+        db.query(TimetableEntry).delete()
+        db.flush()
+
+        for item in validated_candidates:
             subj = item["subject"].strip()
             st = item["start_time"]
             et = item["end_time"]
-            if et <= st:
-                continue
-            for weekday in set(item.get("weekdays", [0])):
-                if not (0 <= weekday <= 6):
-                    continue
-                identity = f"{subj.lower()}|{weekday}|{st}|{et}|{semester_detected.lower()}"
-                external_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-                entry = db.query(TimetableEntry).filter(TimetableEntry.external_id == external_id).first()
-                if not entry:
-                    entry = TimetableEntry(
-                        external_id=external_id,
-                        subject=subj,
-                        weekday=weekday,
-                        start_time=st,
-                        end_time=et
-                    )
-                    db.add(entry)
-                entry.subject = subj
-                entry.teacher = item.get("teacher") or None
-                entry.room = item.get("room") or None
-                entry.semester_name = semester_detected or None
-                db.flush()
-                saved_entries.append(entry)
+            weekday = item["weekdays"][0]
+            identity = f"{subj.lower()}|{weekday}|{st}|{et}|{(semester_detected or '').lower()}"
+            external_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            entry = TimetableEntry(
+                external_id=external_id,
+                subject=subj,
+                weekday=weekday,
+                start_time=st,
+                end_time=et,
+                teacher=item.get("teacher") or None,
+                room=item.get("room") or None,
+                semester_name=semester_detected or None
+            )
+            db.add(entry)
+            db.flush()
+            saved_entries.append(entry)
+
         db.commit()
+        invalidate_attendance_summary_cache()
         for entry in saved_entries:
             db.refresh(entry)
 
@@ -594,12 +700,16 @@ async def parse_timetable_image(
         "filename": image.filename,
         "raw_text": raw_text[:4000],
         "semester_name": semester_detected,
-        "candidates": candidates,
+        "candidates": validated_candidates,
         "saved_count": len(saved_entries),
         "total_classes": len(all_current_entries),
         "classes": [_entry_dict(e) for e in all_current_entries],
         "success": True,
-        "message": f"Successfully extracted and saved {len(candidates)} classes to your weekly timetable." if candidates else "No classes detected. You can add class rows manually below."
+        "message": (
+            f"Successfully extracted and saved {len(validated_candidates)} verified classes (previous timetable overridden)."
+            if validated_candidates
+            else "No 100% complete class schedules detected in image. Please ensure subject names, days, and times are clearly legible."
+        )
     }
 
 
@@ -626,6 +736,15 @@ def get_timetable_classes(
             seen.add(key)
             unique_entries.append(entry)
     return [_entry_dict(entry) for entry in unique_entries]
+
+
+@router.get("/classes/{entry_id}", response_model=dict)
+def get_timetable_class(entry_id: int, db: Session = Depends(get_db)):
+    """Fetch a single timetable class entry by ID (CRUD Read)"""
+    entry = db.query(TimetableEntry).filter(TimetableEntry.id == entry_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Timetable class not found.")
+    return _entry_dict(entry)
 
 
 @router.get("/today", response_model=List[dict])
@@ -660,7 +779,19 @@ def get_todays_classes(
 
 
 @router.post("/classes", response_model=List[dict])
-def save_timetable_classes(payload: List[TimetableClassInput] = Body(max_length=100), db: Session = Depends(get_db)):
+def save_timetable_classes(
+    payload: List[TimetableClassInput] = Body(max_length=100),
+    override: bool = Query(True, description="Reset and override existing timetable with this new batch"),
+    db: Session = Depends(get_db)
+):
+    """
+    Save batch timetable classes.
+    By default (override=True), cleanly resets previous timetable entries.
+    """
+    if override:
+        db.query(TimetableEntry).delete()
+        db.flush()
+
     saved = []
     for item in payload:
         if item.end_time <= item.start_time:
@@ -695,8 +826,47 @@ def save_timetable_classes(payload: List[TimetableClassInput] = Body(max_length=
     return [_entry_dict(entry) for entry in saved]
 
 
+@router.post("/classes/single", response_model=dict)
+def create_single_timetable_class(
+    item: TimetableClassInput = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Create a single timetable class entry (CRUD Create)"""
+    if item.end_time <= item.start_time:
+        raise HTTPException(status_code=422, detail="End time must be after start time.")
+    weekday = item.weekdays[0] if item.weekdays else 0
+    if weekday < 0 or weekday > 6:
+        raise HTTPException(status_code=422, detail="Weekday must be between 0 (Monday) and 6 (Sunday).")
+
+    identity = "|".join((item.subject.strip().lower(), str(weekday), item.start_time, item.end_time, (item.semester_name or "").strip().lower()))
+    external_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    entry = db.query(TimetableEntry).filter(TimetableEntry.external_id == external_id).first()
+    if not entry:
+        entry = TimetableEntry(
+            external_id=external_id,
+            subject=item.subject.strip(),
+            weekday=weekday,
+            start_time=item.start_time,
+            end_time=item.end_time
+        )
+        db.add(entry)
+    entry.subject = item.subject.strip()
+    entry.teacher = item.teacher.strip() if item.teacher else None
+    entry.room = item.room.strip() if item.room else None
+    entry.semester_name = item.semester_name.strip() if item.semester_name else None
+    if item.semester_start:
+        entry.semester_start = datetime.combine(item.semester_start, time.min)
+    if item.semester_end:
+        entry.semester_end = datetime.combine(item.semester_end, time.max)
+    db.commit()
+    invalidate_attendance_summary_cache()
+    db.refresh(entry)
+    return _entry_dict(entry)
+
+
 @router.delete("/classes/all", response_model=dict)
 def clear_all_timetable_classes(db: Session = Depends(get_db)):
+    """Clear all timetable class entries (CRUD Delete All / Reset)"""
     deleted_count = db.query(TimetableEntry).delete()
     db.commit()
     invalidate_attendance_summary_cache()
@@ -709,7 +879,7 @@ def update_timetable_class(
     item: TimetableClassInput = Body(...),
     db: Session = Depends(get_db)
 ):
-    """Update a specific timetable class entry"""
+    """Update a specific timetable class entry (CRUD Update)"""
     entry = db.query(TimetableEntry).filter(TimetableEntry.id == entry_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Timetable class not found.")
@@ -741,6 +911,7 @@ def update_timetable_class(
 
 @router.delete("/classes/{entry_id}", response_model=dict)
 def delete_timetable_class(entry_id: int, db: Session = Depends(get_db)):
+    """Delete a single timetable class entry (CRUD Delete)"""
     entry = db.query(TimetableEntry).filter(TimetableEntry.id == entry_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Timetable class not found.")
