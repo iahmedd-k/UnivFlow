@@ -16,6 +16,7 @@ const safeExternalUrl = (value) => {
     return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
   } catch { return null; }
 };
+const materialCourseId = (item) => item.course_id ?? item.courseId ?? item.course?.id;
 
 export default function StudyAssistantPage() {
   const { getToken } = useAuth();
@@ -72,11 +73,11 @@ export default function StudyAssistantPage() {
   const visibleMaterials = useMemo(() => {
     const term = search.trim().toLowerCase();
     return materials.filter((item) => {
-      if (courseFilter !== 'all' && String(item.course_id) !== String(courseFilter)) return false;
+      if (courseFilter !== 'all' && String(materialCourseId(item) ?? '') !== String(courseFilter)) return false;
       return !term || [item.title, item.course_name, item.assignment].some((value) => String(value || '').toLowerCase().includes(term));
     });
   }, [materials, courseFilter, search]);
-  const indexedCount = materials.filter((item) => item.has_content).length;
+  const indexedCount = visibleMaterials.filter((item) => item.has_content).length;
   const toggleSource = (id) => setSelected((current) => {
     if (current.includes(id)) return current.filter((item) => item !== id);
     if (current.length >= 100) { setError('Select up to 100 sources at a time. Use the course filter to search a whole course.'); return current; }
@@ -163,9 +164,9 @@ export default function StudyAssistantPage() {
       <div className="flex min-h-0 flex-1">
         <aside className={`${showSources ? 'flex' : 'hidden'} w-full shrink-0 flex-col border-r border-line bg-[#fbfbfd] md:flex md:w-[290px]`}>
           <div className="border-b border-line p-4">
-            <div className="flex items-center justify-between"><div><h2 className="text-sm font-bold">Course sources</h2><p className="mt-0.5 text-xs text-muted">{indexedCount} indexed · {materials.length} saved</p></div><button type="button" onClick={resetSources} className="text-xs font-semibold text-violet hover:underline">Use all</button></div>
+            <div className="flex items-center justify-between"><div><h2 className="text-sm font-bold">Course sources</h2><p className="mt-0.5 text-xs text-muted">{indexedCount} indexed · {visibleMaterials.length} saved</p></div><button type="button" onClick={resetSources} className="text-xs font-semibold text-violet hover:underline">Use all</button></div>
             <p className="mt-2 text-xs leading-5 text-muted">{selected.length ? `${selected.length} selected for this chat` : courseFilter === 'all' ? 'All saved materials are searched automatically' : `All files in ${courses.find((course) => String(course.id) === String(courseFilter))?.name || 'this course'} are searched`}</p>
-            <select value={courseFilter} onChange={(event) => setCourseFilter(event.target.value)} className="mt-3 h-10 w-full rounded-lg border border-line bg-white px-3 text-sm outline-none focus:border-violet"><option value="all">All courses</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select>
+            <select value={courseFilter} onChange={(event) => { setCourseFilter(event.target.value); setSelected([]); setError(''); }} className="mt-3 h-10 w-full rounded-lg border border-line bg-white px-3 text-sm outline-none focus:border-violet"><option value="all">All courses</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select>
             <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find a file or topic" className="mt-2 h-10 w-full rounded-lg border border-line bg-white px-3 text-sm outline-none placeholder:text-muted focus:border-violet" />
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
