@@ -1074,6 +1074,94 @@ def test_extract_assignment_question_text(tmp_path):
     assert "Task 3: Modular Design Diagrams" in text
 
 
+def test_extract_assignment_tasks_comprehensive():
+    """Verify extract_assignment_tasks cleanly decomposes coding, diagram, and conceptual tasks."""
+    from app.services.ai_solution import extract_assignment_tasks, extract_assignment_deliverables
+
+    mixed_md = """
+# Task 1: CPU Scheduling Simulator
+## 1. Problem Statement
+Implement Round Robin CPU scheduling in Python with quantum = 4.
+
+## 2. Source Code
+```python
+def round_robin():
+    return "done"
+```
+
+## 3. Terminal Output
+```terminal
+ahmed@air-desktop:~/lab_tasks$ python task1.py
+Round Robin execution finished with exit code 0.
+```
+
+# Task 2: Architecture Component Diagram
+## 1. Problem Statement
+Draw a high-level system diagram using Draw.io XML.
+
+## 2. Diagram Specification
+```drawio
+<mxfile host="app.diagrams.net"><diagram name="Arch"><mxGraphModel/></diagram></mxfile>
+```
+
+# Task 3: Quality Attribute Trade-Off Matrix
+## 1. Problem Statement
+Analyze latency versus throughput trade-offs across 3 architectural patterns.
+
+## 2. Solution
+| Pattern | Latency | Throughput | Trade-off Justification |
+| :--- | :--- | :--- | :--- |
+| Microservices | Moderate | High | Network hop overhead |
+| Monolith | Low | Moderate | Scale ceiling |
+"""
+    tasks = extract_assignment_tasks(mixed_md)
+    assert len(tasks) == 3
+
+    # Task 1: coding
+    assert tasks[0]["task"] == "1"
+    assert tasks[0]["modality"] == "coding"
+    assert tasks[0]["file"] is not None
+    assert tasks[0]["file"]["name"].endswith(".py")
+    assert "Round Robin" in tasks[0]["terminal_output"]
+
+    # Task 2: diagram
+    assert tasks[1]["task"] == "2"
+    assert tasks[1]["modality"] == "diagram"
+
+    # Task 3: conceptual
+    assert tasks[2]["task"] == "3"
+    assert tasks[2]["modality"] == "conceptual"
+    assert tasks[2]["file"] is None
+    assert "Quality Attribute" in tasks[2]["title"]
+    assert "Trade-Off Matrix" in tasks[2]["raw_content"]
+
+    # Check extract_assignment_deliverables includes tasks
+    deliv = extract_assignment_deliverables(mixed_md)
+    assert "tasks" in deliv
+    assert len(deliv["tasks"]) == 3
+
+
+def test_terminal_renderer_authentic_prompt_prefix():
+    """Verify TerminalCardRenderer respects authentic student username and directory prompt prefix."""
+    from app.services.terminal_renderer import TerminalCardRenderer
+
+    prompt_prefix = "ahmed@air-desktop:~/operating_systems_lab$"
+    command = "python task1_scheduler.py"
+    output = "Process 1 completed in 12ms.\nProcess 2 completed in 8ms.\nExit code: 0"
+
+    png_bytes = TerminalCardRenderer.generate_terminal_png(
+        command=command,
+        output_text=output,
+        title="Terminal Output — task1_scheduler.py",
+        prompt_prefix=prompt_prefix,
+    )
+
+    assert isinstance(png_bytes, bytes)
+    assert len(png_bytes) > 500  # Valid rendered PNG
+    assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n"  # Valid PNG signature
+
+
+
 
 
 

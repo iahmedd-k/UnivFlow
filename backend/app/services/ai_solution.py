@@ -121,10 +121,27 @@ def extract_code_deliverables(markdown: str) -> Dict[str, Any]:
     # Exclude non-executable documentation or text fence tags
     ignored_fence_tags = {"text", "txt", "markdown", "md", "json", "output", "terminal", "log", "apa", "reference", "table"}
 
+    subheading_exclusions = (
+        "problem statement",
+        "source code",
+        "terminal",
+        "screenshot",
+        "discussion",
+        "complexity",
+        "executive summary",
+        "solution",
+        "final answer",
+        "derivation",
+        "diagram specification",
+        "architectural schema",
+    )
+
     for line in lines:
         task_match = task_header.match(line)
         if task_match and fence is None:
-            active_task = (task_match.group(1) or task_match.group(2) or "1").lower()
+            line_clean = line.strip().lstrip("#").strip().lower()
+            if not any(exc in line_clean for exc in subheading_exclusions):
+                active_task = (task_match.group(1) or task_match.group(2) or "1").lower()
         marker = re.match(r"^\s*```\s*([^\s`]*)?.*$", line)
         if marker:
             if fence is None:
@@ -192,7 +209,9 @@ def extract_code_deliverables(markdown: str) -> Dict[str, Any]:
     for line in lines:
         task_match = task_header.match(line)
         if task_match and not in_output_fence:
-            task = (task_match.group(1) or task_match.group(2) or "1").lower()
+            line_clean = line.strip().lstrip("#").strip().lower()
+            if not any(exc in line_clean for exc in subheading_exclusions):
+                task = (task_match.group(1) or task_match.group(2) or "1").lower()
         if re.match(r"^\s{0,4}#{1,6}\s*.*?\b(?:terminal|console|execution|expected output|sample output|screenshot)\b.*$", line, re.I):
             if not in_output_fence:
                 current_heading = task
@@ -331,8 +350,150 @@ def synthesize_colab_notebook_from_markdown(markdown: str, title: str = "Google 
 
 
 
+def extract_assignment_tasks(markdown: str) -> List[Dict[str, Any]]:
+    """
+    Decompose an assignment response into structured per-task items.
+    Handles executable coding tasks, visual diagrams, and conceptual/trade-off tasks.
+    """
+    if not markdown or not markdown.strip():
+        return []
+
+    normalized = (
+        markdown.replace("\u2011", "-")
+        .replace("\u2013", "-")
+        .replace("\u2014", "-")
+        .replace("\u202f", " ")
+        .replace("\u00a0", " ")
+    )
+
+    task_header_regex = re.compile(
+        r"(?m)^[ \t]{0,3}#{1,2}[ \t]+(?:.*?\b(?:Task|Exercise|Lab Task|Assignment Task)\s*(\d+|[A-Z])\b|(?:Question|Problem)\s*(\d+)\b).*$",
+        re.I,
+    )
+
+    excluded_subheadings = (
+        "problem statement",
+        "source code",
+        "terminal",
+        "screenshot",
+        "discussion",
+        "complexity",
+        "executive summary",
+        "derivation",
+        "solution plan",
+        "diagram specification",
+        "architectural schema",
+        "final answer",
+    )
+
+    raw_matches = list(task_header_regex.finditer(normalized))
+    matches = []
+    for m in raw_matches:
+        line_text = m.group(0).strip().lstrip("#").strip().lower()
+        if any(exc in line_text for exc in excluded_subheadings):
+            continue
+        matches.append(m)
+
+    sections: List[Tuple[str, str, int, int]] = []
+    if matches:
+        for idx, m in enumerate(matches):
+            task_id = (m.group(1) or m.group(2) or str(idx + 1)).lower()
+            start = m.start()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(normalized)
+            header_line = m.group(0).strip().lstrip("#").strip()
+            sections.append((task_id, header_line, start, end))
+    else:
+        # Fallback: check top-level # or ## headers
+        header_regex = re.compile(r"(?m)^[ \t]{0,3}#{1,2}[ \t]+(.+)$")
+        h_matches = [
+            hm for hm in header_regex.finditer(normalized)
+            if not any(exc in hm.group(1).lower() for exc in excluded_subheadings)
+        ]
+        if len(h_matches) > 1:
+            for idx, hm in enumerate(h_matches):
+                start = hm.start()
+                end = h_matches[idx + 1].start() if idx + 1 < len(h_matches) else len(normalized)
+                header_text = hm.group(1).strip()
+                sections.append((str(idx + 1), header_text, start, end))
+        else:
+            sections.append(("1", "Complete Assignment Solution", 0, len(normalized)))
+
+    tasks: List[Dict[str, Any]] = []
+    deliverables = extract_code_deliverables(normalized)
+    files_by_task = {str(f.get("task")): f for f in deliverables.get("files", [])}
+    terminals_by_task = {str(t.get("task")): t.get("content", "") for t in deliverables.get("terminal_outputs", [])}
+
+    for task_id, header_title, start_pos, end_pos in sections:
+        sec_text = normalized[start_pos:end_pos].strip()
+
+        # Extract embedded images
+        image_uris = []
+        for img_match in re.finditer(r"!\[(.*?)\]\((data:image/[^;]+;base64,[A-Za-z0-9+/=]+|[^\)]+)\)", sec_text):
+            image_uris.append({
+                "caption": img_match.group(1) or f"Task {task_id} Image",
+                "uri": img_match.group(2),
+            })
+
+        # Problem statement / question
+        question_text = extract_task_question_from_markdown(normalized, task_id)
+
+        # Code block and terminal output
+        matched_file = files_by_task.get(str(task_id))
+        term_output = terminals_by_task.get(str(task_id), "")
+
+        # Fallback: scan sec_text directly for code blocks if not already captured in files
+        if not matched_file:
+            for c_match in re.finditer(r"```([a-zA-Z0-9_-]+)\s*\n([\s\S]*?)```", sec_text):
+                tag = c_match.group(1).lower().split("-")[0]
+                if tag in _CODE_EXTENSIONS and tag not in ("terminal", "console", "drawio", "mermaid", "plantuml"):
+                    matched_file = {
+                        "task": task_id,
+                        "language": tag,
+                        "name": f"task_{task_id}_solution.{_CODE_EXTENSIONS[tag]}",
+                        "content": c_match.group(2).rstrip() + "\n",
+                    }
+                    break
+
+        # Check for diagram companion (drawio / mermaid)
+        is_diagram = False
+        diagram_data = None
+        if matched_file and matched_file.get("language") in ("drawio", "mermaid", "plantuml", "flowchart"):
+            is_diagram = True
+            diagram_data = {
+                "type": matched_file.get("language"),
+                "name": matched_file.get("name"),
+                "content": matched_file.get("content"),
+            }
+        elif "<mxfile" in sec_text or "```drawio" in sec_text or "```mermaid" in sec_text:
+            is_diagram = True
+
+        # Classify modality
+        if matched_file and not is_diagram:
+            modality = "coding"
+        elif is_diagram:
+            modality = "diagram"
+        else:
+            modality = "conceptual"
+
+        # Discussion or markdown body (stripping large code blocks for summary if needed)
+        tasks.append({
+            "task": task_id,
+            "title": header_title,
+            "modality": modality,
+            "question": question_text,
+            "raw_content": sec_text,
+            "file": matched_file,
+            "terminal_output": term_output,
+            "diagram": diagram_data,
+            "image_uris": image_uris,
+            "screenshot_data_uri": image_uris[0]["uri"] if image_uris else None,
+        })
+
+    return tasks
+
+
 def extract_assignment_deliverables(markdown: str) -> Dict[str, Any]:
-    """Return executable task files, validated Colab notebooks, and diagram files together."""
+    """Return executable task files, validated Colab notebooks, diagram files, and structured tasks."""
     deliverables = extract_code_deliverables(markdown)
     deliverables["files"].extend(extract_colab_notebooks(markdown))
     
@@ -347,6 +508,8 @@ def extract_assignment_deliverables(markdown: str) -> Dict[str, Any]:
                 "content": diag.get("content", ""),
             })
             existing_file_names.add(diag.get("name"))
+
+    deliverables["tasks"] = extract_assignment_tasks(markdown)
     return deliverables
 
 
@@ -376,15 +539,25 @@ def extract_task_question_from_markdown(markdown: str, task_id: str, materials_c
     # 1. Check markdown heading section before the code block
     if markdown:
         task_heading = re.compile(
-            rf"(?m)^\s*#{{1,6}}\s*.*?\b(?:Task|Exercise|Problem|Question)\s*{re.escape(str(task_id))}\b[^\n]*\n",
+            rf"(?m)^\s*#{{1,2}}\s*.*?\b(?:Task|Exercise|Problem|Question)\s*{re.escape(str(task_id))}\b[^\n]*\n",
             re.I
         )
         match = task_heading.search(markdown)
         if match:
-            next_heading = re.search(r"(?m)^\s*#{1,6}\s+", markdown[match.end():])
+            next_heading = re.search(
+                r"(?m)^\s*#{1,2}\s+(?:.*?\b(?:Task|Exercise|Problem|Question)\s*(?:\d+|[A-Z])\b)",
+                markdown[match.end():],
+                re.I
+            )
             section_end = match.end() + next_heading.start() if next_heading else len(markdown)
             section = markdown[match.end():section_end]
-            
+
+            prob_match = re.search(r"(?im)^\s*#{2,4}\s*(?:.*?\b(?:Problem Statement|Question|Objective|Requirement)\b[^\n]*)\n([\s\S]*?)(?=^\s*#{2,4}\s+|\Z)", section)
+            if prob_match:
+                cand = prob_match.group(1).strip()
+                if cand and len(cand) > 10:
+                    return cand
+
             code_match = re.search(r"```", section)
             text_before_code = section[:code_match.start()].strip() if code_match else section.strip()
             if text_before_code:
@@ -516,8 +689,8 @@ ATTACHED MATERIALS & SOURCE DOCUMENTS:
 Provide a structured analysis in valid JSON format ONLY:
 ```json
 {{
-  "domain_type": "theory_essay" | "code_lab" | "diagram_design" | "quantitative_math" | "hybrid",
-  "task_type": "essay_report" | "coding" | "diagram" | "math_calculation" | "hybrid",
+  "domain_type": "THEORY_ACADEMIC" | "CODING_LAB" | "DIAGRAM_DESIGN" | "QUANTITATIVE_MATH" | "MIXED",
+  "task_type": "essay_report" | "coding" | "diagram" | "math_calculation" | "mixed",
   "topic": "Concise summary of the topic",
   "difficulty_level": "introductory" | "intermediate" | "advanced",
   "requires_code_execution": false,
@@ -550,13 +723,13 @@ Provide a structured analysis in valid JSON format ONLY:
         if json_match:
             data = json.loads(json_match.group(0))
             if "domain_type" not in data:
-                data["domain_type"] = "code_lab" if data.get("task_type") in ("coding", "code") else "theory_essay"
+                data["domain_type"] = "CODING_LAB" if data.get("task_type") in ("coding", "code") else "THEORY_ACADEMIC"
             return data
     except Exception as e:
         logger.warning(f"Failed to parse requirements JSON: {e}")
 
     return {
-        "domain_type": "theory_essay" if not re.search(r"\b(?:code|programming|c\+\+|java|python|assembly|sql|lab task)\b", (assignment.title or "") + " " + (materials_context or ""), re.I) else "code_lab",
+        "domain_type": "THEORY_ACADEMIC" if not re.search(r"\b(?:code|programming|c\+\+|java|python|assembly|sql|lab task)\b", (assignment.title or "") + " " + (materials_context or ""), re.I) else "CODING_LAB",
         "task_type": "essay_report",
         "topic": assignment.title,
         "difficulty_level": "intermediate",
@@ -570,14 +743,14 @@ Provide a structured analysis in valid JSON format ONLY:
 
 def generate_academic_solution(assignment: Assignment, course_name: str, requirements: Dict[str, Any], materials_context: str, model: str = DEFAULT_MODEL) -> str:
     """Agent Step 2: Generate complete, rigorous academic solution based on assignment modality."""
-    domain_type = requirements.get("domain_type", "theory_essay")
-    task_type = requirements.get("task_type", "hybrid")
+    domain_type = requirements.get("domain_type", "THEORY_ACADEMIC")
+    task_type = requirements.get("task_type", "MIXED")
     questions = json.dumps(requirements.get("core_questions", []), indent=2)
     plan = json.dumps(requirements.get("solution_plan", []), indent=2)
     constraints = json.dumps(requirements.get("technical_constraints", {}), indent=2)
 
     # Modality 1: Theory / Essay / Business / Humanities / Case Study
-    if domain_type == "theory_essay" or task_type in ("essay_report", "theory_questions"):
+    if domain_type == "THEORY_ACADEMIC" or task_type in ("essay_report", "theory_questions"):
         solver_prompt = f"""You are a distinguished university professor and senior researcher writing an authoritative, publication-grade academic paper/report for this university assignment:
 COURSE: {course_name}
 ASSIGNMENT TITLE: {assignment.title}
@@ -618,7 +791,7 @@ WRITING & STRUCTURE DIRECTIVES (STRICT):
 
     # Modality 2: System Architecture / Design / Visual Diagrams / Hybrid Analysis
     elif (
-        domain_type in ("diagram_design", "hybrid", "architecture")
+        domain_type in ("DIAGRAM_DESIGN", "MIXED")
         or task_type in ("diagram", "architecture", "design")
         or any(term in (assignment.title or "").lower() for term in ("architecture", "design", "diagram", "trade-off", "quality attribute", "trade off", "elevator"))
         or any(term in (materials_context or "").lower() for term in ("architecture", "design diagram", "quality attribute", "draw.io", "drawio", "trade-off matrix"))
@@ -1742,17 +1915,23 @@ def generate_agentic_solution(
             str(step.get("owner", "")).lower()
             for step in planned_steps if isinstance(step, dict)
         }
-        planned_domain = str(plan_data.get("domain_type", "")).lower()
-        if "theory" in planned_domain:
-            domain_type = "theory_essay"
-        elif "math" in planned_domain or "quantitative" in planned_domain:
-            domain_type = "theory_essay"
-        elif "diagram" in planned_domain:
-            domain_type = "diagram_design"
-        elif "heavy_ml" in planned_domain or "colab" in planned_domain:
-            domain_type = "heavy_ml"
-        elif "coding" in planned_domain or "sql" in planned_domain or "data_analysis" in planned_domain:
-            domain_type = "code_lab"
+        planned_domain = str(plan_data.get("domain_type", "")).upper()
+        if planned_domain == "THEORY_ACADEMIC":
+            domain_type = "THEORY_ACADEMIC"
+        elif planned_domain == "QUANTITATIVE_MATH":
+            domain_type = "QUANTITATIVE_MATH"
+        elif planned_domain == "DIAGRAM_DESIGN":
+            domain_type = "DIAGRAM_DESIGN"
+        elif planned_domain == "HEAVY_ML":
+            domain_type = "HEAVY_ML"
+        elif planned_domain == "CODING_LAB":
+            domain_type = "CODING_LAB"
+        elif planned_domain == "SQL_DATABASE":
+            domain_type = "SQL_DATABASE"
+        elif planned_domain == "DATA_ANALYSIS":
+            domain_type = "DATA_ANALYSIS"
+        elif planned_domain == "MIXED":
+            domain_type = "MIXED"
         else:
             coder_needed = (
                 "coder_diagram" in step_owners
@@ -1760,7 +1939,12 @@ def generate_agentic_solution(
                 or any(term in parts_text for term in ("code", "sql", "diagram", "execution_output"))
             )
             theory_needed = "theory_research" in step_owners or task_type == "RESEARCH" or "theory" in parts_text
-            domain_type = "hybrid" if coder_needed and theory_needed else "code_lab" if coder_needed else "theory_essay"
+            if coder_needed and theory_needed:
+                domain_type = "MIXED"
+            elif coder_needed:
+                domain_type = "CODING_LAB"
+            else:
+                domain_type = "THEORY_ACADEMIC"
 
         requirements = {
             "domain_type": domain_type,
@@ -1779,7 +1963,7 @@ def generate_agentic_solution(
             db.commit()
 
         initial_deliverables = extract_code_deliverables(raw_solution)
-        is_code_lab = domain_type not in ("theory_essay", "heavy_ml") and (domain_type in ("code_lab", "diagram_design", "hybrid") or bool(initial_deliverables["files"]))
+        is_code_lab = domain_type not in ("THEORY_ACADEMIC", "QUANTITATIVE_MATH", "HEAVY_ML") and (domain_type in ("CODING_LAB", "DIAGRAM_DESIGN", "SQL_DATABASE", "DATA_ANALYSIS", "MIXED") or bool(initial_deliverables["files"]))
 
         required_tasks = sorted(
             set(re.findall(r"(?im)^\s*(?:[-*•]\s*)?Task\s+(\d+)\b", materials_context)),
@@ -1933,7 +2117,7 @@ def generate_agentic_solution(
             "status": "completed",
             "assignment_id": assignment_id,
             "domain_type": domain_type,
-            "task_type": requirements.get("task_type", "hybrid"),
+            "task_type": requirements.get("task_type", "MIXED"),
             "requirements": requirements,
             "solution": final_markdown,
             "deliverables": final_deliverables,

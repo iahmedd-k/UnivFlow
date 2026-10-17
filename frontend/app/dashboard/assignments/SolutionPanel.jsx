@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 import Icon from '@/app/dashboard/Icon';
@@ -21,6 +21,7 @@ export default function SolutionPanel({ assignment }) {
   const [activeFileTab, setActiveFileTab] = useState(0);
   const [selectedTaskTab, setSelectedTaskTab] = useState('all');
   const [uploadingMaterial, setUploadingMaterial] = useState(false);
+  const [clearingErrors, setClearingErrors] = useState(false);
   const [uploadedMaterials, setUploadedMaterials] = useState([]);
   const materialsList = [...(assignment?.materials || []), ...uploadedMaterials];
 
@@ -56,6 +57,21 @@ export default function SolutionPanel({ assignment }) {
     setError('');
     return current;
   }, [assignment.id, getToken]);
+
+  const clearErrorLogs = async () => {
+    if (clearingErrors) return;
+    setClearingErrors(true);
+    try {
+      const token = getToken ? await getToken() : null;
+      await api.clearSolutionError(assignment.id, token);
+      setSolution((prev) => (prev ? { ...prev, validation_errors: null, status: prev.validated_content ? 'completed' : 'not_started' } : null));
+      setError('');
+    } catch (e) {
+      setError(e.message || 'Failed to clear error logs.');
+    } finally {
+      setClearingErrors(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -217,12 +233,52 @@ export default function SolutionPanel({ assignment }) {
     });
   };
 
+  const tasks = solution?.tasks || [];
   const files = solution?.generated_files || [];
   const outputs = solution?.terminal_outputs || [];
   const screenshots = solution?.terminal_screenshots || [];
   const generatedImages = solution?.generated_images || [];
   const crewAgents = solution?.crew_progress?.agents || [];
   const state = solution?.status || 'not_started';
+
+  const displayTasks = useMemo(() => {
+    if (tasks && tasks.length > 0) {
+      return tasks.map((t, idx) => {
+        const file = t.file || files.find((f) => String(f.task) === String(t.task)) || null;
+        const output = outputs.find((o) => String(o.task) === String(t.task)) || null;
+        const screenshot = screenshots.find((s) => String(s.task) === String(t.task)) || null;
+        return {
+          id: String(t.task || idx + 1),
+          taskNum: t.task || idx + 1,
+          title: t.title || `Task ${t.task || idx + 1}`,
+          modality: t.modality || (file ? 'coding' : 'conceptual'),
+          question: t.question || '',
+          content: t.raw_content || '',
+          file,
+          output,
+          screenshot: t.screenshot_data_uri ? { data_uri: t.screenshot_data_uri } : screenshot,
+          images: t.image_uris || [],
+        };
+      });
+    }
+    return files.map((file, idx) => {
+      const taskNum = file.task || idx + 1;
+      const output = outputs.find((o) => o.filename === file.name || String(o.task) === String(taskNum));
+      const screenshot = screenshots.find((s) => s.filename === file.name || String(s.task) === String(taskNum));
+      return {
+        id: String(taskNum),
+        taskNum,
+        title: `Task ${taskNum}: ${file.name}`,
+        modality: file.name.endsWith('.drawio.xml') || file.name.endsWith('.mmd') ? 'diagram' : 'coding',
+        question: file.description || '',
+        content: '',
+        file,
+        output,
+        screenshot,
+        images: [],
+      };
+    });
+  }, [tasks, files, outputs, screenshots]);
 
   const crewProgress = solution?.crew_progress;
   const isGenerating = state === 'generating' || starting;
@@ -798,18 +854,28 @@ export default function SolutionPanel({ assignment }) {
             <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
               <button
                 type="button"
-                onClick={refreshSolverStatus}
-                disabled={refreshingStatus}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={clearErrorLogs}
+                disabled={clearingErrors}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3 text-xs font-semibold text-ink transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
                 style={{ cursor: 'pointer' }}
+                title="Clear logs"
               >
-                <Icon name="refresh" size={13} /> {refreshingStatus ? 'Refreshing…' : 'Refresh status'}
+                <Icon name="trash" size={13} /> {clearingErrors ? 'Clearing…' : 'Clear Logs'}
               </button>
               <button
                 type="button"
-                onClick={startSolver}
+                onClick={refresh}
+                disabled={refreshingStatus}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3 text-xs font-semibold text-ink transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ cursor: 'pointer' }}
+              >
+                <Icon name="refresh" size={13} /> {refreshingStatus ? 'Refreshing…' : 'Refresh'}
+              </button>
+              <button
+                type="button"
+                onClick={() => startSolver('claude_browser')}
                 disabled={starting}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-xs font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50"
                 style={{ cursor: 'pointer' }}
               >
                 <Icon name="refresh" size={13} /> Retry Solver
@@ -948,7 +1014,7 @@ export default function SolutionPanel({ assignment }) {
           </section>
 
           {/* 2. Task Selection Filter Pills (when multiple tasks exist) */}
-          {files.length > 1 && (
+          {displayTasks.length > 1 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, overflowX: 'auto', paddingBottom: 2 }}>
               <button
                 type="button"
@@ -965,16 +1031,15 @@ export default function SolutionPanel({ assignment }) {
                   transition: 'all 0.15s ease',
                 }}
               >
-                All Tasks ({files.length})
+                All Tasks ({displayTasks.length})
               </button>
-              {files.map((file, idx) => {
-                const taskNum = file.task || idx + 1;
-                const isSelected = String(selectedTaskTab) === String(taskNum);
+              {displayTasks.map((t, idx) => {
+                const isSelected = String(selectedTaskTab) === String(t.taskNum);
                 return (
                   <button
                     key={idx}
                     type="button"
-                    onClick={() => setSelectedTaskTab(String(taskNum))}
+                    onClick={() => setSelectedTaskTab(String(t.taskNum))}
                     style={{
                       padding: '6px 16px',
                       borderRadius: 99,
@@ -988,7 +1053,7 @@ export default function SolutionPanel({ assignment }) {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    Task {taskNum}
+                    Task {t.taskNum}
                   </button>
                 );
               })}
@@ -996,33 +1061,29 @@ export default function SolutionPanel({ assignment }) {
           )}
 
           {/* 3. Unified Task Cards */}
-          {files.length > 0 && (
+          {displayTasks.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-              {files
+              {displayTasks
                 .filter(
-                  (file, idx) =>
+                  (t) =>
                     selectedTaskTab === 'all' ||
-                    String(file.task || idx + 1) === String(selectedTaskTab)
+                    String(t.taskNum) === String(selectedTaskTab)
                 )
-                .map((file, idx) => {
-                  const isNotebook = file.name.endsWith('.ipynb');
+                .map((t, idx) => {
+                  const file = t.file;
+                  const output = t.output;
+                  const screenshot = t.screenshot;
+                  const isNotebook = file && file.name.endsWith('.ipynb');
                   const isDiagram =
-                    file.name.endsWith('.drawio.xml') ||
-                    file.name.endsWith('.mmd') ||
-                    file.name.endsWith('.xml');
-                  const output = outputs.find(
-                    (o) =>
-                      o.filename === file.name || String(o.task) === String(file.task)
-                  );
-                  const screenshot = screenshots.find(
-                    (s) =>
-                      s.filename === file.name || String(s.task) === String(file.task)
-                  );
+                    t.modality === 'diagram' ||
+                    (file && (file.name.endsWith('.drawio.xml') || file.name.endsWith('.mmd') || file.name.endsWith('.xml')));
                   const langLabel = isNotebook
                     ? 'JUPYTER NOTEBOOK'
                     : isDiagram
-                    ? 'DRAW.IO XML'
-                    : String(file.language || file.name.split('.').pop() || 'CODE').toUpperCase();
+                    ? 'DRAW.IO XML / DIAGRAM'
+                    : file
+                    ? String(file.language || file.name.split('.').pop() || 'CODE').toUpperCase()
+                    : 'THEORY / CONCEPTUAL';
 
                   return (
                     <article
@@ -1059,16 +1120,16 @@ export default function SolutionPanel({ assignment }) {
                               fontWeight: 700,
                             }}
                           >
-                            Task {file.task || idx + 1}
+                            Task {t.taskNum}
                           </span>
                           <strong
                             style={{
                               fontSize: 13,
                               color: '#0f172a',
-                              fontFamily: 'monospace',
+                              fontFamily: file ? 'monospace' : 'inherit',
                             }}
                           >
-                            {file.name}
+                            {file?.name || t.title}
                           </strong>
                           <span
                             style={{
@@ -1102,58 +1163,95 @@ export default function SolutionPanel({ assignment }) {
                           >
                             <Icon name="check" size={12} />
                             <span>
-                              {isNotebook ? 'Google Colab Ready' : 'Execution Verified'}
+                              {isNotebook ? 'Google Colab Ready' : isDiagram ? 'Diagram Verified' : file ? 'Execution Verified' : 'Verified Solution'}
                             </span>
                           </span>
 
-                          <button
-                            type="button"
-                            onClick={() => copyCode(file.content, idx)}
-                            style={{
-                              padding: '5px 10px',
-                              background: '#ffffff',
-                              border: '1px solid #cbd5e1',
-                              borderRadius: 6,
-                              fontSize: 11,
-                              cursor: 'pointer',
-                              color: '#334155',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 4,
-                              fontWeight: 500,
-                            }}
-                          >
-                            {copiedIndex === idx ? (
-                              <>
-                                <Icon name="check" size={12} /> Copied!
-                              </>
-                            ) : (
-                              <>
-                                <Icon name="copyCode" size={12} /> Copy Code
-                              </>
-                            )}
-                          </button>
+                          {file && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => copyCode(file.content, idx)}
+                                style={{
+                                  padding: '5px 10px',
+                                  background: '#ffffff',
+                                  border: '1px solid #cbd5e1',
+                                  borderRadius: 6,
+                                  fontSize: 11,
+                                  cursor: 'pointer',
+                                  color: '#334155',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  fontWeight: 500,
+                                }}
+                              >
+                                {copiedIndex === idx ? (
+                                  <>
+                                    <Icon name="check" size={12} /> Copied!
+                                  </>
+                                ) : (
+                                  <>
+                                    <Icon name="copyCode" size={12} /> Copy Code
+                                  </>
+                                )}
+                              </button>
 
-                          <button
-                            type="button"
-                            onClick={() => downloadSingleFile(file.name, file.content)}
-                            style={{
-                              padding: '5px 12px',
-                              background: '#6657d9',
-                              color: '#ffffff',
-                              border: 'none',
-                              borderRadius: 6,
-                              fontSize: 11,
-                              cursor: 'pointer',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 4,
-                              fontWeight: 600,
-                            }}
-                          >
-                            <Icon name="download" size={12} />
-                            <span>Download</span>
-                          </button>
+                              <button
+                                type="button"
+                                onClick={() => downloadSingleFile(file.name, file.content)}
+                                style={{
+                                  padding: '5px 12px',
+                                  background: '#6657d9',
+                                  color: '#ffffff',
+                                  border: 'none',
+                                  borderRadius: 6,
+                                  fontSize: 11,
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  fontWeight: 600,
+                                }}
+                              >
+                                <Icon name="download" size={12} />
+                                <span>Download</span>
+                              </button>
+                            </>
+                          )}
+                          {!file && t.content && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(t.content);
+                                setCopiedIndex(idx);
+                                setTimeout(() => setCopiedIndex(null), 2000);
+                              }}
+                              style={{
+                                padding: '5px 10px',
+                                background: '#ffffff',
+                                border: '1px solid #cbd5e1',
+                                borderRadius: 6,
+                                fontSize: 11,
+                                cursor: 'pointer',
+                                color: '#334155',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                fontWeight: 500,
+                              }}
+                            >
+                              {copiedIndex === idx ? (
+                                <>
+                                  <Icon name="check" size={12} /> Copied!
+                                </>
+                              ) : (
+                                <>
+                                  <Icon name="copyCode" size={12} /> Copy Solution
+                                </>
+                              )}
+                            </button>
+                          )}
                         </div>
                       </header>
 
@@ -1166,7 +1264,7 @@ export default function SolutionPanel({ assignment }) {
                         }}
                       >
                         {/* 1. Problem Statement / Question */}
-                        {file.description && (
+                        {t.question && (
                           <div
                             style={{
                               padding: '12px 14px',
@@ -1196,12 +1294,12 @@ export default function SolutionPanel({ assignment }) {
                                 lineHeight: 1.5,
                               }}
                             >
-                              {file.description}
+                              {t.question}
                             </p>
                           </div>
                         )}
 
-                        {/* 2. Terminal Execution Screenshot Evidence */}
+                        {/* 2. Visual Output Screenshot / Diagram / Terminal Evidence */}
                         {(screenshot?.data_uri || output?.terminal_output) && !isNotebook && (
                           <div>
                             <span
@@ -1215,7 +1313,7 @@ export default function SolutionPanel({ assignment }) {
                                 marginBottom: 6,
                               }}
                             >
-                              Terminal Output & Execution Screenshot
+                              {isDiagram ? 'Visual Diagram Output (.PNG)' : 'Terminal Output & Execution Screenshot'}
                             </span>
                             {screenshot?.data_uri ? (
                               <div
@@ -1231,7 +1329,7 @@ export default function SolutionPanel({ assignment }) {
                               >
                                 <img
                                   src={screenshot.data_uri}
-                                  alt={`Terminal output for Task ${file.task || idx + 1}`}
+                                  alt={`Output for Task ${t.taskNum}`}
                                   style={{
                                     width: '100%',
                                     maxWidth: 780,
@@ -1317,17 +1415,104 @@ export default function SolutionPanel({ assignment }) {
                         )}
 
                         {/* 3. Source Code Implementation */}
-                        <div>
-                          <div
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              marginBottom: 6,
-                            }}
-                          >
+                        {file && (
+                          <div>
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                marginBottom: 6,
+                              }}
+                            >
+                              <span
+                                style={{
+                                  fontSize: 11,
+                                  fontWeight: 700,
+                                  textTransform: 'uppercase',
+                                  color: '#64748b',
+                                  letterSpacing: '0.05em',
+                                }}
+                              >
+                                Source Code Implementation
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: 11,
+                                  color: '#94a3b8',
+                                  fontFamily: 'monospace',
+                                }}
+                              >
+                                {file.content ? file.content.split('\n').length : 0} lines
+                              </span>
+                            </div>
+                            <div
+                              style={{
+                                borderRadius: 8,
+                                border: '1px solid #1e293b',
+                                background: '#0f172a',
+                                overflow: 'hidden',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  padding: '6px 12px',
+                                  background: '#1e293b',
+                                  borderBottom: '1px solid #334155',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'space-between',
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    color: '#94a3b8',
+                                    fontSize: 11,
+                                    fontFamily: 'monospace',
+                                  }}
+                                >
+                                  {file.name}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => copyCode(file.content, idx)}
+                                  style={{
+                                    padding: '2px 8px',
+                                    background: '#334155',
+                                    color: '#e2e8f0',
+                                    border: 'none',
+                                    borderRadius: 4,
+                                    fontSize: 10,
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  {copiedIndex === idx ? '✓ Copied' : 'Copy'}
+                                </button>
+                              </div>
+                              <pre
+                                style={{
+                                  margin: 0,
+                                  padding: '14px 16px',
+                                  color: '#f8fafc',
+                                  fontSize: 11,
+                                  lineHeight: 1.55,
+                                  maxHeight: 260,
+                                  overflowY: 'auto',
+                                  fontFamily: 'ui-monospace, monospace',
+                                }}
+                              >
+                                <code>{file.content}</code>
+                              </pre>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 4. Conceptual / Discussion Content (if non-coding task or rich explanation exists) */}
+                        {!file && t.content && (
+                          <div>
                             <span
                               style={{
+                                display: 'block',
                                 fontSize: 11,
                                 fontWeight: 700,
                                 textTransform: 'uppercase',
@@ -1335,77 +1520,27 @@ export default function SolutionPanel({ assignment }) {
                                 letterSpacing: '0.05em',
                               }}
                             >
-                              Source Code Implementation
+                              Comprehensive Solution & Analysis
                             </span>
-                            <span
-                              style={{
-                                fontSize: 11,
-                                color: '#94a3b8',
-                                fontFamily: 'monospace',
-                              }}
-                            >
-                              {file.content ? file.content.split('\n').length : 0} lines
-                            </span>
-                          </div>
-                          <div
-                            style={{
-                              borderRadius: 8,
-                              border: '1px solid #1e293b',
-                              background: '#0f172a',
-                              overflow: 'hidden',
-                            }}
-                          >
                             <div
                               style={{
-                                padding: '6px 12px',
-                                background: '#1e293b',
-                                borderBottom: '1px solid #334155',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                              }}
-                            >
-                              <span
-                                style={{
-                                  color: '#94a3b8',
-                                  fontSize: 11,
-                                  fontFamily: 'monospace',
-                                }}
-                              >
-                                {file.name}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => copyCode(file.content, idx)}
-                                style={{
-                                  padding: '2px 8px',
-                                  background: '#334155',
-                                  color: '#e2e8f0',
-                                  border: 'none',
-                                  borderRadius: 4,
-                                  fontSize: 10,
-                                  cursor: 'pointer',
-                                }}
-                              >
-                                {copiedIndex === idx ? '✓ Copied' : 'Copy'}
-                              </button>
-                            </div>
-                            <pre
-                              style={{
-                                margin: 0,
-                                padding: '14px 16px',
-                                color: '#f8fafc',
-                                fontSize: 11,
-                                lineHeight: 1.55,
-                                maxHeight: 260,
+                                padding: '16px 18px',
+                                background: '#f8fafc',
+                                border: '1px solid #e2e8f0',
+                                borderRadius: 8,
+                                fontSize: 13,
+                                color: '#1e293b',
+                                lineHeight: 1.6,
+                                whiteSpace: 'pre-wrap',
+                                fontFamily: 'inherit',
+                                maxHeight: 340,
                                 overflowY: 'auto',
-                                fontFamily: 'ui-monospace, monospace',
                               }}
                             >
-                              <code>{file.content}</code>
-                            </pre>
+                              {t.content}
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </div>
                     </article>
                   );
@@ -1414,7 +1549,7 @@ export default function SolutionPanel({ assignment }) {
           )}
 
           {/* 4. Essay / Theoretical Paper View (when no files exist) */}
-          {files.length === 0 && (
+          {displayTasks.length === 0 && (
             <section
               style={{
                 borderRadius: 12,

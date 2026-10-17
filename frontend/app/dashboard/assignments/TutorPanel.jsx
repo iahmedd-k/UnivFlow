@@ -124,9 +124,9 @@ export default function TutorPanel({ assignment }) {
   };
 
   const suggestedPrompts = [
-    'Can you explain what this requirement is actually asking for?',
-    'I’m stuck on where to start — what’s the general approach and architecture?',
-    'Here’s my logic so far, what edge cases or gaps am I missing?',
+    'Can you walk me through the step-by-step solution approach for this assignment?',
+    'What code architecture, libraries, and functions do I need to implement?',
+    'Prepare a comprehensive summary of key concepts and edge cases for this lab.',
   ];
 
   const secondaryButtonClass = 'inline-flex min-h-9 items-center justify-center rounded-lg border border-line bg-white px-3 text-sm font-semibold text-ink transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50';
@@ -165,7 +165,7 @@ export default function TutorPanel({ assignment }) {
             </div>
           )}
         </section>
-        <aside className="rounded-xl border border-violet/20 bg-violet-light/60 p-4 text-sm leading-6 text-violet-dark"><strong>Socratic tutoring:</strong> The AI tutor guides your understanding and points out edge cases. It explains concepts using non-assignment examples without authoring deliverables for you.</aside>
+        <aside className="rounded-xl border border-violet/20 bg-violet-light/60 p-4 text-sm leading-6 text-violet-dark"><strong>AI Assignment Tutor:</strong> Grounded in your assignment instructions, attached documents, and rubric. Ask for solution approaches, code drafting, step-by-step guidance, or revision material.</aside>
       </div>
 
       <section className="flex min-h-[520px] min-w-0 flex-col overflow-hidden rounded-xl border border-line bg-white shadow-sm">

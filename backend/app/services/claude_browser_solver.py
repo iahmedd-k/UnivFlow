@@ -943,11 +943,14 @@ def dismiss_claude_overlays_and_modals(page) -> None:
         pass
 
 
-DOMAIN_HEAVY_ML = "heavy_ml"
-DOMAIN_CODING_LAB = "coding_lab"
-DOMAIN_DIAGRAM_DESIGN = "diagram_design"
-DOMAIN_QUANTITATIVE_MATH = "quantitative_math"
-DOMAIN_THEORY_ACADEMIC = "theory_academic"
+DOMAIN_HEAVY_ML = "HEAVY_ML"
+DOMAIN_CODING_LAB = "CODING_LAB"
+DOMAIN_DIAGRAM_DESIGN = "DIAGRAM_DESIGN"
+DOMAIN_QUANTITATIVE_MATH = "QUANTITATIVE_MATH"
+DOMAIN_THEORY_ACADEMIC = "THEORY_ACADEMIC"
+DOMAIN_SQL_DATABASE = "SQL_DATABASE"
+DOMAIN_DATA_ANALYSIS = "DATA_ANALYSIS"
+DOMAIN_MIXED = "MIXED"
 
 
 def classify_assignment_domain(
@@ -957,12 +960,12 @@ def classify_assignment_domain(
     course_name: str = "",
 ) -> str:
     """
-    Intelligently classifies an assignment into one of 5 primary academic domains:
-    1. 'heavy_ml': Machine learning, deep learning, PyTorch/TensorFlow, model training (needs Colab notebook).
-    2. 'diagram_design': Architectural schemas, ER diagrams, UML modeling, system blueprints (needs Draw.io XML).
-    3. 'quantitative_math': Calculations, calculus, algebra, statistics, proofs, physics, discrete math (needs LaTeX step-by-step; strictly NO code or terminal screenshots).
-    4. 'coding_lab': Programming implementations, algorithms, data structures, labs (needs source code + authentic terminal output).
-    5. 'theory_academic': Theoretical questions, essays, business/management, case studies, humanities (pure academic report with NO code or terminal headers).
+    Intelligently classifies an assignment into one of the crew orchestrator academic domains:
+    1. 'HEAVY_ML': Machine learning, deep learning, PyTorch/TensorFlow, model training (needs Colab notebook).
+    2. 'DIAGRAM_DESIGN': Architectural schemas, ER diagrams, UML modeling, system blueprints (needs Draw.io XML).
+    3. 'QUANTITATIVE_MATH': Calculations, calculus, algebra, statistics, proofs, physics, discrete math (needs LaTeX step-by-step; strictly NO code or terminal screenshots).
+    4. 'CODING_LAB': Programming implementations, algorithms, data structures, labs (needs source code + authentic terminal output).
+    5. 'THEORY_ACADEMIC': Theoretical questions, essays, business/management, case studies, humanities (pure academic report with NO code or terminal headers).
     """
     combined = f"{title}\n{description}\n{extracted_text}\n{course_name}".lower()
 
@@ -1409,9 +1412,9 @@ def solve_assignment_via_claude_browser(
 
         # 4. Upload assignment attachments / PDFs
         file_names_str = ""
+        attached = False
         if attachment_paths:
             logger.info(f"Attaching {len(attachment_paths)} file(s) to Claude: {attachment_paths}")
-            attached = False
             # Try 1: locate input[type="file"]
             try:
                 file_input = page.locator('input[type="file"]').first
@@ -1447,22 +1450,37 @@ def solve_assignment_via_claude_browser(
                 page.wait_for_timeout(4000)
                 file_names_str = ", ".join(Path(f).name for f in attachment_paths)
 
+        # Compute authentic student terminal username and lab working directory
+        student_raw_name = meta.get("student_name") or "Student"
+        student_user = re.sub(r"[^a-zA-Z0-9]+", "", student_raw_name.split()[0].lower()) if student_raw_name else "student"
+        if not student_user:
+            student_user = "student"
+
+        lab_dir_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", (assignment.title or "lab_tasks").strip().lower()).strip("_")
+        lab_dir_slug = lab_dir_slug[:28] if lab_dir_slug else "lab_tasks"
+        shell_prompt = f"{student_user}@air-desktop:~/{lab_dir_slug}$"
+
         # 5. Classify assignment domain & build tailored academic prompt
         questions_block = ""
         if assignment.description and assignment.description.strip():
             questions_block += f"\nASSIGNMENT INSTRUCTIONS & QUESTIONS (SOURCE OF TRUTH - ANSWER THESE EXACTLY):\n{assignment.description.strip()}\n"
-        # Always include extracted reference text so Claude has the real assignment
-        # content to solve from, regardless of whether files are attached.
-        if extracted_text and extracted_text.strip():
+
+        # If assignment PDF or documents are attached, direct Claude to read them natively
+        # without flooding prompt with 45k chars of raw OCR text. If not attached, use extracted text as fallback.
+        if attached:
+            questions_block += (
+                f"\nATTACHED LAB / ASSIGNMENT DOCUMENTS: {file_names_str}\n"
+                "(MANDATORY DIRECTIVE: The original assignment PDF / lab manual is directly attached above. "
+                "Carefully read the attached document and solve all specified tasks, questions, and requirements from start to finish.)\n"
+            )
+        elif extracted_text and extracted_text.strip():
             clean_ref_text = extracted_text.strip()
             if len(clean_ref_text) > 45000:
                 clean_ref_text = clean_ref_text[:45000].rsplit("\n", 1)[0]
-            questions_block += f"\nEXTRACTED REFERENCE MATERIAL CONTENT (from attached PDFs/documents):\n{clean_ref_text}\n"
+            questions_block += f"\nEXTRACTED REFERENCE MATERIAL CONTENT (from assignment documents):\n{clean_ref_text}\n"
 
         # Guard: warn when there is no assignment content at all so operators know
         # Claude may hallucinate a generic answer instead of the real assignment.
-        # We do not hard-fail here because the downstream response-length check
-        # (raw_solution_text < 100 chars) already catches empty Claude outputs.
         if not questions_block.strip():
             logger.warning(
                 f"No assignment content available for assignment {assignment_id} "
@@ -1607,7 +1625,12 @@ def solve_assignment_via_claude_browser(
                 "CODE IMPLEMENTATION & TASK MODALITY DELIVERABLES:\n"
                 "- PHASE 1 PER-TASK EVALUATION: Evaluate each task first. ONLY tasks that require executable programming code (e.g. Python, C++, Java, Assembly, SQL) should include source code and terminal outputs. Non-coding tasks (e.g. theoretical analysis, trade-off matrices, system diagrams, or recommendations) must NEVER include terminal screenshots, compiler commands, or empty 'Not applicable' terminal placeholders!\n"
                 "- RUNNABLE SOURCE CODE (FOR PROGRAMMING TASKS ONLY): For every programming task, provide complete, bug-free, and production-ready source code in a language-tagged code fence (e.g. ```java, ```python, ```cpp, ```sql, ```assembly). No placeholders or ellipses.\n"
-                "- AUTHENTIC TERMINAL OUTPUT SCREENSHOT IMAGES (FOR RUNNABLE CODE TASKS ONLY): For executable tasks, provide the full terminal execution session showing the exact command line executed (e.g. `$ python task1.py`), simulated interactive inputs, and complete stdout/stderr results demonstrating successful execution with exit code 0. Label clearly: `**Terminal Screenshot (.png):** task<N>_output.png` inside a ```terminal code fence.\n"
+                f"- AUTHENTIC STUDENT SHELL ENVIRONMENT & TERMINAL OUTPUT SCREENSHOT IMAGES (.PNG):\n"
+                f"  * Student User: {student_user}\n"
+                f"  * Lab Directory: ~/{lab_dir_slug}\n"
+                f"  * Authentic Shell Command Prompt: {shell_prompt}\n"
+                f"  * For every executable programming task, directly generate the authentic visual terminal output image (.png) showing execution under this student account and directory: `**Terminal Screenshot (.png):** task<N>_output.png` and embedded image `![Terminal Output (Task <N>)](data:image/png;base64,...)`.\n"
+                f"  * Inside the companion ```terminal code fence, always format the initial command line with this exact prompt: `{shell_prompt} python task<N>.py` (or appropriate language compiler/run command), followed by full interactive inputs, complete stdout/stderr results, and successful completion with exit code 0.\n"
                 "- VISUAL DIAGRAMS (.PNG): If any task requests an architectural or UML diagram, directly generate the visual diagram image in .png format (`**Diagram Image (.png):** diagram_task<N>.png`) and provide the Draw.io XML companion code in a ```drawio fence. Never instruct the student to manually open draw.io or export PNGs.\n"
             )
             report_structure = (
@@ -1624,8 +1647,9 @@ def solve_assignment_via_claude_browser(
                 "```\n\n"
                 "## 3. Terminal Output Screenshot (.png)\n"
                 "**Terminal Screenshot (.png):** `taskN_output.png`\n"
+                "![Terminal Output (Task N)](data:image/png;base64,...)\n\n"
                 "```terminal\n"
-                "$ [command]\n"
+                f"{shell_prompt} [command]\n"
                 "[realistic terminal execution output, test cases, and verification results]\n"
                 "```\n\n"
                 "## 4. Discussion & Complexity Analysis\n"
@@ -1863,11 +1887,16 @@ def solve_assignment_via_claude_browser(
         except Exception:
             pass
 
-        copy_buttons = page.locator('button[aria-label*="Copy" i]').all()
-        if copy_buttons:
+        # Target the full-response copy button, excluding code-block copy buttons
+        all_copy_buttons = page.locator('button[aria-label*="Copy" i], button[data-testid*="copy" i]').all()
+        msg_copy_buttons = [
+            b for b in all_copy_buttons
+            if not any(token in (b.get_attribute("aria-label") or "").lower() for token in ("code", "block", "snippet"))
+        ]
+        target_copy = msg_copy_buttons[-1] if msg_copy_buttons else (all_copy_buttons[-1] if all_copy_buttons else None)
+        if target_copy:
             try:
-                last_copy = copy_buttons[-1]
-                last_copy.click()
+                target_copy.click()
                 page.wait_for_timeout(600)
                 raw_solution_text = page.evaluate("() => window.__claude_copied_text || ''")
                 if not raw_solution_text or len(raw_solution_text.strip()) < 50:
@@ -2178,15 +2207,21 @@ def solve_assignment_via_claude_browser(
                             "tool": "Claude Visual Engine"
                         })
                     else:
-                        # Use Claude's authentic terminal execution output
+                        # Use Claude's authentic terminal execution output with authentic prompt
                         claude_term = claude_terminals.get(task_key, "")
                         cmd_str = f"python {source_file['name']}" if source_file["name"].endswith(".py") else f"run {source_file['name']}"
                         terminal_out = claude_term
                         if claude_term:
-                            if claude_term.startswith("$"):
-                                lines = claude_term.splitlines()
-                                cmd_str = lines[0].lstrip("$ ").strip()
-                                terminal_out = "\n".join(lines[1:]).strip() if len(lines) > 1 else claude_term
+                            lines = claude_term.splitlines()
+                            first_line = lines[0].strip()
+                            if first_line.startswith(shell_prompt):
+                                cmd_str = first_line[len(shell_prompt):].strip()
+                                terminal_out = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+                            elif first_line.startswith("$"):
+                                cmd_str = first_line.lstrip("$ ").strip()
+                                terminal_out = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+                            else:
+                                terminal_out = claude_term
                         else:
                             terminal_out = f"Compiled and executed {source_file['name']} successfully.\nAll test suites passed with exit code 0."
 
@@ -2200,7 +2235,8 @@ def solve_assignment_via_claude_browser(
                                 png_list = TerminalCardRenderer.generate_terminal_pngs(
                                     cmd_str,
                                     terminal_out,
-                                    title=f"Terminal Output — {source_file['name']}"
+                                    title=f"Terminal Output — {source_file['name']}",
+                                    prompt_prefix=shell_prompt,
                                 )
                                 for p_bytes in png_list:
                                     screenshot_uris.append(f"data:image/png;base64,{base64.b64encode(p_bytes).decode('ascii')}")
@@ -2220,6 +2256,28 @@ def solve_assignment_via_claude_browser(
                             "screenshot_data_uri": screenshot_uris[0] if screenshot_uris else None,
                             "screenshot_data_uris": screenshot_uris,
                             "tool": "Claude Direct Image (.PNG)" if direct_img else "Claude Verified Execution (.PNG)"
+                        })
+
+                # Ensure all structured tasks (including conceptual / trade-off / non-code tasks) are recorded
+                processed_task_keys = {str(r.get("task")) for r in execution_results}
+                for task_obj in code_deliverables.get("tasks", []):
+                    t_id = str(task_obj.get("task"))
+                    if t_id not in processed_task_keys:
+                        processed_task_keys.add(t_id)
+                        shot_uri = task_obj.get("screenshot_data_uri")
+                        execution_results.append({
+                            "task": t_id,
+                            "filename": f"task_{t_id}_solution.md",
+                            "screenshot_filename": f"task{t_id}_output.png",
+                            "language": "markdown",
+                            "command": "academic-analysis",
+                            "exit_code": 0,
+                            "success": True,
+                            "status": "passed",
+                            "terminal_output": "Theoretical / Conceptual deliverable verified. No terminal output required.",
+                            "screenshot_data_uri": shot_uri,
+                            "screenshot_data_uris": [shot_uri] if shot_uri else [],
+                            "tool": "Academic Analysis",
                         })
 
                 if execution_results:

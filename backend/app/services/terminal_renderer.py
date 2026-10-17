@@ -63,15 +63,31 @@ class TerminalCardRenderer:
         return font, title_font
 
     @classmethod
-    def generate_single_card_png(cls, command: str, raw_lines: List[str], title: str = "Assignment code run", is_continuation: bool = False) -> bytes:
+    def generate_single_card_png(
+        cls,
+        command: str,
+        raw_lines: List[str],
+        title: str = "Assignment code run",
+        is_continuation: bool = False,
+        prompt_prefix: Optional[str] = None,
+    ) -> bytes:
         """Render a single high-definition terminal card PNG from a given list of wrapped lines."""
         from PIL import Image, ImageDraw
 
         width = 1280
         font, title_font = cls._get_fonts()
 
-        cmd_prefix = "$ " if not is_continuation else "$ ... (continued) "
-        lines = [f"{cmd_prefix}{command or 'run solution file'}"] + (raw_lines or ["No output."])
+        base_prefix = prompt_prefix if prompt_prefix else "$"
+        base_prefix = base_prefix.rstrip()
+        cmd_prefix = f"{base_prefix} " if not is_continuation else f"{base_prefix} ... (continued) "
+        # Avoid duplicating prefix if command already begins with the prefix
+        clean_command = command or "run solution file"
+        if prompt_prefix and clean_command.startswith(prompt_prefix):
+            lines = [f"{clean_command}"] + (raw_lines or ["No output."])
+        elif clean_command.startswith("$"):
+            lines = [f"{clean_command}"] + (raw_lines or ["No output."])
+        else:
+            lines = [f"{cmd_prefix}{clean_command}"] + (raw_lines or ["No output."])
 
         line_height = 26
         header_height = 48
@@ -107,7 +123,14 @@ class TerminalCardRenderer:
         return buffer.getvalue()
 
     @classmethod
-    def generate_terminal_pngs(cls, command: str, output_text: str, title: str = "Terminal Output", max_lines_per_card: int = 24) -> List[bytes]:
+    def generate_terminal_pngs(
+        cls,
+        command: str,
+        output_text: str,
+        title: str = "Terminal Output",
+        max_lines_per_card: int = 24,
+        prompt_prefix: Optional[str] = None,
+    ) -> List[bytes]:
         """
         Render terminal output into one or multiple high-definition PNG screenshots.
         If output is large, splits cleanly into Part 1, Part 2 (half-and-half / multi-part)
@@ -121,7 +144,13 @@ class TerminalCardRenderer:
         total_lines = len(wrapped_lines)
         if total_lines <= max_lines_per_card:
             # Single card is sufficient
-            png_bytes = cls.generate_single_card_png(command, wrapped_lines, title=title, is_continuation=False)
+            png_bytes = cls.generate_single_card_png(
+                command,
+                wrapped_lines,
+                title=title,
+                is_continuation=False,
+                prompt_prefix=prompt_prefix,
+            )
             return [png_bytes]
 
         # Multiple cards needed (split half and half or into chunks of max_lines_per_card)
@@ -135,15 +164,33 @@ class TerminalCardRenderer:
             chunk = wrapped_lines[start:end]
             part_title = f"{title} (Part {part_idx + 1}/{num_parts})"
             is_cont = part_idx > 0
-            png_bytes = cls.generate_single_card_png(command, chunk, title=part_title, is_continuation=is_cont)
+            png_bytes = cls.generate_single_card_png(
+                command,
+                chunk,
+                title=part_title,
+                is_continuation=is_cont,
+                prompt_prefix=prompt_prefix,
+            )
             png_list.append(png_bytes)
 
         return png_list
 
     @classmethod
-    def generate_terminal_png(cls, command: str, output_text: str, title: str = "Assignment code run") -> bytes:
+    def generate_terminal_png(
+        cls,
+        command: str,
+        output_text: str,
+        title: str = "Assignment code run",
+        prompt_prefix: Optional[str] = None,
+    ) -> bytes:
         """Render captured terminal output into a single PNG image."""
-        pngs = cls.generate_terminal_pngs(command, output_text, title=title, max_lines_per_card=80)
+        pngs = cls.generate_terminal_pngs(
+            command,
+            output_text,
+            title=title,
+            max_lines_per_card=80,
+            prompt_prefix=prompt_prefix,
+        )
         return pngs[0] if pngs else b""
 
     @classmethod

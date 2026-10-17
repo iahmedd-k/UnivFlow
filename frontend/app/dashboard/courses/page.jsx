@@ -201,21 +201,38 @@ export default function CoursesPage() {
                 </article>
               ))
             ) : (
-              <div className="m-auto w-full max-w-lg py-10 text-center">
+              <div className="m-auto w-full max-w-lg py-8 text-center">
                 <span className="mx-auto mb-4 grid size-16 place-items-center rounded-xl bg-violet-light text-violet"><Icon name="messageCircle" size={28} /></span>
-                <strong className="block text-base font-semibold text-ink">Ask about your course materials</strong>
-                <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">Select at least one source material, then ask for explanations, comparisons, or topic reviews.</p>
-                {!selected.length && <div className="mt-6 rounded-lg border border-line bg-paper p-4 text-sm leading-6 text-muted">
-                  <strong className="block text-xs font-semibold uppercase tracking-wide text-muted">No sources selected</strong>
-                  <span>Open the sidebar and choose the course files you want to ask about.</span>
-                </div>}
+                <strong className="block text-base font-semibold text-ink">University Study & Exam Assistant</strong>
+                <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">
+                  {selected.length
+                    ? `Ready to answer questions, explain topics, or prepare study materials using ${selected.length} selected source${selected.length > 1 ? 's' : ''}.`
+                    : 'Ask anything about your courses, topics, or request study notes & cheat sheets across all course materials.'}
+                </p>
+                <div className="mt-5 flex flex-wrap justify-center gap-2">
+                  <button type="button" onClick={() => setQuestion("Prepare a high-yield study sheet and key formulas for my upcoming exam.")} className="rounded-lg border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-ink transition hover:border-violet/40 hover:bg-violet-light/30">
+                    📝 Prepare exam cheat sheet
+                  </button>
+                  <button type="button" onClick={() => setQuestion("Explain the core concepts and common exam questions from this course.")} className="rounded-lg border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-ink transition hover:border-violet/40 hover:bg-violet-light/30">
+                    💡 Explain core concepts
+                  </button>
+                  <button type="button" onClick={() => setQuestion("Generate a 5-question practice quiz with detailed explanations.")} className="rounded-lg border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-ink transition hover:border-violet/40 hover:bg-violet-light/30">
+                    🎯 Practice quiz
+                  </button>
+                </div>
               </div>
             )}
             {busy && <div className="flex items-center gap-2 text-sm text-muted" role="status"><span className="size-4 animate-spin rounded-full border-2 border-violet-light border-t-violet" />Study assistant is thinking…</div>}
           </div>
           <form className="flex gap-2 border-t border-line bg-white p-4 shrink-0" onSubmit={send}>
-            <input className={inputClass} value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask about your selected materials…" aria-label="Ask about selected materials" disabled={!selected.length} />
-            <button type="submit" className={buttonClass} disabled={busy || !question.trim() || !selected.length}>{busy ? 'Working…' : 'Ask'}</button>
+            <input 
+              className={inputClass} 
+              value={question} 
+              onChange={(e) => setQuestion(e.target.value)} 
+              placeholder={selected.length ? `Ask about ${selected.length} selected source${selected.length > 1 ? 's' : ''}…` : "Ask about your courses or request study materials…"} 
+              aria-label="Ask study assistant" 
+            />
+            <button type="submit" className={buttonClass} disabled={busy || !question.trim()}>{busy ? 'Working…' : 'Ask'}</button>
           </form>
         </section>
       </div>

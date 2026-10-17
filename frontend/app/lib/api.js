@@ -375,6 +375,7 @@ export const api = {
   }),
 
   getSolutionStatus: async (assignmentId, token = null, options = {}) => fetchFromApi(`/classroom/assignments/${assignmentId}/solution/status`, token, options),
+  clearSolutionError: async (assignmentId, token = null) => fetchFromApi(`/classroom/assignments/${assignmentId}/solution/clear-error`, token, { method: 'POST' }),
 
   openClaudeBrowser: async (token = null) => fetchFromApi('/classroom/claude-browser/open', token, {
     method: 'POST',

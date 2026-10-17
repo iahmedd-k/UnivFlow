@@ -126,3 +126,6 @@ backend/*.xml
 backend/debug_solution_*.md
 backend/scratch_test_*.py
 backend/test_drawio_pipeline.py
+backend/tmp_*.db
+TestAssignments/
+

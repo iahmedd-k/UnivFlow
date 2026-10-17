@@ -1618,6 +1618,26 @@ def get_solution_status(
     except (TypeError, json.JSONDecodeError):
         crew_progress = None
 
+    # Auto-clear stale or raw browser crash logs if assignment is not generating or is in DRAFT
+    if solution.validation_errors and not (solution.validated_content or solution.draft_content):
+        stale_error_indicators = (
+            "Browser logs:",
+            "Looks like you launched a headed browser",
+            "Missing X server",
+            "Target page, context or browser has been closed",
+            "BrowserType.launch",
+            "BrowserType.connect_over_cdp",
+            "Could not connect to Chrome on port",
+            "Cannot connect to the hosted browser",
+            "Connection refused",
+            "out of free messages",
+        )
+        is_raw_browser_log = any(ind in solution.validation_errors for ind in stale_error_indicators)
+        if (assignment and assignment.status == AssignmentStatus.DRAFT) or is_raw_browser_log:
+            logger.info("Auto-clearing stale browser error logs for assignment %s", assignment_id)
+            solution.validation_errors = None
+            db.commit()
+
     assignment = _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
     has_content = bool(solution.validated_content or solution.draft_content)
     is_completed = bool(solution.validated_content)
@@ -1633,17 +1653,47 @@ def get_solution_status(
         except Exception:
             claude_rate_limit = None
 
+    cleaned_validation_errors = solution.validation_errors
+    if cleaned_validation_errors:
+        if "Browser logs:" in cleaned_validation_errors:
+            cleaned_validation_errors = cleaned_validation_errors.split("Browser logs:")[0].strip()
+        if "Call log:" in cleaned_validation_errors:
+            cleaned_validation_errors = cleaned_validation_errors.split("Call log:")[0].strip()
+
+    enriched_tasks = []
+    for task_item in deliverables.get("tasks", []):
+        t_id = str(task_item.get("task"))
+        matching_res = next((r for r in execution_results if str(r.get("task")) == t_id), None)
+        matching_shot = next((s for s in terminal_screenshots if str(s.get("task")) == t_id), None)
+        enriched_task = {
+            **task_item,
+            "run": matching_res,
+            "screenshot_data_uri": task_item.get("screenshot_data_uri") or (matching_shot.get("data_uri") if matching_shot else None),
+        }
+        enriched_tasks.append(enriched_task)
+
+    collected_images = _assignment_generated_images(db, assignment_id)
+    if not collected_images:
+        for t_item in enriched_tasks:
+            for img in t_item.get("image_uris", []):
+                collected_images.append({
+                    "task": t_item.get("task"),
+                    "caption": img.get("caption"),
+                    "data_uri": img.get("uri"),
+                })
+
     return {
         "status": "completed" if is_completed else "failed" if is_failed else "generating" if is_generating else "not_started",
         "draft_content": strip_execution_metadata(solution.draft_content or ""),
         "validated_content": strip_execution_metadata(solution.validated_content or ""),
+        "tasks": enriched_tasks,
         "generated_files": code_files,
         "terminal_outputs": execution_results,
         "terminal_screenshots": terminal_screenshots,
-        "generated_images": _assignment_generated_images(db, assignment_id),
+        "generated_images": collected_images,
         "crew_progress": crew_progress,
         "code_files_download_url": f"/api/v1/classroom/assignments/{assignment_id}/solution/files" if deliverables["files"] else None,
-        "validation_errors": solution.validation_errors,
+        "validation_errors": cleaned_validation_errors,
         "claude_rate_limit": claude_rate_limit,
         "retry_count": solution.retry_count,
         "ai_provider": solution.ai_provider,
@@ -1652,6 +1702,22 @@ def get_solution_status(
         "google_doc_id": google_doc_id,
         "google_doc_url": google_doc_url,
     }
+
+
+@router.post("/assignments/{assignment_id}/solution/clear-error", response_model=dict)
+@router.delete("/assignments/{assignment_id}/solution/error", response_model=dict)
+def clear_solution_error(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Clear validation errors/logs for an assignment solution so the user has a fresh slate."""
+    _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
+    solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+    if solution and solution.validation_errors:
+        solution.validation_errors = None
+        db.commit()
+    return {"status": "cleared", "assignment_id": assignment_id}
 
 
 @router.get("/assignments/{assignment_id}/solution/files")

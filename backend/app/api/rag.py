@@ -530,7 +530,27 @@ async def rag_chat(request: ChatRequest, db=Depends(get_db), clerk_user: Optiona
         db.flush()
 
         document_ids = request.document_ids or ([request.document_id] if request.document_id else [])
-        # Only read / chunk the documents the user selected - never all documents.
+        if not document_ids:
+            try:
+                user_mats = db.query(AssignmentMaterial).filter(
+                    (AssignmentMaterial.user_id == user_id) | (AssignmentMaterial.user_id == "legacy")
+                ).all()
+                if user_mats:
+                    query_terms = {w.lower() for w in re.findall(r"[\w'-]{3,}", request.query)}
+                    scored = []
+                    for m in user_mats:
+                        title_words = {w.lower() for w in re.findall(r"[\w'-]{3,}", m.title or "")}
+                        content_snip = (m.content or "")[:3000].lower()
+                        score = len(query_terms & title_words) * 3 + sum(1 for t in query_terms if t in content_snip)
+                        doc_id = m.drive_file_id or str(m.id)
+                        scored.append((score, doc_id))
+                    scored.sort(key=lambda x: -x[0])
+                    matched = [doc_id for score, doc_id in scored if score > 0]
+                    document_ids = matched[:5] if matched else [doc_id for _, doc_id in scored[:5]]
+            except Exception as e:
+                logger.warning(f"RAG auto-retrieval fallback error: {e}")
+
+        # Only read / chunk the documents the user selected or auto-retrieved candidates.
         materials = _read_materials(db, document_ids)
         # Build context: conversation history first, then full text of each
         # selected document, then top retrieved passages for precise grounding.
@@ -552,10 +572,19 @@ async def rag_chat(request: ChatRequest, db=Depends(get_db), clerk_user: Optiona
             )
         context_parts.extend(_retrieve_passages(materials, request.query, limit=8))
         system_prompt = (
-            "You are a helpful academic assistant. Answer from the supplied syllabus and course materials. "
-            "You have the FULL text of each selected source document available above - use it to answer "
-            "completely and accurately. Say when the materials do not contain enough evidence, and do not "
-            "invent sources or citations."
+            "You are an expert academic tutor and university study assistant. "
+            "Your goal is to help the student excel in their courses, master challenging concepts, "
+            "solve academic problems, and prepare high-yield study materials (such as revision summaries, "
+            "cheat sheets, exam prep guides, formula lists, code explanations, and practice questions).\n\n"
+            "Key instructions:\n"
+            "1. When source documents or syllabus content are provided in the context, ground your answers directly "
+            "in those materials and cite specific topics, formulas, or methods from them.\n"
+            "2. When asked to prepare study materials, deliver rigorous, well-organized, and thorough content "
+            "with markdown headings, clear bullet points, mathematical notations ($...$), and code snippets.\n"
+            "3. Answer questions directly, step-by-step, and in depth. Never refuse or give vague non-answers.\n"
+            "4. If specific course materials do not cover a requested topic, use your authoritative academic "
+            "knowledge to provide a complete, crystal-clear explanation, noting that the student can attach "
+            "specific slides or notes for custom alignment."
         )
         user_prompt = f"Query: {request.query}\n\nContext:\n" + "\n\n".join(context_parts)
         # Call Groq LLM (use chat model defined in settings)

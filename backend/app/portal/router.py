@@ -41,6 +41,7 @@ PORTAL_PROFILE_ROOT = Path(__file__).resolve().parent.parent.parent / "tmp" / "p
 PORTAL_PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
 
 _portal_processes: dict[str, Any] = {}
+_sync_locks: dict[str, threading.Lock] = {}
 
 
 class PortalUrlInput(BaseModel):
