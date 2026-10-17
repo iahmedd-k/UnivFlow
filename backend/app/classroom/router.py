@@ -1985,7 +1985,7 @@ def get_solution_status(
                 data_uri = image_asset.get("data_uri") if image_asset else None
             is_diagram = result.get("language") in ("mermaid", "diagram", "drawio", "drawio.xml", "plantuml", "graphviz", "dot", "mmd", "puml", "xml", "mxfile", "svg")
             is_file_attachment = result.get("language") == "artifact"
-            if not data_uri and not is_diagram and not is_file_attachment:
+            if not data_uri and not is_diagram and not is_file_attachment and result.get("tool") != "Claude Text Output (no image artifact)":
                 png = TerminalCardRenderer.generate_terminal_png(
                     result.get("command") or f"Run {result.get('filename') or 'solution file'}",
                     result.get("terminal_output") or "No terminal output was produced.",

@@ -1395,7 +1395,7 @@ def export_solution_to_google_doc(
 
                 # Embed all screenshot image parts (with on-the-fly fallback if needed)
                 all_screenshot_uris = result.get("screenshot_data_uris") or ([result.get("screenshot_data_uri")] if result.get("screenshot_data_uri") else [])
-                if not is_diagram and not all_screenshot_uris and terminal_output and terminal_output.strip() and terminal_output != "No terminal output was produced.":
+                if result.get("tool") != "Claude Text Output (no image artifact)" and not is_diagram and not all_screenshot_uris and terminal_output and terminal_output.strip() and terminal_output != "No terminal output was produced.":
                     from app.services.terminal_renderer import TerminalCardRenderer
                     try:
                         cmd = result.get("command")

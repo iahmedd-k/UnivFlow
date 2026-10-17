@@ -147,82 +147,95 @@ def _capture_claude_diagram_images(raw_solution_text: str, page) -> Dict[str, st
     return images
 
 
-def _download_claude_output_files(page) -> Dict[str, List[Dict[str, Any]]]:
-    """Download all files exposed by Claude's final answer and return the original file data."""
+def _claude_assistant_messages(page):
+    messages = page.locator('[data-message-author-role="assistant"]')
+    if messages.count() == 0:
+        messages = page.locator(".font-claude-message")
+    return messages
+
+
+def _download_claude_output_files(page, start_index: int = 0) -> Dict[str, List[Dict[str, Any]]]:
+    """Download Claude files attached to assistant responses created during this solve."""
     downloaded: Dict[str, List[Dict[str, Any]]] = {}
     try:
-        messages = page.locator('[data-message-author-role="assistant"]')
-        if messages.count() == 0:
-            messages = page.locator(".font-claude-message")
+        messages = _claude_assistant_messages(page)
         if messages.count() == 0:
             return downloaded
 
-        final_message = messages.last
-        candidates = final_message.locator(
-            'a[download], a[href*="download" i], button[aria-label*="download" i], '
-            'button[title*="download" i], [data-testid*="download" i]'
-        ).all()
+        message_count = messages.count()
+        first_new_message = min(max(int(start_index or 0), 0), message_count)
         with tempfile.TemporaryDirectory(prefix="claude-diagram-download-") as download_dir:
-            for ordinal, candidate in enumerate(candidates, 1):
-                try:
-                    label_parts = []
-                    for attr in ("aria-label", "title", "download", "href", "data-testid"):
-                        value = candidate.get_attribute(attr)
-                        if value:
-                            label_parts.append(value)
+            ordinal = 0
+            for message_index in range(first_new_message, message_count):
+                message = messages.nth(message_index)
+                candidates = message.locator(
+                    'a[download], a[href*="download" i], button[aria-label*="download" i], '
+                    'button[title*="download" i], [data-testid*="download" i]'
+                ).all()
+                for candidate in candidates:
+                    ordinal += 1
                     try:
-                        context_label = candidate.evaluate("""el => {
-                            let node = el;
-                            for (let i = 0; node && i < 5; i++, node = node.parentElement) {
-                                const text = (node.innerText || '').trim();
-                                if (text.length < 500 && /diagram|task|question|[.]png|[.]jpe?g|[.]webp/i.test(text)) return text;
-                            }
-                            return '';
-                        }""")
-                        if context_label:
-                            label_parts.append(context_label)
-                    except Exception:
-                        pass
+                        label_parts = []
+                        for attr in ("aria-label", "title", "download", "href", "data-testid"):
+                            value = candidate.get_attribute(attr)
+                            if value:
+                                label_parts.append(value)
+                        try:
+                            context_label = candidate.evaluate("""el => {
+                                let node = el;
+                                for (let i = 0; node && i < 5; i++, node = node.parentElement) {
+                                    const text = (node.innerText || '').trim();
+                                    if (text.length < 500 && /diagram|task|question|[.]png|[.]jpe?g|[.]webp|download/i.test(text)) return text;
+                                }
+                                return '';
+                            }""")
+                            if context_label:
+                                label_parts.append(context_label)
+                        except Exception:
+                            pass
 
-                    with page.expect_download(timeout=5000) as download_info:
-                        candidate.click(timeout=3000)
-                    download = download_info.value
-                    suggested_name = Path(download.suggested_filename or f"claude_output_{ordinal}.bin").name
-                    target_path = Path(download_dir) / f"{ordinal}_{suggested_name}"
-                    download.save_as(str(target_path))
-                    image_bytes = target_path.read_bytes()
-                    if not image_bytes:
-                        continue
-                    mime_type = mimetypes.guess_type(suggested_name)[0] or "application/octet-stream"
-                    is_image = mime_type.startswith("image/")
-                    try:
-                        from PIL import Image
-                        from io import BytesIO
-                        with Image.open(BytesIO(image_bytes)) as image:
-                            actual_format = (image.format or "PNG").lower()
-                            extension = {"jpeg": ".jpg", "png": ".png", "webp": ".webp", "gif": ".gif"}.get(actual_format)
-                            if extension and Path(suggested_name).suffix.lower() != extension:
-                                suggested_name = f"{Path(suggested_name).stem}{extension}"
-                            mime_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif"}.get(actual_format, mime_type)
-                            is_image = True
-                    except Exception:
-                        pass
+                        with page.expect_download(timeout=5000) as download_info:
+                            candidate.click(timeout=3000)
+                        download = download_info.value
+                        suggested_name = Path(download.suggested_filename or f"claude_output_{ordinal}.bin").name
+                        target_path = Path(download_dir) / f"{ordinal}_{suggested_name}"
+                        download.save_as(str(target_path))
+                        file_bytes = target_path.read_bytes()
+                        if not file_bytes:
+                            continue
+                        mime_type = mimetypes.guess_type(suggested_name)[0] or "application/octet-stream"
+                        is_image = mime_type.startswith("image/")
+                        try:
+                            from PIL import Image
+                            from io import BytesIO
+                            with Image.open(BytesIO(file_bytes)) as image:
+                                actual_format = (image.format or "PNG").lower()
+                                extension = {"jpeg": ".jpg", "png": ".png", "webp": ".webp", "gif": ".gif"}.get(actual_format)
+                                if extension and Path(suggested_name).suffix.lower() != extension:
+                                    suggested_name = f"{Path(suggested_name).stem}{extension}"
+                                mime_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif"}.get(actual_format, mime_type)
+                                is_image = True
+                        except Exception:
+                            pass
 
-                    filename = Path(suggested_name).name
-                    label = " ".join(label_parts + [filename])
-                    task_match = re.search(r"(?:task|diagram|question|q)[\s_#-]*(\d+)", label, re.IGNORECASE)
-                    if not task_match:
-                        task_match = re.search(r"\b(\d+)\b", Path(filename).stem)
-                    task_id = task_match.group(1) if task_match else str(ordinal)
-                    downloaded.setdefault(task_id, []).append({
-                        "filename": filename,
-                        "mime_type": mime_type,
-                        "data_uri": f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}",
-                        "is_image": is_image,
-                    })
-                    logger.info("Downloaded Claude output attachment %s for task %s", filename, task_id)
-                except Exception as download_error:
-                    logger.debug("Could not download Claude response attachment %s: %s", ordinal, download_error)
+                        filename = Path(suggested_name).name
+                        label = " ".join(label_parts + [filename])
+                        task_match = re.search(r"(?:task|diagram|question|q)[\s_#-]*(\d+)", label, re.IGNORECASE)
+                        if not task_match:
+                            task_match = re.search(r"\b(\d+)\b", Path(filename).stem)
+                        task_id = task_match.group(1) if task_match else str(ordinal)
+                        assets = downloaded.setdefault(task_id, [])
+                        if any(asset.get("filename") == filename for asset in assets):
+                            continue
+                        assets.append({
+                            "filename": filename,
+                            "mime_type": mime_type,
+                            "data_uri": f"data:{mime_type};base64,{base64.b64encode(file_bytes).decode('ascii')}",
+                            "is_image": is_image,
+                        })
+                        logger.info("Downloaded Claude output attachment %s for task %s", filename, task_id)
+                    except Exception as download_error:
+                        logger.debug("Could not download Claude response attachment %s: %s", ordinal, download_error)
     except Exception:
         logger.debug("Claude attachment download controls were unavailable", exc_info=True)
     return downloaded
@@ -1702,7 +1715,7 @@ def solve_assignment_via_claude_browser(
                 "- For each question or topic, provide theoretical foundations, structured explanations, comparative analyses, real-world case studies, and practical applications.\n\n"
                 "DIAGRAM OUTPUT IMAGES (.PNG FORMAT - MANDATORY REQUIREMENT FOR EVERY DIAGRAM):\n"
                 "- If the assignment mentions or requires any diagram (flowchart, architecture, process flow, UML, ERD, system schema, state machine, circuit, or block diagram), you MUST directly generate it in authentic .PNG image format:\n"
-                "  1. DIRECT .PNG FORMAT DIAGRAM IMAGE: You must directly generate the visual diagram image in .png format. Label each diagram clearly: `**Diagram Image (.png):** diagram_task<N>.png`. Provide the visual diagram as an embedded .png image block `![Diagram (Task N): <Title>](data:image/png;base64,<png_base64_data>)` or render the visual diagram artifact/canvas directly so it outputs as a visual .png image in the report.\n"
+                "  1. DIRECT .PNG FORMAT DIAGRAM IMAGE: Generate and attach a real downloadable PNG file for each diagram. Label it `**Diagram Image (.png):** diagram_task<N>.png`. Do not print Base64 or use a Markdown image placeholder; the attached file is embedded into the report by the platform.\n"
                 "  2. STANDALONE DRAW.IO XML COMPANION FILE: If Draw.io XML is also provided, include the XML code enclosed in a ```drawio code fence (starting with <mxfile>). This XML is strictly an auxiliary downloadable companion file for grading; the primary visual in the report MUST be your directly generated .png image of the diagram!\n"
                 "  3. In the report prose, provide an in-depth pedagogical explanation of each diagram entity, connection, workflow, and theoretical significance.\n"
                 "- Conclude with academic references and bibliography formatted in standard citation style (APA/IEEE).\n"
@@ -1728,7 +1741,7 @@ def solve_assignment_via_claude_browser(
                 "# Diagram & Architecture Analysis (Include if diagrams are requested in the assignment)\n"
                 "## 1. Visual Diagram Image (.png)\n"
                 "**Diagram Image (.png):** `diagram_task1.png`\n"
-                "![Visual Diagram: System Architecture](data:image/png;base64,...)\n\n"
+                "Attach the real downloadable image file `diagram_task1.png`; the platform embeds it in the report.\n\n"
                 "## 2. Pedagogical Component Breakdown & Analysis\n"
                 "[Comprehensive explanation of all entities, workflow transitions, protocol interactions, and architectural decisions]\n\n"
                 "## 3. Draw.io Companion File Deliverable\n"
@@ -1745,7 +1758,7 @@ def solve_assignment_via_claude_browser(
                 "SYSTEM ARCHITECTURE & DIAGRAM SPECIFICATION (MANDATORY REQUIREMENTS):\n"
                 "- This is a SYSTEM DESIGN, SOFTWARE ARCHITECTURE, OR DIAGRAMMING assignment.\n"
                 "- ZERO TERMINAL SCREENSHOT DIRECTIVE: Do NOT generate terminal commands, terminal execution code blocks, compiler commands, or 'Not applicable' terminal placeholders. Terminal output is strictly irrelevant for architecture and design assignments.\n"
-                "- DIRECT VISUAL DIAGRAM GENERATION (.PNG IMAGE): You MUST directly generate and embed each architectural, UML, ERD, component, or system diagram as a visual .png format image: `**Diagram Image (.png):** diagram_task<N>.png` followed by `![Diagram: <Title>](data:image/png;base64,...)` or direct visual diagram artifact.\n"
+                "- DIRECT VISUAL DIAGRAM GENERATION (.PNG IMAGE): Generate and attach each architectural, UML, ERD, component, or system diagram as a real downloadable `.png` file named `diagram_task<N>.png`. Do not print Base64 or a Markdown image placeholder; the platform embeds the attached image.\n"
                 "- STANDALONE DRAW.IO XML COMPANION CODE: Underneath the visual diagram image, provide the valid, well-formed Draw.io XML companion block enclosed in a ```drawio code fence (<mxfile host=\"app.diagrams.net\">...</mxfile>) so it can be saved by our automated backend as an editable companion file.\n"
                 "- STRICT PROHIBITION ON MANUAL DRAW.IO INSTRUCTIONS: Under NO circumstances should you instruct the student to open draw.io, paste XML, or export PNGs (e.g. NEVER write 'In draw.io, choose Extras -> Edit Diagram', 'paste the XML and click OK', 'Export as PNG', or 'Not applicable. Export from draw.io'). The student report must be completely finished, polished, and ready to submit without manual steps!\n"
                 "- Do NOT output ASCII art or text boxes in place of diagrams. The diagram must be a complete visual .png image.\n"
@@ -1760,7 +1773,7 @@ def solve_assignment_via_claude_browser(
                 "[Detailed problem statement, architectural objectives, and component requirements]\n\n"
                 "## 2. Visual Diagram Image (.png)\n"
                 "**Diagram Image (.png):** `diagram_taskN.png`\n"
-                "![Visual Diagram (Task N)](data:image/png;base64,...)\n\n"
+                "Attach the real downloadable file `diagram_taskN.png`; the platform embeds it in the report.\n\n"
                 "## 3. Architectural Schema Deliverable (Draw.io XML Companion)\n"
                 "```drawio\n"
                 "<mxfile host=\"app.diagrams.net\">...</mxfile>\n"
@@ -1805,7 +1818,7 @@ def solve_assignment_via_claude_browser(
                 "  * Do NOT attempt to execute code via a local OS shell or compiler, and do not try to capture physical external screenshots (e.g. for Assembly, MASM/NASM, or heavy ML models).\n"
                 "  * Instead, directly create the visual output image and/or realistic terminal execution block showing the 100% correct data (accurate register values, arithmetic outputs, test cases, and verification results) exactly as they appear when executed.\n"
                 f"  * Inside the companion ```terminal code fence, format the initial command line with this exact prompt: `{shell_prompt} <run-command>`, followed by realistic interactive inputs, complete outputs, and exit code 0.\n"
-                "- VISUAL DIAGRAMS (.PNG): If any task requests an architectural or UML diagram, directly generate the visual diagram image in .png format (`**Diagram Image (.png):** diagram_task<N>.png`) and provide the Draw.io XML companion in a ```drawio fence.\n"
+                "- VISUAL DIAGRAMS (.PNG): If any task requests an architectural or UML diagram, attach a real downloadable PNG image named `diagram_task<N>.png` and provide the Draw.io XML companion in a ```drawio fence. Do not print Base64 or a Markdown image placeholder.\n"
                 "- NON-CODING TASKS: Theoretical analysis, trade-off matrices, or recommendations must use structured Markdown tables and detailed analytical answers. Completely omit terminal output from non-coding tasks.\n"
             )
             report_structure = (
@@ -1820,9 +1833,8 @@ def solve_assignment_via_claude_browser(
                 "```[language]\n"
                 "[complete runnable source code]\n"
                 "```\n\n"
-                "## 3. Terminal Output Screenshot (.png)\n"
-                "**Terminal Screenshot (.png):** `taskN_output.png`\n"
-                "![Terminal Output (Task N)](data:image/png;base64,...)\n\n"
+                "## 3. Terminal Output Image (.png)\n"
+                "**Attached image file:** `taskN_output.png` (real downloadable PNG attachment; the platform embeds it in the report)\n\n"
                 "```terminal\n"
                 f"{shell_prompt} [command]\n"
                 "[realistic terminal execution output with exact correct data, registers, and test cases]\n"
@@ -1842,8 +1854,7 @@ def solve_assignment_via_claude_browser(
                 "## 1. Problem Statement / Specification\n"
                 "[System requirements and architectural constraints]\n\n"
                 "## 2. Visual Diagram Image (.png)\n"
-                "**Diagram Image (.png):** `diagram_taskN.png`\n"
-                "![Visual Diagram (Task N)](data:image/png;base64,...)\n\n"
+                "**Attached image file:** `diagram_taskN.png` (real downloadable PNG attachment; the platform embeds it in the report)\n\n"
                 "## 3. Architectural Schema Deliverable (Draw.io XML Companion)\n"
                 "```drawio\n"
                 "<mxfile host=\"app.diagrams.net\">...</mxfile>\n"
@@ -1863,10 +1874,11 @@ def solve_assignment_via_claude_browser(
             f"- Assignment Classification: {domain.upper()}\n\n"
             f"{questions_block}\n\n"
             "EXPERT PLANNING & EXECUTION INSTRUCTIONS:\n"
-            "1. COMPLETE IN-CHAT SOLUTION: Solve all tasks and questions from the attached manual directly in this single response. Do NOT compile external PDF/DOCX files or summarize—provide the complete step-by-step solution right here. Our automated platform automatically compiles your output into the official Google Doc and PDF.\n"
-            "2. DIRECT OUTPUT & SCREENSHOT SYNTHESIS (NO OS EXECUTION NEEDED):\n"
+            "1. COMPLETE SOLUTION: Solve every task and question from the attached manual in the report response. The platform compiles your written response into the official Google Doc and PDF.\n"
+            "2. DIRECT OUTPUT & IMAGE FILES (NO LOCAL OS EXECUTION):\n"
             "   - In this chat interface, you do NOT need to launch an external OS terminal, run compilers, or capture physical external screenshots.\n"
-            "   - Instead, directly create the realistic visual output image and/or terminal block showing the 100% correct data (accurate register values, arithmetic results, test case outputs, and execution logs) as they would appear when running.\n"
+            "   - For every required diagram, screenshot, chart, or other visual deliverable, create a REAL downloadable image file (prefer PNG) using the file/artifact-generation capability available in this Claude session. Attach the file to your response and give it a descriptive filename such as `task1_output.png` or `diagram_task3.png`. The backend downloads Claude attachments and inserts image files into the Google Docs report and deliverable ZIP.\n"
+            "   - Do NOT print placeholder Base64, use `data:image/png;base64,...`, present a Markdown/code block as if it were an image, or tell the student to capture/export it manually. Do not claim an image was generated unless a downloadable image file is actually attached. If this session cannot create a requested binary image, state that deliverable is unavailable instead of inventing a screenshot or marking it complete.\n"
             f"   - For all terminal blocks, format the prompt with: `{shell_prompt} <command>`.\n"
             "3. CODE DELIVERABLES: For programming tasks, provide complete, bug-free, production-ready code in language-tagged code fences (e.g. ```assembly, ```python, ```cpp) and label each file clearly: `**File:** task<N>_<short_name>.<ext>`.\n"
             "4. NON-CODING & DIAGRAM TASKS: Theoretical questions must use Markdown tables and detailed explanations (omit terminal output). Diagram tasks must directly generate the visual diagram image in .PNG format with Draw.io XML companion in ```drawio.\n\n"
@@ -1876,6 +1888,7 @@ def solve_assignment_via_claude_browser(
 
         # 6. Fill prompt and send with active overlay dismissal and forced click
         dismiss_claude_overlays_and_modals(page)
+        claude_assistant_start_index = _claude_assistant_messages(page).count()
 
         input_el = page.locator(prompt_selector).first
         try:
@@ -2211,7 +2224,10 @@ def solve_assignment_via_claude_browser(
         # 10. Extract deliverables, parse Claude's terminal outputs, and build visual cards
         execution_results = []
         notebook_deliverables = []
-        claude_downloaded_assets: Dict[str, List[Dict[str, Any]]] = _download_claude_output_files(page)
+        claude_downloaded_assets: Dict[str, List[Dict[str, Any]]] = _download_claude_output_files(
+            page,
+            start_index=claude_assistant_start_index,
+        )
 
         try:
             from app.services.ai_solution import (
@@ -2358,24 +2374,12 @@ def solve_assignment_via_claude_browser(
                         direct_img = claude_direct_images.get(task_key) or claude_direct_images.get(str(source_file.get("task")))
                         if direct_img:
                             screenshot_uris.append(direct_img)
-                        else:
-                            try:
-                                from app.services.terminal_renderer import TerminalCardRenderer
-                                png_list = TerminalCardRenderer.generate_terminal_pngs(
-                                    cmd_str,
-                                    terminal_out,
-                                    title=f"Terminal Output — {source_file['name']}",
-                                    prompt_prefix=shell_prompt,
-                                )
-                                for p_bytes in png_list:
-                                    screenshot_uris.append(f"data:image/png;base64,{base64.b64encode(p_bytes).decode('ascii')}")
-                            except Exception as term_err:
-                                logger.warning(f"Terminal screenshot failed for {source_file['name']}: {term_err}")
+
 
                         execution_results.append({
                             "task": source_file["task"],
                             "filename": source_file["name"],
-                            "screenshot_filename": f"task{task_key}_output.png",
+                            "screenshot_filename": f"task{task_key}_output.png" if screenshot_uris else None,
                             "language": lang,
                             "command": cmd_str,
                             "exit_code": 0,
@@ -2384,7 +2388,7 @@ def solve_assignment_via_claude_browser(
                             "terminal_output": terminal_out,
                             "screenshot_data_uri": screenshot_uris[0] if screenshot_uris else None,
                             "screenshot_data_uris": screenshot_uris,
-                            "tool": "Claude Direct Image (.PNG)" if direct_img else "Claude Verified Execution (.PNG)"
+                            "tool": "Claude Generated Image (.PNG)" if direct_img else "Claude Text Output (no image artifact)"
                         })
 
                 # Ensure all structured tasks (including conceptual / trade-off / non-code tasks) are recorded
