@@ -116,6 +116,58 @@ class ClassroomSyncService:
             logger.error(f"Failed to initialize Classroom service: {e}")
             return False
 
+    def _get_drive_service(self):
+        """Build a Drive service from stored credentials (for material text extraction)."""
+        try:
+            from google.oauth2.credentials import Credentials as GCreds
+            from googleapiclient.discovery import build as gbuild
+
+            cred_row = self.db.query(GoogleCredential).filter(
+                GoogleCredential.user_id == self.user_id
+            ).first()
+            if not cred_row:
+                return None
+
+            creds = GCreds(
+                token=cred_row.access_token,
+                refresh_token=cred_row.refresh_token,
+                token_uri=cred_row.token_uri or "https://oauth2.googleapis.com/token",
+                client_id=cred_row.client_id or settings.google_client_id,
+                client_secret=cred_row.client_secret or settings.google_client_secret,
+                scopes=json.loads(cred_row.scopes) if cred_row.scopes else [],
+            )
+            if creds.expired and creds.refresh_token:
+                from google.auth.transport.requests import Request
+                creds.refresh(Request())
+                cred_row.access_token = creds.token
+                cred_row.expiry = creds.expiry
+                self.db.commit()
+
+            return gbuild("drive", "v3", credentials=creds, cache_discovery=False)
+        except Exception as e:
+            logger.warning(f"Could not initialize Drive service for material extraction: {e}")
+            return None
+
+    def _extract_drive_file_text(self, drive_service, file_id: str, mime_type: str) -> str:
+        """Extract plain text from a Drive file (Google Doc, PDF, or text)."""
+        try:
+            import io
+            if mime_type == "application/vnd.google-apps.document":
+                data = drive_service.files().export_media(fileId=file_id, mimeType="text/plain").execute()
+                return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+            if mime_type == "application/pdf":
+                data = drive_service.files().get_media(fileId=file_id).execute()
+                from pypdf import PdfReader
+                pdf = PdfReader(io.BytesIO(data if isinstance(data, bytes) else bytes(data)))
+                return "\n".join(page.extract_text() or "" for page in pdf.pages)
+            if mime_type and mime_type.startswith("text/"):
+                data = drive_service.files().get_media(fileId=file_id).execute()
+                return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+        except Exception as e:
+            logger.warning(f"Could not extract text from Drive file {file_id}: {e}")
+        return ""
+
+
     def _save_semester_start_date(self, dt: datetime):
         """Persist auto-detected semester start date in settings"""
         try:
@@ -685,7 +737,7 @@ class ClassroomSyncService:
                 return count
 
     def _sync_materials(self, assignment_db_id: int, materials: List[Dict]):
-        """Sync assignment materials"""
+        """Sync assignment materials, extracting Drive file text when possible."""
         from app.db.repositories import AssignmentMaterialRepository
 
         repo = AssignmentMaterialRepository(self.db)
@@ -695,14 +747,31 @@ class ClassroomSyncService:
         for m in existing:
             self.db.delete(m)
 
+        drive_service = self._get_drive_service()
+
         for mat in materials:
+            drive_file = mat.get("driveFile", {}).get("driveFile", {}) if mat.get("driveFile") else {}
+            drive_file_id = drive_file.get("id")
+            mime_type = drive_file.get("mimeType")
+            content = ""
+
+            # Extract full text from Drive so the study assistant can answer
+            # from the document even when Drive isn't connected at chat time.
+            if drive_service and drive_file_id and mime_type and (
+                mime_type == "application/vnd.google-apps.document"
+                or mime_type == "application/pdf"
+                or mime_type.startswith("text/")
+            ):
+                content = self._extract_drive_file_text(drive_service, drive_file_id, mime_type)
+
             mat_dict = {
                 "assignment_id": assignment_db_id,
                 "material_type": mat.get("driveFile") and "drive_file" or mat.get("link") and "link" or mat.get("form") and "form" or "other",
-                "title": mat.get("driveFile", {}).get("driveFile", {}).get("title") or mat.get("link", {}).get("title") or mat.get("form", {}).get("title") or "",
-                "url": mat.get("driveFile", {}).get("driveFile", {}).get("alternateLink") or mat.get("link", {}).get("url") or mat.get("form", {}).get("formUrl") or "",
-                "drive_file_id": mat.get("driveFile", {}).get("driveFile", {}).get("id"),
-                "mime_type": mat.get("driveFile", {}).get("driveFile", {}).get("mimeType"),
+                "title": drive_file.get("title") or mat.get("link", {}).get("title") or mat.get("form", {}).get("title") or "",
+                "url": drive_file.get("alternateLink") or mat.get("link", {}).get("url") or mat.get("form", {}).get("formUrl") or "",
+                "drive_file_id": drive_file_id,
+                "mime_type": mime_type,
+                "content": content[:30000] if content else None,
             }
             repo.create(mat_dict)
 

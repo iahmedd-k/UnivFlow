@@ -48,9 +48,9 @@ def _agent_llm(role: str) -> LLM:
 # ---------------------------------------------------------------------------
 DOMAIN_PLAYBOOK = """\
 - THEORY_ACADEMIC (essays, case studies, management, business plans, ethics, humanities, conceptual explanations, non-coding research, theoretical proofs):
-    owners: theory_research -> reporter_fixer. coder_diagram is FORBIDDEN.
-    deliverable_format: "Academic Essay Report (APA)". artifacts_required: ["theory_text"].
-    The final result must be the FULL, ready-to-submit written solution of every question. No code, no terminal output, no outlines.
+    owners: theory_research -> reporter_fixer (add coder_diagram only if the theory assignment explicitly requires an architectural or conceptual diagram/flowchart).
+    deliverable_format: "Academic Essay Report (APA)". artifacts_required: ["theory_text"] (+ ["diagram_image", "drawio_xml"] if diagrams are requested).
+    The final result must be the FULL, ready-to-submit written solution of every question with visual educational diagrams rendered as images and Draw.io XML detached as an extra companion deliverable file. No raw code or raw XML in report prose.
 - CODING_LAB (ordinary programming tasks in any language: algorithms, data structures, scripting, OS/networking labs, assembly; each task normally runs from a single source file):
     owners: coder_diagram -> reporter_fixer. Add theory_research ONLY if the manual contains separate conceptual/viva questions.
     deliverable_format: "Standalone Code with Terminal Output". requires_code=true, requires_terminal_output=true.

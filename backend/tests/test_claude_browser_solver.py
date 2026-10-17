@@ -799,4 +799,180 @@ class ConvNet(nn.Module):
     assert any("import torch" in "".join(c.get("source", [])) for c in nb["cells"] if c["cell_type"] == "code")
 
 
+def test_google_docs_inline_markdown_parsing():
+    """Verify Google Docs inline markdown tokenizer strips **, // and computes styling spans."""
+    from app.services.google_docs import GoogleDocsService
+
+    raw = (
+        "// Summary Note: This is an important section.\n"
+        "Here is **bold text** and *italic text* with a `variable_x` code token.\n"
+        "Option A // Option B\n"
+        "Reference URL: https://drive.google.com/open?id=12345"
+    )
+
+    clean_text, spans = GoogleDocsService._parse_inline_markdown(raw)
+
+    # 1. No raw markdown characters in clean text
+    assert "**" not in clean_text
+    assert "`" not in clean_text
+    assert clean_text.startswith("• Summary Note:")
+    assert "Option A — Option B" in clean_text
+    # 2. URL slashes must remain intact
+    assert "https://drive.google.com/open?id=12345" in clean_text
+
+    # 3. Spans correctly identify bold and italic
+    bold_spans = [s for s in spans if s["style"].get("bold") and not s["style"].get("italic")]
+    assert len(bold_spans) == 1
+    bold_content = clean_text[bold_spans[0]["start"]:bold_spans[0]["end"]]
+    assert bold_content == "bold text"
+
+    italic_spans = [s for s in spans if s["style"].get("italic") and not s["style"].get("bold")]
+    assert len(italic_spans) == 1
+    italic_content = clean_text[italic_spans[0]["start"]:italic_spans[0]["end"]]
+    assert italic_content == "italic text"
+
+    code_spans = [s for s in spans if s["style"].get("weightedFontFamily")]
+    assert len(code_spans) == 1
+    code_content = clean_text[code_spans[0]["start"]:code_spans[0]["end"]]
+    assert code_content == "variable_x"
+
+
+def test_google_docs_styled_block_cleans_and_updates_spans():
+    """Verify append_styled_block sends clean text without ** and adds textStyle updates."""
+    from app.services.google_docs import GoogleDocsService
+
+    mock_db = MagicMock()
+    service = GoogleDocsService(mock_db)
+    service.docs_service = MagicMock()
+    service.get_document_end_index = MagicMock(return_value=10)
+    service.docs_service.documents().batchUpdate().execute.return_value = {}
+
+    ok = service.append_styled_block(
+        document_id="doc_test_123",
+        text="## **1. Architectural Framework**\n// Key point: **Scalability** is essential.",
+        style_type="NORMAL"
+    )
+
+    assert ok is True
+    call_args = service.docs_service.documents().batchUpdate.call_args
+    reqs = call_args[1]["body"]["requests"]
+
+    # First request must insert clean text without ** or leading //
+    insert_text = reqs[0]["insertText"]["text"]
+    assert "**" not in insert_text
+    assert "• Key point: Scalability is essential." in insert_text
+
+    # Granular updateTextStyle requests must exist for the bold words
+    text_style_reqs = [r["updateTextStyle"] for r in reqs if "updateTextStyle" in r]
+    assert len(text_style_reqs) >= 2  # base style + bold spans
+
+
+def test_export_solution_to_google_doc_omits_raw_xml_for_diagrams():
+    """Verify export_solution_to_google_doc omits raw <mxfile> code in Google Doc body for theory diagrams."""
+    mock_db = MagicMock()
+    mock_course = Course(id=1, external_id="course_1", name="Parallel & Distributed Computing", section="VII-A", teacher_name="Dr. Akbar")
+    mock_assignment = Assignment(id=20, external_id="assign_20", course_id=1, title="Theory Assignment 1", description="Architectural theory")
+    mock_setting = Setting(key="clerk_user_1", value=json.dumps({"name": "Test Student", "student_id": "232530"}))
+
+    def query_side_effect(model):
+        q = MagicMock()
+        if model == Course:
+            q.filter.return_value.first.return_value = mock_course
+        elif model == Assignment:
+            q.filter.return_value.first.return_value = mock_assignment
+        elif model == Setting:
+            q.filter.return_value.first.return_value = mock_setting
+        else:
+            q.filter.return_value.first.return_value = None
+            q.filter.return_value.all.return_value = []
+        return q
+
+    mock_db.query.side_effect = query_side_effect
+
+    theory_solution_markdown = """
+# Executive Summary
+Distributed memory architectures require distinct communication channels.
+
+# Question 1: System Architecture
+## 1. In-Depth Theoretical Analysis
+Message passing enables independent processes to coordinate without shared state.
+
+```drawio
+<mxfile host="app.diagrams.net">
+  <diagram name="Architecture">
+    <mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>
+  </diagram>
+</mxfile>
+```
+
+# Conclusion
+Independent memory scales more effectively than shared bus memory.
+"""
+
+    mock_docs_svc = MagicMock()
+    mock_docs_svc.create_document.return_value = {"documentId": "doc_theory_456"}
+    mock_docs_svc.create_academic_intro_page.return_value = True
+    mock_docs_svc.append_styled_block.return_value = True
+    mock_docs_svc.insert_image_from_bytes.return_value = True
+    mock_docs_svc.drive_service = MagicMock()
+    mock_docs_svc.upload_file.return_value = {"id": "drive_xml_123", "webViewLink": "https://drive.google.com/file/d/drive_xml_123/view"}
+
+    # Mock BrowserToolRunner render to return a dummy png
+    with patch("app.services.ai_solution.get_google_docs_service", return_value=mock_docs_svc), \
+         patch("app.services.browser_tool_runner.BrowserToolRunner.render_drawio_diagram", return_value={"png_bytes": b"fake_png_data"}):
+        result = export_solution_to_google_doc(
+            db=mock_db,
+            assignment=mock_assignment,
+            solution_content=theory_solution_markdown,
+            user_id="test_user"
+        )
+
+    assert result is not None
+    assert result["doc_id"] == "doc_theory_456"
+
+    # CRITICAL CHECK: Verify raw XML code was NEVER passed to append_styled_block as CODE
+    appended_blocks = [call.args[1] for call in mock_docs_svc.append_styled_block.call_args_list]
+    for block_text in appended_blocks:
+        assert "<mxfile" not in block_text
+        assert "<mxGraphModel" not in block_text
+
+    # Verify diagram image was inserted
+    assert mock_docs_svc.insert_image_from_bytes.called is True
+    # Verify companion XML file was uploaded to Drive
+    assert mock_docs_svc.upload_file.called is True
+
+
+def test_theory_assignment_diagram_extraction_and_deliverable_packaging():
+    """Verify extract_assignment_deliverables captures Draw.io XML and Mermaid diagrams as companion deliverables."""
+    theory_md = """
+# Task 1: Distributed Architecture
+Theoretical discussion of decentralized consensus.
+
+## System Architecture Diagram
+```drawio
+<mxfile host="app.diagrams.net">
+  <diagram name="Consensus">
+    <mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>
+  </diagram>
+</mxfile>
+```
+
+## Visual Workflow
+```mermaid
+graph TD
+    Client --> Server
+    Server --> Database
+```
+"""
+    deliverables = extract_assignment_deliverables(theory_md)
+    files = deliverables.get("files", [])
+
+    assert len(files) >= 1
+    # Check that drawio XML file is present
+    drawio_files = [f for f in files if f.get("language") in ("drawio", "xml") or f.get("name", "").endswith(".drawio.xml")]
+    assert len(drawio_files) >= 1
+    assert "<mxfile" in drawio_files[0]["content"]
+
+
+
 

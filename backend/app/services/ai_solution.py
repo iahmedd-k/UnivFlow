@@ -332,9 +332,21 @@ def synthesize_colab_notebook_from_markdown(markdown: str, title: str = "Google 
 
 
 def extract_assignment_deliverables(markdown: str) -> Dict[str, Any]:
-    """Return executable task files and validated Colab notebooks together."""
+    """Return executable task files, validated Colab notebooks, and diagram files together."""
     deliverables = extract_code_deliverables(markdown)
     deliverables["files"].extend(extract_colab_notebooks(markdown))
+    
+    # Ensure any standalone diagrams (Draw.io XML, Mermaid) are also included in downloadable files
+    existing_file_names = {f.get("name") for f in deliverables["files"]}
+    for diag in extract_diagram_deliverables(markdown):
+        if diag.get("name") not in existing_file_names:
+            deliverables["files"].append({
+                "task": diag.get("task", "1"),
+                "language": diag.get("type", "drawio"),
+                "name": diag.get("name"),
+                "content": diag.get("content", ""),
+            })
+            existing_file_names.add(diag.get("name"))
     return deliverables
 
 
