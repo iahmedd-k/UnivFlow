@@ -171,8 +171,8 @@ def health_check(db: Session = Depends(get_db)):
     
     # Supabase check
     try:
-        from app.db.supabase_client import get_supabase
-        supabase = get_supabase()
+        from app.db.supabase_client import get_supabase_client
+        supabase = get_supabase_client()
         if supabase:
             checks["supabase"] = "healthy"
         else:
