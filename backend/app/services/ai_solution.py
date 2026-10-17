@@ -1195,13 +1195,15 @@ def export_solution_to_google_doc(
         owner_id = user_id or assignment.user_id
         profile_row = None
         if owner_id:
-            profile_row = db.query(Setting).filter(
-                Setting.key.in_([f"student_profile_{owner_id}", f"clerk_user_{owner_id}", "student_profile_legacy"])
-            ).order_by(Setting.id.desc()).first()
+            profile_row = db.query(Setting).filter(Setting.key == f"student_profile_{owner_id}").first()
+            if not profile_row:
+                profile_row = db.query(Setting).filter(Setting.key == f"clerk_user_{owner_id}").first()
+            if not profile_row:
+                profile_row = db.query(Setting).filter(Setting.key == "student_profile_legacy").first()
         if not profile_row:
-            profile_row = db.query(Setting).filter(
-                (Setting.key.like("student_profile_%")) | (Setting.key.like("clerk_user_%"))
-            ).order_by(Setting.id.desc()).first()
+            profile_row = db.query(Setting).filter(Setting.key.like("student_profile_%")).first()
+            if not profile_row:
+                profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).first()
 
         profile = {}
         if profile_row and hasattr(profile_row, "value") and isinstance(profile_row.value, str):
