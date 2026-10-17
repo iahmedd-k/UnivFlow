@@ -27,7 +27,12 @@ export default function NotificationsPage() {
     const [notifications, summary] = await Promise.all([api.getNotifications(status || null, 50, token), api.getNotificationStats(token)]);
     setItems(notifications || []); setStats(summary || null);
   }, [filter, getToken]);
-  useEffect(() => { load().catch((err) => setError(err.message || 'Could not load notifications.')).finally(() => setLoading(false)); }, [load]);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      load().catch((err) => setError(err.message || 'Could not load notifications.')).finally(() => setLoading(false));
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [load]);
 
   const changeFilter = async (status) => { setFilter(status); setLoading(true); setError(''); try { await load(status); } catch (err) { setError(err.message || 'Could not load notifications.'); } finally { setLoading(false); } };
   const sendPending = async () => {

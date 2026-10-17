@@ -15,7 +15,7 @@ from app.db.models import Assignment, AssignmentMaterial, Course, Setting, Submi
 from app.assignments.schemas.assignment import (
     AssignmentRecord, ExtractedRequirements, SolutionPackage,
     GoogleDocInfo, SubmissionReceipt, ApproveRequest, ChangesRequest,
-    AutoApprovalConfig, AutoApprovalConfigRequest, AssignmentReviewResponse,
+    AutoApprovalConfig, AutoApprovalConfigRequest,
     ApprovalMode, DocumentFetchRequest
 )
 from app.assignments.services.assignment_service import AssignmentService
@@ -320,34 +320,6 @@ Tone and Format:
 - Always tie explanations back to the attached assignment documents and rubric criteria.
 """.strip()
 
-REVIEW_SYSTEM_PROMPT = """
-You are a pre-submission reviewer. The student has uploaded or pasted a draft they wrote themselves and wants a check before turning it in.
-
-You will receive:
-- The assignment's stated requirements and rubric criteria
-- The submission format / deliverable type expected
-- The student's own draft text or file contents
-
-Your job — produce a structured review with:
-1. requirement_coverage: for each rubric/requirement item, "met" / "partial" / "missing", with a one-line reason pointing at the specific part of their draft (or its absence).
-2. issues: a list of concrete problems — grammar, unclear citations, formatting that doesn't match submission_format, logic gaps, missing sections — each with a short description of WHERE and WHY it's an issue, not a rewritten replacement.
-3. citation_check: flag any claim, quote, or figure that looks unattributed or inconsistently formatted, without inventing what the citation should say.
-4. summary: one paragraph, plain language, on whether this looks ready to submit or needs another pass.
-
-Hard constraints:
-- Do not rewrite sentences, paragraphs, code blocks, or proofs for the student. Describe the problem; let them fix it.
-- Do not produce a "corrected version" of the file, in full or in part.
-
-Output valid JSON matching:
-{
-  "requirement_coverage": [{ "requirement": "...", "status": "met"|"partial"|"missing", "reason": "..." }],
-  "issues": [{ "type": "...", "location": "...", "description": "..." }],
-  "citation_check": [{ "excerpt": "...", "concern": "..." }],
-  "summary": "..."
-}
-""".strip()
-
-
 @router.get("/{assignment_id}/breakdown", response_model=dict)
 def get_assignment_breakdown(
     assignment_id: str,
@@ -603,59 +575,6 @@ def get_tutor_conversation_messages(
         {"id": m.id, "role": m.role, "content": m.content, "created_at": m.created_at}
         for m in messages
     ]
-
-
-class DraftReviewRequest(BaseModel):
-    text: Optional[str] = ""
-
-
-@router.post("/{assignment_id}/review", response_model=dict)
-@router.post("/{assignment_id}/review-draft", response_model=dict)
-async def review_assignment_draft(
-    assignment_id: str,
-    payload: Optional[DraftReviewRequest] = None,
-    db: Session = Depends(get_db),
-    clerk_user: Optional[dict] = Depends(get_current_user_optional),
-):
-    """Pre-submission rubric and requirement checker for student drafts"""
-    import json
-    import re
-    from app.services.ai_solution import _call_groq
-
-    assignment = _find_assignment(db, assignment_id, _authenticated_user_id(clerk_user))
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found")
-
-    draft_text = (payload.text if payload and payload.text else "").strip()
-    if not draft_text:
-        raise HTTPException(status_code=422, detail="Provide draft text to review.")
-
-    prompt = f"""ASSIGNMENT REQUIREMENTS:
-Title: {assignment.title}
-Instructions: {assignment.description or 'Standard academic assignment.'}
-
-STUDENT DRAFT TO REVIEW:
-{draft_text[:18000]}
-"""
-    try:
-        raw = _call_groq(
-            prompt=prompt,
-            system_prompt=REVIEW_SYSTEM_PROMPT,
-            temperature=0.2,
-            max_tokens=2500
-        )
-        json_match = re.search(r"\{[\s\S]*\}", raw)
-        if json_match:
-            return json.loads(json_match.group(0))
-        return {
-            "requirement_coverage": [{"requirement": "Overall Submission", "status": "met", "reason": "Draft submitted"}],
-            "issues": [],
-            "citation_check": [],
-            "summary": raw
-        }
-    except Exception as e:
-        logger.error(f"Review error for {assignment_id}: {e}")
-        raise HTTPException(status_code=502, detail=f"Review service error: {str(e)}")
 
 
 class ScheduleTurnInRequest(BaseModel):

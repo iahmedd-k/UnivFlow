@@ -9,7 +9,6 @@ from app.db.models import AgentRun, AgentEvent, AgentRunStatus, AgentRunTrigger
 router = APIRouter(prefix="/agent", tags=["Agent"])
 
 
-@router.get("/runs", response_model=List[dict])
 def get_agent_runs(
     limit: int = 20,
     db: Session = Depends(get_db)
@@ -34,7 +33,6 @@ def get_agent_runs(
     ]
 
 
-@router.get("/runs/{run_id}", response_model=dict)
 def get_agent_run(run_id: int, db: Session = Depends(get_db)):
     run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
     if not run:
@@ -54,7 +52,6 @@ def get_agent_run(run_id: int, db: Session = Depends(get_db)):
     }
 
 
-@router.get("/runs/{run_id}/events", response_model=List[dict])
 def get_agent_run_events(run_id: int, db: Session = Depends(get_db)):
     run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
     if not run:
@@ -77,7 +74,6 @@ def get_agent_run_events(run_id: int, db: Session = Depends(get_db)):
     ]
 
 
-@router.get("/stats/summary", response_model=dict)
 def get_agent_stats(db: Session = Depends(get_db)):
     total_runs = db.query(AgentRun).count()
     running = db.query(AgentRun).filter(AgentRun.status == AgentRunStatus.RUNNING).count()

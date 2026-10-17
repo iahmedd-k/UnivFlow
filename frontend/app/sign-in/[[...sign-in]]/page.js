@@ -29,8 +29,8 @@ export default function SignInPage() {
             signUpUrl="/sign-up"
             fallbackRedirectUrl="/dashboard"
             appearance={{ elements: {
-              rootBox: 'clerk-root-box',
-              card: 'clerk-auth-card',
+              rootBox: 'clerk-login-root',
+              card: 'clerk-login-card',
               headerTitle: 'clerk-header-title',
               headerSubtitle: 'clerk-header-subtitle',
               socialButtonsBlockButton: 'clerk-social-button',

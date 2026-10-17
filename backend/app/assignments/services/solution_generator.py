@@ -1,6 +1,7 @@
 import logging
 import json
 import asyncio
+import re
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from dataclasses import dataclass
@@ -12,6 +13,44 @@ from app.assignments.schemas.assignment import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_json_object(text: str) -> Dict[str, Any]:
+    """Parse one JSON object from a model response, including fenced responses."""
+    source = (text or "").strip()
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", source, re.IGNORECASE)
+    if fenced:
+        source = fenced.group(1).strip()
+
+    start = source.find("{")
+    if start < 0:
+        raise ValueError("Planner response did not contain a JSON object")
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(source)):
+        char = source[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                parsed = json.loads(source[start:index + 1])
+                if not isinstance(parsed, dict):
+                    break
+                return parsed
+    raise ValueError("Planner response contained incomplete or invalid JSON")
 
 
 class AgentRole(str, Enum):
@@ -54,7 +93,7 @@ class BaseAgent:
 class PlannerAgent(BaseAgent):
     """Breaks down requirements into executable subtasks."""
     
-    PLANNING_PROMPT = """You are an expert academic curriculum planning agent. Break down the university assignment requirements into specific, actionable subtasks with clear domain classification.
+    PLANNING_PROMPT = """You are a senior academic planning specialist. Analyze the assignment and produce a precise, dependency-aware execution plan for the downstream specialists. Plan only; do not solve any part of the assignment.
 
 REQUIREMENT:
 {requirement}
@@ -64,6 +103,15 @@ CONTEXT:
 - Course: {course_name}
 - Other Requirements: {other_requirements}
 - Available Tools: {available_tools}
+
+Planning quality checks:
+- Cover every explicit task, question, sub-question, and deliverable once, preserving the source order and numbering.
+- Preserve stated requirements and constraints. Do not fill gaps with invented facts; where the schema has no missing-information field, describe the uncertainty in the relevant subtask's inputs_needed or expected_output.
+- For mixed assignments, route each subtask to the appropriate specialist and make dependencies explicit. Keep independent work independent.
+- Ensure every dependency points to another subtask id, contains no self-reference, and forms an acyclic order.
+- Consider unavailable datasets, unspecified language or tools, unreadable or contradictory instructions, hardware requirements, and empty context. Make conservative assumptions visible in the plan.
+- Keep expected outputs concrete and verifiable, and keep estimated time and complexity proportionate to the work.
+- Return exactly the schema below as JSON; use only the listed domain types and specialist roles.
 
 Classify the assignment into:
 - domain_type: "THEORY_ACADEMIC" | "CODING_LAB" | "DIAGRAM_DESIGN" | "HEAVY_ML" | "QUANTITATIVE_MATH"
@@ -107,7 +155,34 @@ Create a detailed execution plan as JSON:
         
         try:
             response = await self.llm_client.complete(prompt, temperature=0.2, max_tokens=2000)
-            plan = json.loads(response.strip().split("```json")[-1].split("```")[0] if "```" in response else response)
+            plan = _extract_json_object(response)
+            required_keys = {"domain_type", "deliverable_format", "subtasks", "estimated_time_minutes", "complexity"}
+            if not required_keys.issubset(plan):
+                missing = sorted(required_keys - set(plan))
+                raise ValueError(f"Planner response is missing required fields: {', '.join(missing)}")
+            if not isinstance(plan.get("subtasks"), list) or not plan["subtasks"]:
+                raise ValueError("Planner response must include at least one subtask")
+
+            seen_ids = set()
+            for subtask in plan["subtasks"]:
+                if not isinstance(subtask, dict):
+                    raise ValueError("Each planned subtask must be a JSON object")
+                subtask_id = str(subtask.get("id") or "").strip()
+                if not subtask_id or subtask_id in seen_ids:
+                    raise ValueError("Each planned subtask must have a unique, non-empty id")
+                seen_ids.add(subtask_id)
+
+            for subtask in plan["subtasks"]:
+                dependencies = subtask.get("depends_on") or []
+                if not isinstance(dependencies, list):
+                    raise ValueError(f"Dependencies for {subtask['id']} must be a list")
+                if str(subtask["id"]) in set(map(str, dependencies)):
+                    raise ValueError(f"Subtask {subtask['id']} cannot depend on itself")
+                unknown = set(map(str, dependencies)) - seen_ids
+                if unknown:
+                    raise ValueError(f"Subtask {subtask['id']} references unknown dependencies: {', '.join(sorted(unknown))}")
+
+            SolutionGenerator._validate_subtask_dependencies(plan["subtasks"])
             
             return AgentResult(
                 requirement_id=task.requirement_id,
@@ -523,6 +598,23 @@ class SolutionGenerator:
         
         for req in sorted_reqs:
             logger.info(f"Processing requirement: {req.id} ({req.type})")
+
+            blocked_dependencies = [
+                dep for dep in (req.depends_on or [])
+                if dep not in all_results or not all_results[dep].success
+            ]
+            if blocked_dependencies:
+                result = AgentResult(
+                    requirement_id=req.id,
+                    role=AgentRole.WRITER,
+                    success=False,
+                    output=None,
+                    error=f"Blocked by unsuccessful prerequisite(s): {', '.join(map(str, blocked_dependencies))}",
+                )
+                all_results[req.id] = result
+                requirements_failed.append(req.id)
+                logger.warning("Skipping requirement %s because dependencies failed: %s", req.id, blocked_dependencies)
+                continue
             
             # Prepare context for this requirement
             req_context = {
@@ -579,12 +671,14 @@ class SolutionGenerator:
                 review_result = await self.reviewer.execute(review_task)
                 review_results[req.id] = review_result
                 
-                if review_result.success and review_result.output.get("meets_requirement"):
+                if review_result.success and isinstance(review_result.output, dict) and review_result.output.get("meets_requirement"):
                     pass  # Already in met
-                elif review_result.success:
+                elif review_result.success and isinstance(review_result.output, dict):
                     requirements_partial.append(req.id)
                     if req.id in requirements_met:
                         requirements_met.remove(req.id)
+                elif not review_result.success:
+                    logger.warning("Reviewer could not verify requirement %s: %s", req.id, review_result.error)
         
         # Calculate overall confidence
         total_reqs = len(requirements.requirements)
@@ -615,26 +709,52 @@ class SolutionGenerator:
         )
     
     def _topological_sort(self, requirements: List[Requirement]) -> List[Requirement]:
-        """Sort requirements by dependencies."""
-        # Simple implementation - in production use proper topological sort
+        """Return requirements in dependency order; reject missing links and cycles."""
         req_map = {r.id: r for r in requirements}
+        state = {}
         sorted_ids = []
-        visited = set()
         
         def visit(req_id):
-            if req_id in visited:
+            current = state.get(req_id, 0)
+            if current == 2:
                 return
-            visited.add(req_id)
+            if current == 1:
+                raise ValueError(f"Requirement dependency cycle detected at {req_id}")
             req = req_map.get(req_id)
-            if req:
-                for dep in req.depends_on:
-                    visit(dep)
-                sorted_ids.append(req_id)
+            if req is None:
+                raise ValueError(f"Requirement dependency references unknown id {req_id}")
+            state[req_id] = 1
+            for dep in req.depends_on or []:
+                if dep not in req_map:
+                    raise ValueError(f"Requirement {req_id} depends on unknown requirement {dep}")
+                visit(dep)
+            state[req_id] = 2
+            sorted_ids.append(req_id)
         
         for req in requirements:
             visit(req.id)
         
-        return [req_map[rid] for rid in sorted_ids if rid in req_map]
+        return [req_map[rid] for rid in sorted_ids]
+
+    @staticmethod
+    def _validate_subtask_dependencies(subtasks: List[Dict[str, Any]]) -> None:
+        """Ensure planner dependencies form a valid acyclic graph."""
+        subtask_map = {str(item["id"]): item for item in subtasks}
+        state = {}
+
+        def visit(subtask_id: str) -> None:
+            current = state.get(subtask_id, 0)
+            if current == 1:
+                raise ValueError(f"Planner dependency cycle detected at {subtask_id}")
+            if current == 2:
+                return
+            state[subtask_id] = 1
+            for dependency in subtask_map[subtask_id].get("depends_on") or []:
+                visit(str(dependency))
+            state[subtask_id] = 2
+
+        for subtask_id in subtask_map:
+            visit(subtask_id)
     
     def _convert_to_files(self, requirement: Requirement, output: Any) -> List[GeneratedFile]:
         """Convert agent output to GeneratedFile objects."""

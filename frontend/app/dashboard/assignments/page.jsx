@@ -49,7 +49,8 @@ export default function AssignmentsPage() {
   }, [getToken, filter]);
 
   useEffect(() => {
-    loadAssignments();
+    const timer = setTimeout(() => loadAssignments(), 0);
+    return () => clearTimeout(timer);
   }, [loadAssignments]);
 
   const availableCourses = useMemo(() => {

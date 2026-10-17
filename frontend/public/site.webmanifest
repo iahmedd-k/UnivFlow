@@ -1,0 +1,16 @@
+{
+  "name": "UnivFlow - Unified Academic Assistant",
+  "short_name": "UnivFlow",
+  "description": "Autonomous academic workflow hub: 4-agent assignment solver, Google Classroom & Portal sync, weekly timetable manager, and intelligent attendance tracker.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#6366f1",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    }
+  ]
+}

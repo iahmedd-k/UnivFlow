@@ -31,7 +31,12 @@ export default function MailDrivePage() {
     if (failure) setError(failure.reason?.message || 'Google data could not be loaded.');
   }, [category, getToken]);
 
-  useEffect(() => { load().catch((err) => setError(err.message || 'Could not check Google connection.')).finally(() => setLoading(false)); }, [load]);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      load().catch((err) => setError(err.message || 'Could not check Google connection.')).finally(() => setLoading(false));
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [load]);
 
   const connect = async () => {
     setBusy(true); setError('');

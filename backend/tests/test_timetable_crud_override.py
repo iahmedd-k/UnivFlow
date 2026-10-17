@@ -274,7 +274,7 @@ def test_attendance_crud(client, test_db):
 # 4. University Exams and Quizzes CRUD Tests
 # =========================================================================
 
-def test_university_exams_quizzes_crud(client, test_db):
+def test_university_exams_crud_and_quizzes_retired(client, test_db):
     headers = {"Authorization": "Bearer dev_token"}
 
     # 1. Exam CRUD
@@ -299,7 +299,7 @@ def test_university_exams_quizzes_crud(client, test_db):
     assert del_exam_res.status_code == 200
     assert del_exam_res.json()["deleted"] is True
 
-    # 2. Quiz CRUD
+    # Quiz routes were intentionally retired with the dashboard quiz feature.
     quiz_payload = {
         "title": "Quiz 1 - Logic Gates",
         "time": "11:00 AM",
@@ -307,16 +307,8 @@ def test_university_exams_quizzes_crud(client, test_db):
         "status": "scheduled",
     }
     create_quiz_res = client.post("/api/v1/university/quizzes", json=quiz_payload, headers=headers)
-    assert create_quiz_res.status_code == 200
-    quiz_id = create_quiz_res.json()["id"]
-
-    get_quiz_res = client.get(f"/api/v1/university/quizzes/{quiz_id}", headers=headers)
-    assert get_quiz_res.status_code == 200
-
-    put_quiz_res = client.put(f"/api/v1/university/quizzes/{quiz_id}", json={"title": "Quiz 1 - Advanced Gates"}, headers=headers)
-    assert put_quiz_res.status_code == 200
-    assert put_quiz_res.json()["title"] == "Quiz 1 - Advanced Gates"
-
-    del_quiz_res = client.delete(f"/api/v1/university/quizzes/{quiz_id}", headers=headers)
-    assert del_quiz_res.status_code == 200
-    assert del_quiz_res.json()["deleted"] is True
+    assert create_quiz_res.status_code == 404
+    assert client.get("/api/v1/university/quizzes", headers=headers).status_code == 404
+    assert client.get("/api/v1/university/quizzes/1", headers=headers).status_code == 404
+    assert client.put("/api/v1/university/quizzes/1", json={"title": "Quiz 1 - Advanced Gates"}, headers=headers).status_code == 404
+    assert client.delete("/api/v1/university/quizzes/1", headers=headers).status_code == 404

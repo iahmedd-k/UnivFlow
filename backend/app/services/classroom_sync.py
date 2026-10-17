@@ -21,6 +21,7 @@ from app.db.models import (
     SubmissionState,
     Setting,
     AssignmentSolution,
+    AssignmentStatus,
 )
 from app.core.config import settings
 from app.core.logging import logger
@@ -39,6 +40,7 @@ class ClassroomSyncService:
         self._new_assignments: Dict[int, Optional[datetime]] = {}
         self._submission_sync_failed: set[str] = set()
         self.scope_missing_for_materials = False
+        self.study_material_sync_errors: list[str] = []
         self._load_credentials()
 
     def _check_rate_limit(self) -> bool:
@@ -149,16 +151,25 @@ class ClassroomSyncService:
             logger.warning(f"Could not initialize Drive service for material extraction: {e}")
             return None
 
-    def _extract_drive_file_text(self, drive_service, file_id: str, mime_type: str) -> str:
-        """Extract plain text from a Drive file (Google Doc, PDF, or text)."""
+    def _extract_drive_file_text(self, drive_service, file_id: str, mime_type: str, filename: str = "") -> str:
+        """Extract text from cached Classroom sync downloads, including office uploads."""
         try:
             import io
+            import os
             if mime_type == "application/vnd.google-apps.document":
                 data = drive_service.files().export_media(fileId=file_id, mimeType="text/plain").execute()
                 return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
             if mime_type == "application/vnd.google-apps.presentation":
-                data = drive_service.files().export_media(fileId=file_id, mimeType="text/plain").execute()
-                return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+                data = drive_service.files().export_media(
+                    fileId=file_id,
+                    mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                ).execute()
+                raw = data if isinstance(data, bytes) else bytes(data)
+                import zipfile
+                import xml.etree.ElementTree as ET
+                with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                    slide_names = sorted((name for name in archive.namelist() if name.startswith("ppt/slides/slide") and name.endswith(".xml")), key=lambda n: int(''.join(c for c in n.rsplit('/', 1)[-1] if c.isdigit()) or 0))
+                    return "\n\n".join("Slide: " + " ".join(node.text or "" for node in ET.fromstring(archive.read(name)).iter() if node.tag.endswith("}t")) for name in slide_names)
             if mime_type == "application/vnd.google-apps.spreadsheet":
                 data = drive_service.files().export_media(fileId=file_id, mimeType="text/csv").execute()
                 return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
@@ -170,6 +181,52 @@ class ClassroomSyncService:
             if mime_type and (mime_type.startswith("text/") or mime_type in ("application/json", "application/javascript")):
                 data = drive_service.files().get_media(fileId=file_id).execute()
                 return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+            # DriveFile attachments can be uploaded Office files rather than Google Docs.
+            # Download and extract these during sync so chat never needs a live Drive call.
+            ext = os.path.splitext(filename.lower())[1]
+            if ext in (".pptx", ".docx", ".xlsx") or mime_type in (
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ):
+                data = drive_service.files().get_media(fileId=file_id).execute()
+                raw = data if isinstance(data, bytes) else bytes(data)
+                if ext == ".pptx" or "presentationml" in (mime_type or ""):
+                    import zipfile
+                    import xml.etree.ElementTree as ET
+                    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                        slide_names = sorted((name for name in archive.namelist() if name.startswith("ppt/slides/slide") and name.endswith(".xml")), key=lambda n: int(''.join(c for c in n.rsplit('/', 1)[-1] if c.isdigit()) or 0))
+                        return "\n\n".join("Slide: " + " ".join(node.text or "" for node in ET.fromstring(archive.read(name)).iter() if node.tag.endswith("}t")) for name in slide_names)
+                if ext == ".docx" or "wordprocessingml" in (mime_type or ""):
+                    import docx
+                    return "\n".join(p.text for p in docx.Document(io.BytesIO(raw)).paragraphs if p.text)
+                if ext == ".xlsx" or "spreadsheetml" in (mime_type or ""):
+                    import zipfile
+                    import xml.etree.ElementTree as ET
+                    namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+                    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                        shared = []
+                        if "xl/sharedStrings.xml" in archive.namelist():
+                            root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+                            shared = ["".join(node.text or "" for node in item.iter() if node.tag.endswith("}t")) for item in root.findall(f"{namespace}si")]
+                        rows_text = []
+                        sheets = sorted(name for name in archive.namelist() if name.startswith("xl/worksheets/sheet") and name.endswith(".xml"))
+                        for sheet_name in sheets:
+                            root = ET.fromstring(archive.read(sheet_name))
+                            for row in root.findall(f".//{namespace}row"):
+                                values = []
+                                for cell in row.findall(f"{namespace}c"):
+                                    value = cell.find(f"{namespace}v")
+                                    if cell.get("t") == "s" and value is not None:
+                                        index = int(value.text or 0)
+                                        values.append(shared[index] if index < len(shared) else "")
+                                    elif cell.get("t") == "inlineStr":
+                                        values.append("".join(node.text or "" for node in cell.iter() if node.tag.endswith("}t")))
+                                    else:
+                                        values.append(value.text if value is not None else "")
+                                if any(values):
+                                    rows_text.append(" | ".join(values))
+                        return "\n".join(rows_text)
         except Exception as e:
             logger.warning(f"Could not extract text from Drive file {file_id}: {e}")
         return ""
@@ -264,7 +321,11 @@ class ClassroomSyncService:
 
                     # 1. Sync coursework, materials, and announcements with since_date filter
                     assignments_count = self._sync_coursework(course_id, since_date=since_date)
+                    material_error_start = len(self.study_material_sync_errors)
                     materials_count = self._sync_coursework_materials(course_id, since_date=since_date)
+                    results["errors"].extend(self.study_material_sync_errors[material_error_start:])
+                    if self.scope_missing_for_materials:
+                        results["errors"].append("Google Drive file access is missing; reconnect Google Classroom to index uploaded files.")
                     announcements_count = self._sync_announcements(course, since_date=since_date)
                     
                     # Determine if course has active activity in current semester
@@ -327,6 +388,27 @@ class ClassroomSyncService:
         except Exception as e:
             logger.error(f"Sync failed: {e}")
             results["errors"].append(str(e))
+
+        try:
+            status_key = f"classroom:{self.user_id}:sync_status"
+            status_row = self.db.query(Setting).filter(Setting.key == status_key).first()
+            status_value = json.dumps({
+                "status": "success" if not results["errors"] else "partial",
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "courses": results["courses"],
+                "assignments": results["assignments"],
+                "course_materials": results.get("course_materials", 0),
+                "announcements": results["announcements"],
+                "errors": results["errors"][:10],
+            })
+            if status_row:
+                status_row.value = status_value
+            else:
+                self.db.add(Setting(key=status_key, value=status_value, description="Latest Google Classroom sync status"))
+            self.db.commit()
+        except Exception as status_error:
+            self.db.rollback()
+            logger.warning("Could not save Classroom sync status for %s: %s", self.user_id, status_error)
 
         return results
 
@@ -723,11 +805,15 @@ class ClassroomSyncService:
                     self.scope_missing_for_materials = True
                 elif status in (403, 404):
                     logger.info(f"courseWorkMaterials not accessible for course {course_id} (HTTP {status}): {e.reason}")
+                    if status == 403:
+                        self.study_material_sync_errors.append(f"Course materials for {course_id} were denied (HTTP 403): {e.reason}")
                 else:
                     logger.warning(f"Error fetching courseWorkMaterials for {course_id}: {e}")
+                    self.study_material_sync_errors.append(f"Could not sync course materials for {course_id}: {e}")
                 break
             except Exception as e:
                 logger.warning(f"Unexpected error in _sync_coursework_materials for {course_id}: {e}")
+                self.study_material_sync_errors.append(f"Could not sync course materials for {course_id}: {e}")
                 break
 
         return count
@@ -960,11 +1046,9 @@ class ClassroomSyncService:
 
         repo = AssignmentMaterialRepository(self.db)
 
-        # Clear existing
         existing = repo.get_by_assignment(assignment_db_id)
-        for m in existing:
-            self.db.delete(m)
-
+        by_drive_id = {m.drive_file_id: m for m in existing if m.drive_file_id}
+        by_identity = {(m.material_type, (m.title or "").strip().lower()): m for m in existing if not m.drive_file_id}
         drive_service = self._get_drive_service()
 
         for mat in materials:
@@ -976,6 +1060,25 @@ class ClassroomSyncService:
             mime_type = drive_file.get("mimeType")
             content = ""
 
+            # Classroom attachment objects commonly omit MIME type and a usable name.
+            # Resolve these from Drive during sync (never during a chat request).
+            if drive_service and drive_file_id:
+                try:
+                    metadata = drive_service.files().get(
+                        fileId=drive_file_id,
+                        fields="id,name,mimeType,webViewLink",
+                    ).execute()
+                    mime_type = mime_type or metadata.get("mimeType")
+                    drive_file["title"] = drive_file.get("title") or metadata.get("name")
+                    drive_file["alternateLink"] = drive_file.get("alternateLink") or metadata.get("webViewLink")
+                except HttpError as metadata_error:
+                    status = getattr(metadata_error.resp, "status", None)
+                    if status == 403 and ("ACCESS_TOKEN_SCOPE_INSUFFICIENT" in str(metadata_error) or "insufficient authentication scopes" in str(metadata_error).lower()):
+                        self.scope_missing_for_materials = True
+                    logger.warning("Could not resolve Drive metadata for %s during sync: %s", drive_file_id, metadata_error)
+                except Exception as metadata_error:
+                    logger.warning("Could not resolve Drive metadata for %s during sync: %s", drive_file_id, metadata_error)
+
             # Extract full text from Drive so the study assistant can answer
             # from the document even when Drive isn't connected at chat time.
             if drive_service and drive_file_id and mime_type and (
@@ -984,8 +1087,11 @@ class ClassroomSyncService:
                 or mime_type == "application/vnd.google-apps.spreadsheet"
                 or mime_type == "application/pdf"
                 or mime_type.startswith("text/")
+                or mime_type.startswith("application/vnd.openxmlformats-officedocument.")
+                or mime_type in ("application/json", "application/javascript")
+                or str(drive_file.get("title") or "").lower().endswith((".pptx", ".docx", ".xlsx"))
             ):
-                content = self._extract_drive_file_text(drive_service, drive_file_id, mime_type)
+                content = self._extract_drive_file_text(drive_service, drive_file_id, mime_type, drive_file.get("title") or "")
 
             title = (
                 drive_file.get("title")
@@ -1019,7 +1125,16 @@ class ClassroomSyncService:
                 "mime_type": mime_type,
                 "content": content[:30000] if content else None,
             }
-            repo.create(mat_dict)
+            existing_row = by_drive_id.get(drive_file_id) if drive_file_id else by_identity.get((mat_dict["material_type"], (title or "").strip().lower()))
+            if existing_row:
+                # Preserve previously extracted text if Drive is temporarily unavailable.
+                for key, value in mat_dict.items():
+                    if key == "content" and not value:
+                        continue
+                    setattr(existing_row, key, value)
+                self.db.add(existing_row)
+            else:
+                repo.create(mat_dict)
 
         self.db.commit()
 

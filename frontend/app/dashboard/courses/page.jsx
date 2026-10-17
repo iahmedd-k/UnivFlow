@@ -5,8 +5,9 @@ import { useAuth } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 import MarkdownRenderer from '../MarkdownRenderer';
 import Icon from '@/app/dashboard/Icon';
+import StudyAssistantPage from './StudyAssistantPage';
 
-export default function CoursesPage() {
+function LegacyCoursesPage() {
   const { getToken } = useAuth();
   const [courses, setCourses] = useState([]);
   const [materials, setMaterials] = useState([]);
@@ -939,4 +940,9 @@ export default function CoursesPage() {
       </div>
     </div>
   );
+}
+
+export default function CoursesPage(props) {
+  const Page = props?.legacy ? LegacyCoursesPage : StudyAssistantPage;
+  return <Page />;
 }

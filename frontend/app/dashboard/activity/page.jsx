@@ -37,7 +37,10 @@ export default function ActivityPage() {
   }, [getToken]);
 
   useEffect(() => {
-    load().finally(() => setLoading(false));
+    const timer = setTimeout(() => {
+      load().finally(() => setLoading(false));
+    }, 0);
+    return () => clearTimeout(timer);
   }, [load]);
 
   const toggleEvents = async (runId) => {

@@ -4,7 +4,6 @@ import { useState } from 'react';
 import Icon from '@/app/dashboard/Icon';
 import { format, isValid, formatDistanceToNow } from 'date-fns';
 import TutorPanel from './TutorPanel';
-import ReviewPanel from './ReviewPanel';
 import TurnInPanel from './TurnInPanel';
 import SolutionPanel from './SolutionPanel';
 
@@ -12,7 +11,6 @@ const TABS = [
   { id: 'overview', label: 'Overview & Rubric', icon: 'clipboard' },
   { id: 'tutor', label: 'AI Tutor', icon: 'lightbulb' },
   { id: 'solver', label: 'Solver & Report', icon: 'code' },
-  { id: 'review', label: 'Pre-Submit Review', icon: 'search' },
   { id: 'turnin', label: 'Turn In', icon: 'upload' },
 ];
 
@@ -132,7 +130,6 @@ export default function AssignmentDetailModal({ assignment, initialTab = 'overvi
           )}
           {tab === 'tutor' && <TutorPanel assignment={assignment} />}
           {tab === 'solver' && <SolutionPanel assignment={assignment} />}
-          {tab === 'review' && <ReviewPanel assignment={assignment} />}
           {tab === 'turnin' && <TurnInPanel assignment={assignment} onTurnIn={onTurnIn} />}
         </div>
       </div>

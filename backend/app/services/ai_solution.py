@@ -94,6 +94,23 @@ def extract_diagram_deliverables(markdown: str) -> List[Dict[str, Any]]:
     return diagrams
 
 
+def extract_claude_diagram_images(markdown: str) -> Dict[str, str]:
+    """Return directly embedded Claude image data URLs keyed by task number."""
+    images: Dict[str, str] = {}
+    pattern = re.compile(
+        r"!\[(?P<label>[^\]]*)\]\((?P<uri>data:image/(?:png|jpeg|jpg|gif|webp);base64,[A-Za-z0-9+/=_-]+)\)",
+        re.IGNORECASE,
+    )
+    for ordinal, match in enumerate(pattern.finditer(markdown or ""), 1):
+        label = match.group("label") or ""
+        task_match = re.search(r"(?:task|diagram|question|q)\s*#?\s*(\d+)", label, re.IGNORECASE)
+        if not task_match:
+            task_match = re.search(r"\b(\d+)\b", label)
+        task_id = task_match.group(1) if task_match else str(ordinal)
+        images.setdefault(task_id, match.group("uri"))
+    return images
+
+
 def extract_code_deliverables(markdown: str) -> Dict[str, Any]:
     """Extract per-task source files and expected output from the generated draft."""
     if not markdown:
@@ -528,6 +545,35 @@ def extract_execution_metadata(markdown: str) -> List[Dict[str, Any]]:
         return value if isinstance(value, list) else []
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
         return []
+
+
+def append_downloaded_assets_to_zip(bundle, execution_results: List[Dict[str, Any]]) -> int:
+    """Add all original Claude-downloaded output files to an assignment ZIP."""
+    added = 0
+    used_names = set()
+    for result in execution_results or []:
+        assets = result.get("downloaded_assets") or []
+        if not assets and result.get("diagram_image_filename"):
+            assets = [{"filename": result["diagram_image_filename"], "data_uri": result.get("screenshot_data_uri")}]
+        for asset in assets:
+            filename = asset.get("filename")
+            data_uri = asset.get("data_uri") or ""
+            if not filename or not data_uri.startswith("data:") or "," not in data_uri:
+                continue
+            try:
+                file_bytes = base64.b64decode(data_uri.split(",", 1)[1], validate=True)
+            except (ValueError, TypeError):
+                logger.warning("Skipping invalid downloaded Claude file for task %s", result.get("task"))
+                continue
+            safe_filename = re.sub(r"[^A-Za-z0-9_.-]", "_", str(filename).replace("\\", "/").split("/")[-1])
+            task = re.sub(r"[^A-Za-z0-9_-]", "_", str(result.get("task") or added + 1))
+            archive_name = f"claude_outputs/task_{task}_{safe_filename}"
+            if archive_name in used_names:
+                archive_name = f"claude_outputs/task_{task}_{added + 1}_{safe_filename}"
+            bundle.writestr(archive_name, file_bytes)
+            used_names.add(archive_name)
+            added += 1
+    return added
 
 
 def strip_execution_metadata(markdown: str) -> str:
@@ -1262,7 +1308,7 @@ def export_solution_to_google_doc(
         
         # Treat only non-diagram source files as "code files."  Theory assignments
         # that contain only Draw.io/Mermaid diagram XML must still flow through the
-        # academic report path so diagrams are rendered as images, not dumped as raw XML.
+        # academic report path so Claude-generated diagram images can be embedded without exposing raw XML.
         _diagram_langs = {"drawio", "drawio.xml", "mxfile", "mxgraph", "mermaid", "mmd", "plantuml", "puml", "graphviz", "dot", "svg", "xml"}
         code_files = [f for f in (deliverables.get("files") or []) if f.get("language") not in _diagram_langs]
         has_code_files = bool(code_files)
@@ -1287,6 +1333,7 @@ def export_solution_to_google_doc(
         )
 
         # Now append structured content on Page 2+ with real Google Docs typography
+        embedded_claude_asset_names = set()
         if has_code_files:
             claude_terminals = {
                 str(item.get("task")): (item.get("content") or "").strip()
@@ -1303,8 +1350,10 @@ def export_solution_to_google_doc(
                 lang = (source_file.get("language") or "python").lower()
                 is_diagram = lang in ("mermaid", "diagram", "plantuml", "graphviz", "dot", "mmd", "puml", "drawio", "drawio.xml", "mxfile", "xml", "svg") or source_file["name"].endswith((".mmd", ".puml", ".dot", ".drawio.xml", ".xml"))
                 result = results_by_file.get(source_file["name"], {})
+                if not result:
+                    result = next((item for item in execution_results if str(item.get("task")) == str(task) and (not is_diagram or item.get("language") in (lang, "drawio", "drawio.xml", "xml", "mxfile"))), {})
                 claude_term = claude_terminals.get(str(task))
-                terminal_output = claude_term or result.get("terminal_output") or ("Diagram rendered successfully." if is_diagram else "No terminal output was produced.")
+                terminal_output = claude_term or result.get("terminal_output") or ("No Claude-generated diagram image was available." if is_diagram else "No terminal output was produced.")
                 run_summary = result.get("status", "passed" if claude_term else "not_run").replace("_", " ").title()
                 exit_code = result.get("exit_code", 0)
                 question_text = extract_task_question_from_markdown(
@@ -1340,13 +1389,13 @@ def export_solution_to_google_doc(
                 )
                 docs_service.append_styled_block(
                     doc_id,
-                    f"Status: {run_summary} (Exit Code: {exit_code}) | Engine: {result.get('tool') or ('Draw.io Engine' if is_diagram else 'Terminal Sandbox')}\n\n",
+                    f"Status: {run_summary} (Exit Code: {exit_code}) | Engine: {result.get('tool') or ('Claude Visual Engine' if is_diagram else 'Terminal Sandbox')}\n\n",
                     style_type="BOLD_LABEL"
                 )
 
                 # Embed all screenshot image parts (with on-the-fly fallback if needed)
                 all_screenshot_uris = result.get("screenshot_data_uris") or ([result.get("screenshot_data_uri")] if result.get("screenshot_data_uri") else [])
-                if not all_screenshot_uris and terminal_output and terminal_output.strip() and terminal_output not in ("No terminal output was produced.", "Diagram rendered successfully."):
+                if not is_diagram and not all_screenshot_uris and terminal_output and terminal_output.strip() and terminal_output != "No terminal output was produced.":
                     from app.services.terminal_renderer import TerminalCardRenderer
                     try:
                         cmd = result.get("command")
@@ -1376,15 +1425,25 @@ def export_solution_to_google_doc(
                                 )
                                 if ok:
                                     images_inserted += 1
+                                    embedded_claude_asset_names.update(
+                                        asset.get("filename") for asset in result.get("downloaded_assets", [])
+                                        if asset.get("filename") and asset.get("data_uri") == screenshot_uri
+                                    )
                             except Exception as b64_err:
                                 logger.warning(f"Could not decode screenshot part {s_idx+1} for task {task}: {b64_err}")
 
                 # Only append text console output if NO screenshot images were embedded into the document!
-                if images_inserted == 0:
+                if images_inserted == 0 and not is_diagram:
                     docs_service.append_styled_block(
                         doc_id,
                         f"\nOutput Summary:\n{terminal_output}\n\n" if is_diagram else f"\nConsole Output:\n{terminal_output}\n\n",
                         style_type="CODE"
+                    )
+                elif images_inserted == 0 and is_diagram:
+                    docs_service.append_styled_block(
+                        doc_id,
+                        ("Claude provided a diagram image, but Google Docs could not embed it. The diagram source is retained below as a companion deliverable.\n\n" if all_screenshot_uris else "Claude did not provide a diagram image that could be embedded in this report. The diagram source is retained below as a companion deliverable.\n\n"),
+                        style_type="NORMAL"
                     )
 
                 # 4. Source Code / Diagram Markup (Heading 2 + Code Block)
@@ -1426,6 +1485,7 @@ def export_solution_to_google_doc(
             fence_lines = []
             in_table = False
             table_lines: List[str] = []
+            diagram_result_cursor = 0
 
             def flush_chunk():
                 nonlocal current_chunk
@@ -1487,33 +1547,54 @@ def export_solution_to_google_doc(
                         is_drawio = fence_lang in ("drawio", "drawio.xml", "xml", "mxfile", "mxgraph") or ("<mxfile" in code_content or "<mxGraphModel" in code_content)
                         is_diagram = fence_lang in ("mermaid", "plantuml", "graphviz", "dot", "mmd", "puml", "svg") or is_drawio
                         if is_diagram:
+                            nonlocal_diagram_results = [res for res in execution_results if res.get("language") == ("drawio" if is_drawio else fence_lang) or (is_drawio and res.get("language") in ("drawio", "drawio.xml", "xml", "mxfile"))]
+                            matched_result = nonlocal_diagram_results[diagram_result_cursor] if diagram_result_cursor < len(nonlocal_diagram_results) else None
+                            diagram_result_cursor += 1
                             matched_png = None
                             diag_lang = "drawio" if is_drawio else fence_lang
                             diag_filename = f"diagram_architecture.{'drawio.xml' if is_drawio else _CODE_EXTENSIONS.get(fence_lang, 'png')}"
-                            for res in execution_results:
-                                if (res.get("language") == diag_lang or (is_drawio and res.get("language") in ("drawio", "drawio.xml", "xml", "mxfile"))) and res.get("screenshot_data_uri"):
-                                    try:
-                                        matched_png = base64.b64decode(res["screenshot_data_uri"].split("base64,")[1])
-                                        break
-                                    except Exception:
-                                        pass
+                            if matched_result:
+                                try:
+                                    matched_png = base64.b64decode(matched_result["screenshot_data_uri"].split("base64,")[1])
+                                except Exception:
+                                    pass
 
                             # Diagram images must ONLY be generated directly by Claude as PNG images.
                             # Manual / dashboard diagram generator fallbacks are strictly disabled.
 
                             if matched_png:
-                                docs_service.insert_image_from_bytes(
-                                    document_id=doc_id,
-                                    image_bytes=matched_png,
-                                    filename=f"diagram_{diag_lang}.png",
-                                    width_pt=460
-                                )
+                                image_uri = matched_result.get("screenshot_data_uri") if matched_result else None
+                                already_in_markdown = bool(image_uri and image_uri in solution_content)
+                                if not already_in_markdown:
+                                    inserted = docs_service.insert_image_from_bytes(
+                                        document_id=doc_id,
+                                        image_bytes=matched_png,
+                                        filename=f"diagram_{diag_lang}.png",
+                                        width_pt=460
+                                    )
+                                    if inserted:
+                                        embedded_claude_asset_names.update(
+                                            asset.get("filename") for asset in matched_result.get("downloaded_assets", [])
+                                            if asset.get("filename") and asset.get("data_uri") == image_uri
+                                        )
+                                        docs_service.append_styled_block(
+                                            doc_id,
+                                            f"Figure: Visual Educational Diagram Architecture ({diag_filename} attached)\n\n",
+                                            style_type="NORMAL",
+                                            italic=True,
+                                            alignment="CENTER",
+                                        )
+                                    else:
+                                        docs_service.append_styled_block(
+                                            doc_id,
+                                            "Claude generated the diagram image, but Google Docs could not embed it. See the companion diagram source below.\n\n",
+                                            style_type="NORMAL",
+                                        )
+                            else:
                                 docs_service.append_styled_block(
                                     doc_id,
-                                    f"Figure: Visual Educational Diagram Architecture ({diag_filename} attached)\n\n",
+                                    "No Claude-generated diagram image was available for this diagram, so no replacement image was rendered. See the companion diagram source below.\n\n",
                                     style_type="NORMAL",
-                                    italic=True,
-                                    alignment="CENTER",
                                 )
 
                             # Upload the diagram XML as a companion file deliverable to Google Drive
@@ -1582,6 +1663,11 @@ def export_solution_to_google_doc(
                                 width_pt=460,
                             )
                             if inserted:
+                                embedded_claude_asset_names.update(
+                                    asset.get("filename") for result in execution_results
+                                    for asset in result.get("downloaded_assets", [])
+                                    if asset.get("filename") and asset.get("data_uri") == img_src
+                                )
                                 docs_service.append_styled_block(
                                     doc_id,
                                     f"Figure: {caption}\n\n",
@@ -1686,6 +1772,59 @@ def export_solution_to_google_doc(
                     f"{notebook['name']} is included in the downloadable assignment files.\n\n",
                     style_type="NORMAL",
                 )
+
+        claude_assets = [
+            (str(result.get("task") or ""), asset)
+            for result in execution_results
+            for asset in result.get("downloaded_assets", [])
+            if asset.get("filename") and asset.get("data_uri")
+        ]
+        remaining_assets = [
+            (task, asset) for task, asset in claude_assets
+            if asset.get("filename") not in embedded_claude_asset_names
+        ]
+        if remaining_assets:
+            docs_service.append_styled_block(
+                doc_id,
+                "Claude-Generated Output Files\n",
+                style_type="HEADING_1",
+            )
+            for task, asset in remaining_assets:
+                filename = re.sub(r"[^A-Za-z0-9_.-]", "_", str(asset["filename"]).replace("\\", "/").split("/")[-1])
+                data_uri = asset["data_uri"]
+                try:
+                    file_bytes = base64.b64decode(data_uri.split(",", 1)[1], validate=True)
+                except (IndexError, ValueError, TypeError):
+                    logger.warning("Skipping invalid Claude output attachment %s", filename)
+                    continue
+
+                if asset.get("is_image") or str(asset.get("mime_type", "")).startswith("image/"):
+                    inserted = docs_service.insert_image_from_bytes(
+                        document_id=doc_id,
+                        image_bytes=file_bytes,
+                        filename=filename,
+                        width_pt=460,
+                    )
+                    docs_service.append_styled_block(
+                        doc_id,
+                        f"Task {task}: {filename} — {'embedded in this report' if inserted else 'could not be embedded; included in the downloadable ZIP'}.\n\n",
+                        style_type="NORMAL",
+                    )
+                else:
+                    uploaded_asset = None
+                    try:
+                        uploaded_asset = docs_service.upload_file(
+                            name=filename,
+                            content=file_bytes,
+                            mime_type=asset.get("mime_type") or "application/octet-stream",
+                        )
+                    except Exception as upload_error:
+                        logger.warning("Could not upload Claude output %s to Drive: %s", filename, upload_error)
+                    asset_url = (uploaded_asset or {}).get("webViewLink")
+                    if not asset_url and (uploaded_asset or {}).get("id"):
+                        asset_url = f"https://drive.google.com/open?id={uploaded_asset['id']}"
+                    text = f"Task {task}: {filename}: {asset_url}\n\n" if asset_url else f"Task {task}: {filename} is included in the downloadable ZIP.\n\n"
+                    docs_service.append_styled_block(doc_id, text, style_type="NORMAL")
 
         # Ensure submission record tracks Google Doc ID & Drive ID
         submission = db.query(Submission).filter(Submission.assignment_id == assignment.id).first()
@@ -1884,6 +2023,20 @@ def generate_agentic_solution(
                             plan_data = json.loads(planner_json.group(0))
                         except Exception:
                             logger.warning("Planner output was not valid JSON for assignment %s", assignment_id)
+                plan_is_usable = (
+                    isinstance(plan_data, dict)
+                    and isinstance(plan_data.get("parts_required"), list)
+                    and isinstance(plan_data.get("steps"), list)
+                    and bool(plan_data.get("domain_type"))
+                    and bool(plan_data.get("track"))
+                )
+                if not plan_is_usable:
+                    logger.warning(
+                        "Planner output for assignment %s was missing required routing structure; using the autonomous fallback pipeline.",
+                        assignment_id,
+                    )
+                    plan_data = {}
+                    raw_solution = None
         except (ImportError, Exception) as crew_error:
             logger.warning(
                 "CrewAI execution encountered an issue (%s); executing autonomous multi-stage fallback.",
@@ -1893,6 +2046,17 @@ def generate_agentic_solution(
         # Autonomous multi-stage fallback if CrewAI did not return a complete solution
         if not raw_solution or len(raw_solution.strip()) < 50:
             logger.info("Running direct multi-stage specialist pipeline for assignment %s", assignment_id)
+            progress_row = db.query(Setting).filter(Setting.key == progress_key).first()
+            if progress_row:
+                progress_state = json.loads(progress_row.value) if progress_row.value else progress_state
+                progress_state["plan"] = None
+                progress_state["agents"] = [
+                    {"id": role, "status": "running" if index == 0 else "queued", "summary": ""}
+                    for index, role in enumerate(("planner", "theory_research", "coder_diagram", "reporter_fixer"))
+                ]
+                progress_row.value = json.dumps(progress_state, ensure_ascii=False)
+                db.commit()
+
             # Stage 1: Requirements Analysis
             requirements_analysis = analyze_assignment_requirements(assignment, materials_context, model=model)
             plan_data = {
@@ -2003,6 +2167,7 @@ def generate_agentic_solution(
             "final_solution_markdown": final_markdown,
         }
         deliverables = extract_code_deliverables(final_markdown) if is_code_lab else {"files": [], "terminal_outputs": []}
+        claude_diagram_images = extract_claude_diagram_images(final_markdown)
 
         execution_results = []
         if is_code_lab and deliverables["files"]:
@@ -2018,23 +2183,19 @@ def generate_agentic_solution(
                 is_diagram = lang in ("mermaid", "diagram", "drawio", "plantuml", "flowchart") or source_file["name"].endswith((".mmd", ".drawio.xml", ".puml"))
 
                 if is_diagram:
-                    from app.services.browser_tool_runner import BrowserToolRunner
-                    diag_res = BrowserToolRunner.render_diagram(
-                        diagram_type=lang,
-                        diagram_code=source_file["content"],
-                        title=f"Task {source_file['task']} — {source_file['name']}"
-                    )
+                    diagram_image = claude_diagram_images.get(task_key)
+                    has_claude_image = bool(diagram_image)
                     execution_results.append({
                         "task": source_file["task"],
                         "filename": source_file["name"],
                         "language": lang,
-                        "command": f"render-diagram --engine {lang}",
-                        "exit_code": 0,
-                        "success": True,
-                        "status": "passed",
-                        "terminal_output": f"Rendered {lang.upper()} diagram canvas successfully.\nVector SVG and PNG asset captured.",
-                        "screenshot_data_uri": diag_res.get("data_uri"),
-                        "tool": diag_res.get("tool", "Draw.io / Mermaid Engine")
+                        "command": "Claude image capture",
+                        "exit_code": 0 if has_claude_image else 1,
+                        "success": has_claude_image,
+                        "status": "passed" if has_claude_image else "needs_input",
+                        "terminal_output": "Claude generated the diagram image." if has_claude_image else "Claude did not provide a downloadable diagram image; no local renderer was used.",
+                        "screenshot_data_uri": diagram_image,
+                        "tool": "Claude Visual Engine"
                     })
                 else:
                     claude_term = claude_terminals.get(task_key, "")
@@ -2075,30 +2236,25 @@ def generate_agentic_solution(
                         "tool": "Verified Terminal Execution"
                     })
 
-        # Always extract and render all Mermaid / PlantUML / Architecture diagrams using Kroki / Browser Engine
+        # Record diagram deliverables without rendering them locally. Only Claude-generated images are accepted.
         all_diagrams = extract_diagram_deliverables(final_markdown)
         if all_diagrams:
-            from app.services.browser_tool_runner import BrowserToolRunner
             existing_diag_files = {r.get("filename") for r in execution_results}
             for diag in all_diagrams:
                 if diag["name"] not in existing_diag_files:
-                    logger.info(f"Rendering visual diagram '{diag['name']}' ({diag['type']}) for task {diag['task']} via Kroki API / Browser Engine...")
-                    diag_res = BrowserToolRunner.render_diagram(
-                        diagram_type=diag["type"],
-                        diagram_code=diag["content"],
-                        title=diag.get("heading") or f"Task {diag['task']} — {diag['name']}"
-                    )
+                    diagram_image = claude_diagram_images.get(str(diag.get("task") or "1"))
+                    has_claude_image = bool(diagram_image)
                     execution_results.append({
                         "task": diag["task"],
                         "filename": diag["name"],
                         "language": diag["type"],
-                        "command": f"render-diagram --engine {diag['type']}",
-                        "exit_code": 0,
-                        "success": True,
-                        "status": "passed",
-                        "terminal_output": f"Rendered {diag['type'].upper()} diagram canvas successfully.\nVector SVG and PNG asset captured.",
-                        "screenshot_data_uri": diag_res.get("data_uri"),
-                        "tool": diag_res.get("tool", "Kroki / Mermaid Engine")
+                        "command": "Claude image capture",
+                        "exit_code": 0 if has_claude_image else 1,
+                        "success": has_claude_image,
+                        "status": "passed" if has_claude_image else "needs_input",
+                        "terminal_output": "Claude generated the diagram image." if has_claude_image else "Claude did not provide a downloadable diagram image; no local renderer was used.",
+                        "screenshot_data_uri": diagram_image,
+                        "tool": "Claude Visual Engine"
                     })
 
         final_deliverables = extract_code_deliverables(final_markdown) if is_code_lab else {"files": [], "terminal_outputs": []}

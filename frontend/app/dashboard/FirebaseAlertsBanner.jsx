@@ -5,17 +5,18 @@ import { requestNotificationPermission, onMessageListener, isFirebaseConfigured 
 import Icon from '@/app/dashboard/Icon';
 
 export default function FirebaseAlertsBanner() {
-  if (!isFirebaseConfigured) return null;
-
   const [permission, setPermission] = useState('default');
   const [token, setToken] = useState(null);
   const [activeAlert, setActiveAlert] = useState(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      setPermission(Notification.permission);
-    }
+    if (!isFirebaseConfigured) return undefined;
+    const permissionTimer = setTimeout(() => {
+      if (typeof window !== 'undefined' && 'Notification' in window) {
+        setPermission(Notification.permission);
+      }
+    }, 0);
 
     // Attach real-time foreground Firebase alert listener
     let unsubscribe = null;
@@ -36,6 +37,7 @@ export default function FirebaseAlertsBanner() {
 
     setupListener();
     return () => {
+      clearTimeout(permissionTimer);
       if (typeof unsubscribe === 'function') unsubscribe();
     };
   }, []);
@@ -62,6 +64,8 @@ export default function FirebaseAlertsBanner() {
   };
 
   const isAttendance = activeAlert?.type === 'attendance';
+
+  if (!isFirebaseConfigured) return null;
 
   return (
     <>

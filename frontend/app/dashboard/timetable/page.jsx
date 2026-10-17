@@ -57,7 +57,8 @@ export default function TimetablePage() {
   }, [getToken]);
 
   useEffect(() => {
-    loadData();
+    const timer = setTimeout(() => loadData(), 0);
+    return () => clearTimeout(timer);
   }, [loadData]);
 
   const handleSyncPortal = async () => {

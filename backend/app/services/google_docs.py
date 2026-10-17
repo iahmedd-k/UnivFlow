@@ -772,7 +772,20 @@ class GoogleDocsService:
         if not image_bytes or not self.drive_service or not self.docs_service:
             return False
         try:
-            file_meta = self.upload_file(name=filename, content=image_bytes, mime_type="image/png")
+            image_mime_type = "image/png"
+            try:
+                from PIL import Image
+                import io
+                with Image.open(io.BytesIO(image_bytes)) as image:
+                    if image.format != "PNG":
+                        converted = io.BytesIO()
+                        image.convert("RGBA" if "A" in image.getbands() else "RGB").save(converted, format="PNG")
+                        image_bytes = converted.getvalue()
+                    image_mime_type = "image/png"
+            except Exception as image_err:
+                logger.warning("Could not validate/convert image %s for Google Docs: %s", filename, image_err)
+                return False
+            file_meta = self.upload_file(name=filename, content=image_bytes, mime_type=image_mime_type)
             if not file_meta or not file_meta.get("id"):
                 logger.warning(f"Failed to upload screenshot image {filename} to Google Drive")
                 return False
@@ -786,6 +799,7 @@ class GoogleDocsService:
                 ).execute()
             except Exception as perm_err:
                 logger.warning(f"Could not set public permissions on drive file {file_id}: {perm_err}")
+                return False
 
             target_index = index if index is not None else self.get_document_end_index(document_id)
             image_uri = f"https://lh3.googleusercontent.com/d/{file_id}"

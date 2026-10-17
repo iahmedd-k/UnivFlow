@@ -4,10 +4,12 @@ import json
 import base64
 import time
 import shutil
+import tempfile
 import urllib.request
 import urllib.error
 import subprocess
 import atexit
+import mimetypes
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List, Tuple
@@ -87,6 +89,143 @@ _DIAGRAM_FENCE_TAGS = {
     "mermaid", "plantuml", "puml", "graphviz", "dot", "erd", "nomnoml",
     "drawio", "xml", "mxfile", "mxgraph",
 }
+
+
+def _capture_claude_diagram_images(raw_solution_text: str, page) -> Dict[str, str]:
+    """Collect images from Claude's final response only, keyed by task number."""
+    images: Dict[str, str] = {}
+
+    def add_image(label: str, uri: str, ordinal: int) -> None:
+        if not uri or not uri.startswith("data:image/"):
+            return
+        task_match = re.search(r"(?:task|diagram|question|q)\s*#?\s*(\d+)", label or "", re.IGNORECASE)
+        if not task_match:
+            task_match = re.search(r"\b(\d+)\b", label or "")
+        task_id = task_match.group(1) if task_match else str(ordinal)
+        images.setdefault(task_id, uri)
+        images.setdefault(f"diagram_{task_id}", uri)
+
+    image_pattern = re.compile(
+        r"!\[(?P<label>[^\]]*)\]\((?P<uri>data:image/(?:png|jpeg|jpg|gif|webp);base64,[A-Za-z0-9+/=_-]+)\)",
+        re.IGNORECASE,
+    )
+    for ordinal, match in enumerate(image_pattern.finditer(raw_solution_text or ""), 1):
+        add_image(match.group("label"), match.group("uri"), ordinal)
+
+    try:
+        messages = page.locator('[data-message-author-role="assistant"]')
+        if messages.count() == 0:
+            messages = page.locator(".font-claude-message")
+        if messages.count() == 0:
+            return images
+
+        final_message = messages.last
+        for ordinal, image in enumerate(final_message.locator("img").all(), 1):
+            label = image.get_attribute("alt") or image.get_attribute("aria-label") or image.get_attribute("title") or ""
+            src = image.get_attribute("src") or ""
+            if src.startswith("data:image/"):
+                add_image(label, src, ordinal)
+            elif image.is_visible():
+                try:
+                    screenshot = image.screenshot(type="png")
+                    if screenshot and len(screenshot) > 400:
+                        add_image(label, f"data:image/png;base64,{base64.b64encode(screenshot).decode('ascii')}", ordinal)
+                except Exception:
+                    logger.debug("Could not capture a Claude response image", exc_info=True)
+
+        for ordinal, svg in enumerate(final_message.locator("svg[viewBox]").all(), 1):
+            try:
+                if svg.is_visible():
+                    screenshot = svg.screenshot(type="png")
+                    if screenshot and len(screenshot) > 400:
+                        add_image(svg.get_attribute("aria-label") or "", f"data:image/png;base64,{base64.b64encode(screenshot).decode('ascii')}", ordinal)
+            except Exception:
+                logger.debug("Could not capture a Claude response diagram", exc_info=True)
+    except Exception:
+        logger.debug("Claude response image extraction was unavailable", exc_info=True)
+
+    return images
+
+
+def _download_claude_output_files(page) -> Dict[str, List[Dict[str, Any]]]:
+    """Download all files exposed by Claude's final answer and return the original file data."""
+    downloaded: Dict[str, List[Dict[str, Any]]] = {}
+    try:
+        messages = page.locator('[data-message-author-role="assistant"]')
+        if messages.count() == 0:
+            messages = page.locator(".font-claude-message")
+        if messages.count() == 0:
+            return downloaded
+
+        final_message = messages.last
+        candidates = final_message.locator(
+            'a[download], a[href*="download" i], button[aria-label*="download" i], '
+            'button[title*="download" i], [data-testid*="download" i]'
+        ).all()
+        with tempfile.TemporaryDirectory(prefix="claude-diagram-download-") as download_dir:
+            for ordinal, candidate in enumerate(candidates, 1):
+                try:
+                    label_parts = []
+                    for attr in ("aria-label", "title", "download", "href", "data-testid"):
+                        value = candidate.get_attribute(attr)
+                        if value:
+                            label_parts.append(value)
+                    try:
+                        context_label = candidate.evaluate("""el => {
+                            let node = el;
+                            for (let i = 0; node && i < 5; i++, node = node.parentElement) {
+                                const text = (node.innerText || '').trim();
+                                if (text.length < 500 && /diagram|task|question|[.]png|[.]jpe?g|[.]webp/i.test(text)) return text;
+                            }
+                            return '';
+                        }""")
+                        if context_label:
+                            label_parts.append(context_label)
+                    except Exception:
+                        pass
+
+                    with page.expect_download(timeout=5000) as download_info:
+                        candidate.click(timeout=3000)
+                    download = download_info.value
+                    suggested_name = Path(download.suggested_filename or f"claude_output_{ordinal}.bin").name
+                    target_path = Path(download_dir) / f"{ordinal}_{suggested_name}"
+                    download.save_as(str(target_path))
+                    image_bytes = target_path.read_bytes()
+                    if not image_bytes:
+                        continue
+                    mime_type = mimetypes.guess_type(suggested_name)[0] or "application/octet-stream"
+                    is_image = mime_type.startswith("image/")
+                    try:
+                        from PIL import Image
+                        from io import BytesIO
+                        with Image.open(BytesIO(image_bytes)) as image:
+                            actual_format = (image.format or "PNG").lower()
+                            extension = {"jpeg": ".jpg", "png": ".png", "webp": ".webp", "gif": ".gif"}.get(actual_format)
+                            if extension and Path(suggested_name).suffix.lower() != extension:
+                                suggested_name = f"{Path(suggested_name).stem}{extension}"
+                            mime_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif"}.get(actual_format, mime_type)
+                            is_image = True
+                    except Exception:
+                        pass
+
+                    filename = Path(suggested_name).name
+                    label = " ".join(label_parts + [filename])
+                    task_match = re.search(r"(?:task|diagram|question|q)[\s_#-]*(\d+)", label, re.IGNORECASE)
+                    if not task_match:
+                        task_match = re.search(r"\b(\d+)\b", Path(filename).stem)
+                    task_id = task_match.group(1) if task_match else str(ordinal)
+                    downloaded.setdefault(task_id, []).append({
+                        "filename": filename,
+                        "mime_type": mime_type,
+                        "data_uri": f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}",
+                        "is_image": is_image,
+                    })
+                    logger.info("Downloaded Claude output attachment %s for task %s", filename, task_id)
+                except Exception as download_error:
+                    logger.debug("Could not download Claude response attachment %s: %s", ordinal, download_error)
+    except Exception:
+        logger.debug("Claude attachment download controls were unavailable", exc_info=True)
+    return downloaded
 
 
 _ALREADY_SOLVING_STALE_SECONDS = 20 * 60
@@ -2072,6 +2211,7 @@ def solve_assignment_via_claude_browser(
         # 10. Extract deliverables, parse Claude's terminal outputs, and build visual cards
         execution_results = []
         notebook_deliverables = []
+        claude_downloaded_assets: Dict[str, List[Dict[str, Any]]] = _download_claude_output_files(page)
 
         try:
             from app.services.ai_solution import (
@@ -2098,42 +2238,12 @@ def solve_assignment_via_claude_browser(
                 from app.services.ai_solution import extract_diagram_deliverables
                 diagram_deliverables = extract_diagram_deliverables(raw_solution_text)
 
-                # Check for direct images generated or embedded by Claude
-                claude_direct_images = {}
-                for img_match in re.finditer(r"!\[(.*?)\]\((data:image/png;base64,[A-Za-z0-9+/=]+)\)", raw_solution_text):
-                    img_label = (img_match.group(1) or "").lower()
-                    img_data = img_match.group(2)
-                    task_num_m = re.search(r"(\d+)", img_label)
-                    t_id = task_num_m.group(1) if task_num_m else str(len(claude_direct_images) + 1)
-                    claude_direct_images[t_id] = img_data
-
-                try:
-                    chat_imgs = page.locator('.font-claude-message img, [data-message-author-role="assistant"] img, [data-testid="chat-message-content"] img').all()
-                    for idx, img_el in enumerate(chat_imgs, 1):
-                        src = img_el.get_attribute("src") or ""
-                        if src.startswith("data:image/png"):
-                            claude_direct_images.setdefault(str(idx), src)
-                        elif src and not src.startswith("data:image/svg"):
-                            try:
-                                shot = img_el.screenshot(type="png")
-                                claude_direct_images.setdefault(str(idx), f"data:image/png;base64,{base64.b64encode(shot).decode('ascii')}")
-                            except Exception:
-                                pass
-
-                    # Also capture rendered visual diagram SVG or canvas elements generated by Claude
-                    diag_elements = page.locator('.font-claude-message svg[viewBox], [data-message-author-role="assistant"] svg[viewBox], [data-testid="artifact-content"] svg').all()
-                    for idx, svg_el in enumerate(diag_elements, 1):
-                        try:
-                            if svg_el.is_visible():
-                                shot = svg_el.screenshot(type="png")
-                                if shot and len(shot) > 400:
-                                    uri = f"data:image/png;base64,{base64.b64encode(shot).decode('ascii')}"
-                                    claude_direct_images.setdefault(str(idx), uri)
-                                    claude_direct_images.setdefault(f"diagram_{idx}", uri)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                claude_direct_images = _capture_claude_diagram_images(raw_solution_text, page)
+                for task_id, assets in claude_downloaded_assets.items():
+                    image_asset = next((asset for asset in assets if asset.get("is_image")), None)
+                    if image_asset:
+                        claude_direct_images[task_id] = image_asset["data_uri"]
+                        claude_direct_images[f"diagram_{task_id}"] = image_asset["data_uri"]
 
                 for d_idx, diag in enumerate(diagram_deliverables, 1):
                     d_task = str(diag.get("task") or d_idx)
@@ -2144,38 +2254,34 @@ def solve_assignment_via_claude_browser(
 
                     # Retrieve the authentic visual diagram image generated by Claude
                     diag_png_uri = claude_direct_images.get(d_task) or claude_direct_images.get(f"diagram_{d_idx}") or claude_direct_images.get(str(d_idx))
-                    if not diag_png_uri and d_content:
-                        try:
-                            from app.services.browser_tool_runner import BrowserToolRunner
-                            render_res = BrowserToolRunner.render_diagram(d_lang, d_content, title=f"Diagram {d_task} — {d_name}")
-                            if render_res and render_res.get("data_uri"):
-                                diag_png_uri = render_res["data_uri"]
-                        except Exception as render_err:
-                            logger.warning("Failed to auto-render diagram %s: %s", d_name, render_err)
-
+                    has_claude_image = bool(diag_png_uri)
                     execution_results.append({
                         "task": d_task,
                         "filename": d_name,
                         "language": "drawio" if is_drawio else d_lang,
                         "command": "claude-generate-diagram --format png",
-                        "exit_code": 0,
-                        "success": True,
-                        "status": "passed",
-                        "terminal_output": f"Visual diagram (.png) generated by Claude.\nSchema verified for {d_name}.",
+                        "exit_code": 0 if has_claude_image else 1,
+                        "success": has_claude_image,
+                        "status": "passed" if has_claude_image else "needs_input",
+                        "terminal_output": f"Claude generated the diagram image for {d_name}." if has_claude_image else f"Claude did not provide a downloadable diagram image for {d_name}; no local renderer was used.",
                         "screenshot_data_uri": diag_png_uri,
+                        "diagram_image_filename": next((asset["filename"] for asset in claude_downloaded_assets.get(d_task, []) if asset.get("is_image")), None),
                         "tool": "Claude Visual Engine"
                     })
 
                 # In theory assignments: strip raw Draw.io XML code blocks from the report markdown text!
                 # Replace with clean deliverable note and embedded rendered visual diagram image
+                theory_diagram_index = 0
                 def _replace_drawio_fence_in_theory(match):
+                    nonlocal theory_diagram_index
                     matched_diag_name = "diagram_companion.drawio.xml"
                     matched_uri = None
-                    for res in execution_results:
-                        if res.get("language") == "drawio" or res.get("filename", "").endswith(".drawio.xml"):
-                            matched_diag_name = res.get("filename")
-                            matched_uri = res.get("screenshot_data_uri")
-                            break
+                    diagrams = [res for res in execution_results if res.get("language") == "drawio" or res.get("filename", "").endswith(".drawio.xml")]
+                    if theory_diagram_index < len(diagrams):
+                        diagram_result = diagrams[theory_diagram_index]
+                        matched_diag_name = diagram_result.get("filename") or matched_diag_name
+                        matched_uri = diagram_result.get("screenshot_data_uri")
+                    theory_diagram_index += 1
                     replacement = f"\n**Attached Diagram Deliverable:** `{matched_diag_name}` *(Companion Draw.io XML file included for grading and editing)*\n\n"
                     if matched_uri:
                         replacement = f"\n![Visual Educational Diagram]({matched_uri})\n" + replacement
@@ -2187,9 +2293,6 @@ def solve_assignment_via_claude_browser(
                     raw_solution_text,
                 )
                 final_solution_content = cover_md + raw_solution_text.strip()
-                if execution_results:
-                    final_solution_content = append_execution_metadata(final_solution_content, execution_results)
-
             elif domain == DOMAIN_QUANTITATIVE_MATH:
                 # Academic theory, essay, or quantitative math: clean markdown without bogus code fences or terminal cards
                 final_solution_content = cover_md + raw_solution_text.strip()
@@ -2203,29 +2306,12 @@ def solve_assignment_via_claude_browser(
                     if item.get("content")
                 }
 
-                # Check for direct images generated or embedded by Claude
-                claude_direct_images = {}
-                for img_match in re.finditer(r"!\[(.*?)\]\((data:image/png;base64,[A-Za-z0-9+/=]+)\)", raw_solution_text):
-                    img_label = (img_match.group(1) or "").lower()
-                    img_data = img_match.group(2)
-                    task_num_m = re.search(r"(\d+)", img_label)
-                    t_id = task_num_m.group(1) if task_num_m else str(len(claude_direct_images) + 1)
-                    claude_direct_images[t_id] = img_data
-
-                try:
-                    chat_imgs = page.locator('.font-claude-message img, [data-message-author-role="assistant"] img, [data-testid="chat-message-content"] img').all()
-                    for idx, img_el in enumerate(chat_imgs, 1):
-                        src = img_el.get_attribute("src") or ""
-                        if src.startswith("data:image/png"):
-                            claude_direct_images.setdefault(str(idx), src)
-                        elif src and not src.startswith("data:image/svg"):
-                            try:
-                                shot = img_el.screenshot(type="png")
-                                claude_direct_images.setdefault(str(idx), f"data:image/png;base64,{base64.b64encode(shot).decode('ascii')}")
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
+                claude_direct_images = _capture_claude_diagram_images(raw_solution_text, page)
+                for task_id, assets in claude_downloaded_assets.items():
+                    image_asset = next((asset for asset in assets if asset.get("is_image")), None)
+                    if image_asset:
+                        claude_direct_images[task_id] = image_asset["data_uri"]
+                        claude_direct_images[f"diagram_{task_id}"] = image_asset["data_uri"]
 
                 for source_file in code_deliverables.get("files", []):
                     task_key = str(source_file.get("task") or "1")
@@ -2234,25 +2320,19 @@ def solve_assignment_via_claude_browser(
 
                     if is_diagram:
                         diag_img = claude_direct_images.get(task_key) or claude_direct_images.get(str(source_file.get("task"))) or claude_direct_images.get(f"diagram_{source_file.get('task')}")
-                        if not diag_img and source_file.get("content"):
-                            try:
-                                from app.services.browser_tool_runner import BrowserToolRunner
-                                render_res = BrowserToolRunner.render_diagram(lang, source_file["content"], title=source_file["name"])
-                                if render_res and render_res.get("data_uri"):
-                                    diag_img = render_res["data_uri"]
-                            except Exception as render_err:
-                                logger.warning("Failed to render diagram %s: %s", source_file["name"], render_err)
-
+                        has_claude_image = bool(diag_img)
                         execution_results.append({
                             "task": source_file["task"],
                             "filename": source_file["name"],
                             "language": lang,
                             "command": "claude-generate-diagram --format png",
-                            "exit_code": 0,
-                            "success": True,
-                            "status": "passed",
-                            "terminal_output": f"Visual diagram (.png) generated by Claude.\nSchema verified for {source_file['name']}.",
+                            "exit_code": 0 if has_claude_image else 1,
+                            "success": has_claude_image,
+                            "status": "passed" if has_claude_image else "needs_input",
+                            "terminal_output": f"Claude generated the diagram image for {source_file['name']}." if has_claude_image else f"Claude did not provide a downloadable diagram image for {source_file['name']}; no local renderer was used.",
                             "screenshot_data_uri": diag_img,
+                            "diagram_image_filename": next((asset["filename"] for asset in claude_downloaded_assets.get(task_key, []) if asset.get("is_image")), None),
+                            "downloaded_assets": claude_downloaded_assets.get(task_key, []),
                             "tool": "Claude Visual Engine"
                         })
                     else:
@@ -2329,8 +2409,32 @@ def solve_assignment_via_claude_browser(
                             "tool": "Academic Analysis",
                         })
 
-                if execution_results:
-                    final_solution_content = append_execution_metadata(final_solution_content, execution_results)
+
+            # Attach every Claude download to its task result, or preserve it as a standalone file result.
+            for task_id, assets in claude_downloaded_assets.items():
+                task_result = next((item for item in execution_results if str(item.get("task")) == str(task_id)), None)
+                if task_result:
+                    task_result["downloaded_assets"] = assets
+                    image_asset = next((asset for asset in assets if asset.get("is_image")), None)
+                    if image_asset and task_result.get("language") in _DIAGRAM_FENCE_TAGS:
+                        task_result["screenshot_data_uri"] = image_asset["data_uri"]
+                        task_result["diagram_image_filename"] = image_asset["filename"]
+                else:
+                    execution_results.append({
+                        "task": str(task_id),
+                        "filename": assets[0].get("filename") or f"claude_output_task_{task_id}",
+                        "language": "artifact",
+                        "command": "Claude downloadable output",
+                        "exit_code": 0,
+                        "success": True,
+                        "status": "passed",
+                        "terminal_output": "Downloaded Claude-generated output file(s).",
+                        "downloaded_assets": assets,
+                        "tool": "Claude Output Attachment",
+                    })
+
+            if execution_results:
+                final_solution_content = append_execution_metadata(final_solution_content, execution_results)
 
         except Exception as exec_err:
             logger.warning(f"Deliverables extraction skipped: {exec_err}")

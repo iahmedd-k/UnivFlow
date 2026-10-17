@@ -1,13 +1,12 @@
 import logging
 import re
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from sqlalchemy import or_, and_, func
 from app.db.database import get_db
-from app.integrations.google_drive import get_drive_service
 from app.core.config import settings
 from app.auth.clerk_auth import get_current_user_optional
 from app.services.ai_solution import _call_groq
@@ -33,6 +32,7 @@ router = APIRouter(prefix="/rag", tags=["RAG"])
 class ChatRequest(BaseModel):
     document_id: str | None = None
     document_ids: list[str] = Field(default_factory=list, max_length=100)
+    course_id: int | None = Field(default=None, gt=0)
     query: str
     syllabus: str | None = None
     # Previous turns so the assistant can answer in conversation context.
@@ -124,14 +124,9 @@ def get_classroom_materials(
 
     if user_id and user_id != "dev_student_user":
         q = q.filter(
-            or_(
-                Assignment.user_id == user_id,
-                Assignment.user_id == "legacy",
-                Course.user_id == user_id,
-                Course.user_id == "legacy",
-                AssignmentMaterial.user_id == user_id,
-                AssignmentMaterial.user_id == "legacy",
-            )
+            or_(Assignment.user_id == user_id, Assignment.user_id == "legacy"),
+            or_(Course.user_id == user_id, Course.user_id == "legacy"),
+            or_(AssignmentMaterial.user_id == user_id, AssignmentMaterial.user_id == "legacy"),
         )
 
     if course_id:
@@ -197,12 +192,8 @@ def get_classroom_materials(
         q_asg = q_asg.filter(Assignment.id.notin_(seen_assignment_ids))
     if user_id and user_id != "dev_student_user":
         q_asg = q_asg.filter(
-            or_(
-                Assignment.user_id == user_id,
-                Assignment.user_id == "legacy",
-                Course.user_id == user_id,
-                Course.user_id == "legacy",
-            )
+            or_(Assignment.user_id == user_id, Assignment.user_id == "legacy"),
+            or_(Course.user_id == user_id, Course.user_id == "legacy"),
         )
     if course_id:
         q_asg = q_asg.filter(Course.id == course_id)
@@ -258,10 +249,12 @@ def sync_classroom_study_materials(
     try:
         courses = service._get_all_courses()
         synced_courses = 0
+        synced_assignments = 0
         synced_materials = 0
         for course in courses:
             service._sync_course(course, is_active=True)
             synced_courses += 1
+            synced_assignments += service._sync_coursework(course["id"], since_date=datetime(1970, 1, 1, tzinfo=timezone.utc))
             m_count = service._sync_coursework_materials(course["id"])
             synced_materials += m_count
             service._sync_announcements(course)
@@ -271,12 +264,22 @@ def sync_classroom_study_materials(
                 "scope_missing": True,
                 "reconnect_url": "/api/v1/auth/google?redirect_to=/dashboard/courses",
                 "courses_synced": synced_courses,
+                "assignments_synced": synced_assignments,
                 "materials_synced": synced_materials,
                 "message": "Google Classroom needs to be reconnected to grant permission to sync course slides and handouts."
+            }
+        if getattr(service, "study_material_sync_errors", None):
+            return {
+                "status": "partial",
+                "courses_synced": synced_courses,
+                "assignments_synced": synced_assignments,
+                "materials_synced": synced_materials,
+                "error": "; ".join(service.study_material_sync_errors[:5]),
             }
         return {
             "status": "success",
             "courses_synced": synced_courses,
+            "assignments_synced": synced_assignments,
             "materials_synced": synced_materials,
         }
     except Exception as e:
@@ -425,7 +428,7 @@ async def upload_study_material(
     }
 
 
-def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS) -> list[dict]:
+def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS, user_id: str | None = None) -> list[dict]:
     if not document_ids:
         return []
 
@@ -438,12 +441,19 @@ def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS)
             int_ids.append(int(str(x)[4:]))
 
     # Fetch cached rows from DB first to avoid unnecessary network calls
-    db_rows = db.query(AssignmentMaterial).filter(
+    rows_query = db.query(AssignmentMaterial).join(Assignment, Assignment.id == AssignmentMaterial.assignment_id).join(Course, Course.id == Assignment.course_id).filter(
         or_(
             AssignmentMaterial.drive_file_id.in_(clean_ids),
             AssignmentMaterial.id.in_(int_ids) if int_ids else False
         )
-    ).all()
+    )
+    if user_id and user_id != "dev_student_user":
+        rows_query = rows_query.filter(
+            or_(AssignmentMaterial.user_id == user_id, AssignmentMaterial.user_id == "legacy"),
+            or_(Assignment.user_id == user_id, Assignment.user_id == "legacy"),
+            or_(Course.user_id == user_id, Course.user_id == "legacy"),
+        )
+    db_rows = rows_query.all()
 
     db_map = {}
     for r in db_rows:
@@ -451,17 +461,6 @@ def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS)
             db_map[r.drive_file_id] = r
         db_map[str(r.id)] = r
         db_map[f"mat_{r.id}"] = r
-
-    drive_service = None
-    needs_drive = any(
-        (doc_id in db_map and not db_map[doc_id].content) or (doc_id not in db_map and not doc_id.startswith("asg_"))
-        for doc_id in clean_ids
-    )
-    if needs_drive:
-        try:
-            drive_service = get_drive_service(db)
-        except Exception as e:
-            logger.warning(f"Could not load Google Drive service for RAG: {e}")
 
     materials = []
     for document_id in clean_ids:
@@ -472,7 +471,13 @@ def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS)
 
         if document_id.startswith("asg_") and document_id[4:].isdigit():
             asg_id = int(document_id[4:])
-            asg = db.query(Assignment).filter(Assignment.id == asg_id).first()
+            assignment_query = db.query(Assignment).join(Course, Course.id == Assignment.course_id).filter(Assignment.id == asg_id)
+            if user_id and user_id != "dev_student_user":
+                assignment_query = assignment_query.filter(
+                    or_(Assignment.user_id == user_id, Assignment.user_id == "legacy"),
+                    or_(Course.user_id == user_id, Course.user_id == "legacy"),
+                )
+            asg = assignment_query.first()
             if asg:
                 title = asg.title or title
                 url = asg.url or url
@@ -488,47 +493,6 @@ def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS)
                 content = mat_row.content
             elif mat_row.assignment and mat_row.assignment.description:
                 content = mat_row.assignment.description
-
-        if not content and drive_service and document_id and not document_id.startswith("asg_") and not document_id.startswith("mat_"):
-            try:
-                meta = drive_service.files().get(fileId=document_id, fields="id,name,mimeType,webViewLink").execute()
-                title = meta.get("name") or title
-                url = meta.get("webViewLink") or url
-                mime = meta.get("mimeType", "")
-
-                if mime == "application/vnd.google-apps.document":
-                    data = drive_service.files().export_media(fileId=document_id, mimeType="text/plain").execute()
-                    content = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
-                elif mime == "application/vnd.google-apps.presentation":
-                    data = drive_service.files().export_media(fileId=document_id, mimeType="text/plain").execute()
-                    content = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
-                elif mime == "application/vnd.google-apps.spreadsheet":
-                    data = drive_service.files().export_media(fileId=document_id, mimeType="text/csv").execute()
-                    content = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
-                elif mime == "application/pdf" or title.lower().endswith(".pdf"):
-                    data = drive_service.files().get_media(fileId=document_id).execute()
-                    from pypdf import PdfReader
-                    pdf = PdfReader(io.BytesIO(data if isinstance(data, bytes) else bytes(data)))
-                    content = "\n".join(page.extract_text() or "" for page in pdf.pages)
-                elif mime.startswith("text/") or title.lower().endswith((".txt", ".md", ".py", ".c", ".cpp", ".java", ".h", ".cs", ".json", ".csv", ".html", ".css", ".js", ".ts")):
-                    data = drive_service.files().get_media(fileId=document_id).execute()
-                    content = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
-
-                if content and mat_row:
-                    try:
-                        mat_row.content = content[:max_chars]
-                        mat_row.title = mat_row.title or title
-                        mat_row.url = mat_row.url or url
-                        db.add(mat_row)
-                        db.commit()
-                    except Exception as cache_err:
-                        db.rollback()
-                        logger.warning(f"Could not cache Drive content for {document_id}: {cache_err}")
-            except Exception as e:
-                logger.warning(f"Drive fetch failed for {document_id}: {e}")
-
-        if not content and mat_row and mat_row.url:
-            content = f"Material Title: {title}\nURL: {mat_row.url}"
 
         if title or content:
             materials.append({
@@ -559,7 +523,7 @@ def _retrieve_passages(materials: list[dict], query: str, limit: int = 6) -> lis
     return [f"Source: {title}\n{chunk}" for _, title, _, chunk in chosen]
 
 
-@router.post("/study-plan")
+# Study planner API retired; dashboard no longer exposes study plans.
 async def create_study_plan(request: StudyPlanRequest, db=Depends(get_db), clerk_user: Optional[dict] = Depends(get_current_user_optional)):
     """Build a day-by-day study plan grounded in the syllabus and selected materials.
 
@@ -584,7 +548,7 @@ async def create_study_plan(request: StudyPlanRequest, db=Depends(get_db), clerk
             raise HTTPException(status_code=422, detail="plan_mode must be 'coverage' or 'spaced_repetition'.")
 
         # Build document context from selected materials (lazy read, per selection)
-        materials = _read_materials(db, request.document_ids)
+        materials = _read_materials(db, request.document_ids, user_id=user_id)
         document_context = "\n\n".join(
             f"MATERIAL: {item['title']}\n{item['content'][:4000]}" for item in materials
         ) if materials else "No materials selected."
@@ -666,7 +630,6 @@ async def create_study_plan(request: StudyPlanRequest, db=Depends(get_db), clerk
         raise HTTPException(status_code=502, detail=f"Could not generate the study plan: {e}") from e
 
 
-@router.get("/study-plans", response_model=List[dict])
 def list_study_plans(
     limit: int = 50,
     db=Depends(get_db),
@@ -696,7 +659,6 @@ def list_study_plans(
     ]
 
 
-@router.get("/study-plans/{plan_id}", response_model=dict)
 def get_study_plan(
     plan_id: int,
     db=Depends(get_db),
@@ -747,7 +709,6 @@ def get_study_plan(
     }
 
 
-@router.post("/study-plans/{plan_id}/sessions/{session_id}/status", response_model=dict)
 def update_session_status(
     plan_id: int,
     session_id: int,
@@ -908,9 +869,21 @@ async def rag_chat(request: ChatRequest, db=Depends(get_db), clerk_user: Optiona
         document_ids = request.document_ids or ([request.document_id] if request.document_id else [])
         if not document_ids:
             try:
-                user_mats = db.query(AssignmentMaterial).filter(
-                    (AssignmentMaterial.user_id == user_id) | (AssignmentMaterial.user_id == "legacy")
-                ).all()
+                material_query = (
+                    db.query(AssignmentMaterial)
+                    .join(Assignment, Assignment.id == AssignmentMaterial.assignment_id)
+                    .join(Course, Course.id == Assignment.course_id)
+                    .filter(or_(AssignmentMaterial.content.isnot(None), Assignment.description.isnot(None)))
+                )
+                if user_id != "dev_student_user":
+                    material_query = material_query.filter(
+                        or_(AssignmentMaterial.user_id == user_id, AssignmentMaterial.user_id == "legacy"),
+                        or_(Assignment.user_id == user_id, Assignment.user_id == "legacy"),
+                        or_(Course.user_id == user_id, Course.user_id == "legacy"),
+                    )
+                if request.course_id:
+                    material_query = material_query.filter(Course.id == request.course_id)
+                user_mats = material_query.limit(1000).all()
                 if user_mats:
                     query_terms = {w.lower() for w in re.findall(r"[\w'-]{3,}", request.query)}
                     scored = []
@@ -927,7 +900,7 @@ async def rag_chat(request: ChatRequest, db=Depends(get_db), clerk_user: Optiona
                 logger.warning(f"RAG auto-retrieval fallback error: {e}")
 
         # Only read / chunk the documents the user selected or auto-retrieved candidates.
-        materials = _read_materials(db, document_ids)
+        materials = _read_materials(db, document_ids, user_id=user_id)
         # Build context: conversation history first, then full text of each
         # selected document, then top retrieved passages for precise grounding.
         context_parts = []
@@ -941,6 +914,8 @@ async def rag_chat(request: ChatRequest, db=Depends(get_db), clerk_user: Optiona
             context_parts.append(f"User academic context: {request.academic_context}")
         if request.syllabus:
             context_parts.append(f"Exam syllabus: {request.syllabus[:12000]}")
+        if not any((item.get("content") or "").strip() for item in materials):
+            context_parts.append("No extracted text was found in the selected saved course sources. Do not imply that a source supports an answer; say when the saved materials do not contain usable text and label any general explanation clearly.")
         max_total_chars = 36000
         per_doc_limit = max(1500, max_total_chars // max(len(materials), 1))
         for item in materials:
@@ -961,9 +936,9 @@ async def rag_chat(request: ChatRequest, db=Depends(get_db), clerk_user: Optiona
             "2. When asked to prepare study materials, deliver rigorous, well-organized, and thorough content "
             "with markdown headings, clear bullet points, mathematical notations ($...$), and code snippets.\n"
             "3. Answer questions directly, step-by-step, and in depth. Never refuse or give vague non-answers.\n"
-            "4. If specific course materials do not cover a requested topic, use your authoritative academic "
-            "knowledge to provide a complete, crystal-clear explanation, noting that the student can attach "
-            "specific slides or notes for custom alignment."
+            "4. If specific course materials do not cover a requested topic, clearly say so, then give a useful "
+            "general academic explanation and label it as general knowledge rather than course-source content. "
+            "Never claim a source supports information when its saved text is missing or irrelevant."
         )
         user_prompt = f"Query: {request.query}\n\nContext:\n" + "\n\n".join(context_parts)
         # Call Groq LLM (use chat model defined in settings)

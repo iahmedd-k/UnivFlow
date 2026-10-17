@@ -66,7 +66,8 @@ export default function TemplatesPage() {
   }, [getToken]);
 
   useEffect(() => {
-    loadTemplates();
+    const timer = setTimeout(() => loadTemplates(), 0);
+    return () => clearTimeout(timer);
   }, [loadTemplates]);
 
   const extractDocIdFromUrl = (urlOrId) => {

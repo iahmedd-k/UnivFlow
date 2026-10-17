@@ -15,8 +15,6 @@ from app.db.repositories import (
     ClassScheduleRepository,
     AttendanceRecordRepository,
     ExamRepository,
-    QuizRepository,
-    AgentRunRepository,
 )
 from app.db.models import (
     Course,
@@ -24,7 +22,6 @@ from app.db.models import (
     ClassSchedule,
     AttendanceRecord,
     Exam,
-    Quiz,
     AssignmentStatus,
     AssignmentSolution,
     Submission,
@@ -108,8 +105,6 @@ def _get_user_dashboard_data(db: Session, user_id: str, since_dt: Optional[datet
     schedule_repo = ClassScheduleRepository(db)
     attendance_repo = AttendanceRecordRepository(db)
     exam_repo = ExamRepository(db)
-    quiz_repo = QuizRepository(db)
-    agent_repo = AgentRunRepository(db)
 
     courses = course_repo.get_all(user_id=user_id)
     courses = _filter_by_since_dt(courses, since_dt, ['created_at', 'updated_at'])
@@ -133,19 +128,12 @@ def _get_user_dashboard_data(db: Session, user_id: str, since_dt: Optional[datet
     upcoming_exams = exam_repo.get_upcoming(30)
     upcoming_exams = _filter_by_since_dt(upcoming_exams, since_dt, ['date'])
 
-    upcoming_quizzes = quiz_repo.get_upcoming(30)
-    upcoming_quizzes = _filter_by_since_dt(upcoming_quizzes, since_dt, ['date'])
-
-    recent_agent_runs = agent_repo.get_recent(5)
-
     return {
         "courses": courses,
         "all_assignments": all_assignments,
         "upcoming_schedules": upcoming_schedules,
         "attendance_records": attendance_records,
         "upcoming_exams": upcoming_exams,
-        "upcoming_quizzes": upcoming_quizzes,
-        "recent_agent_runs": recent_agent_runs,
         "owned_course_ids": owned_course_ids,
     }
 
@@ -292,7 +280,6 @@ def get_dashboard_overview(
         },
         "upcoming_classes": len(data["upcoming_schedules"]),
         "upcoming_exams": len(data["upcoming_exams"]),
-        "upcoming_quizzes": len(data["upcoming_quizzes"]),
         "average_attendance": round(avg_attendance, 2),
         "academic_summary": academic_summary,
         "ai_agent_hub": {
@@ -301,19 +288,6 @@ def get_dashboard_overview(
             "total_solved": len(ready_for_review_solutions),
             "active_count": len(active_crew_runs),
         },
-        "recent_agent_runs": [
-            {
-                "id": r.id,
-                "trigger": r.trigger.value,
-                "status": r.status.value,
-                "started_at": r.started_at,
-                "finished_at": r.finished_at,
-                "assignments_found": r.assignments_found,
-                "changes_found": r.changes_found,
-                "notifications_sent": r.notifications_sent,
-            }
-            for r in data["recent_agent_runs"]
-        ],
     }
 
 
@@ -370,17 +344,6 @@ def get_upcoming_items(
             }
             for e in data["upcoming_exams"]
             if e.date and e.date <= cutoff
-        ],
-        "quizzes": [
-            {
-                "id": q.id,
-                "title": q.title,
-                "date": q.date,
-                "time": q.time,
-                "room": q.room,
-            }
-            for q in data["upcoming_quizzes"]
-            if q.date and q.date <= cutoff
         ],
     }
 

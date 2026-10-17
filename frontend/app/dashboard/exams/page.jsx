@@ -62,7 +62,10 @@ export default function ExamsPage() {
   }, [getToken]);
 
   useEffect(() => {
-    load().catch((e) => setError(e.message || 'Could not load exam data.')).finally(() => setLoading(false));
+    const timer = setTimeout(() => {
+      load().catch((e) => setError(e.message || 'Could not load exam data.')).finally(() => setLoading(false));
+    }, 0);
+    return () => clearTimeout(timer);
   }, [load]);
 
   useEffect(() => {

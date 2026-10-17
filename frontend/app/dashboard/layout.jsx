@@ -15,8 +15,6 @@ const groups = [
   { label: 'Study & coursework', items: [
     { href: '/dashboard/assignments', label: 'Assignments Studio', icon: 'listChecks' },
     { href: '/dashboard/courses', label: 'Study assistant', icon: 'brain' },
-    { href: '/dashboard/exams', label: 'Study planner', icon: 'calendarCheck' },
-    { href: '/dashboard/quizzes', label: 'Quizzes', icon: 'help' },
   ] },
   { label: 'Semester', items: [
     { href: '/dashboard/timetable', label: 'Timetable', icon: 'calendar' },
@@ -28,7 +26,6 @@ const groups = [
     { href: '/dashboard/mail-drive', label: 'Mail & Drive', icon: 'folder' },
   ] },
   { label: 'Activity & updates', items: [
-    { href: '/dashboard/activity', label: 'Sync history', icon: 'history' },
     { href: '/dashboard/announcements', label: 'Announcements', icon: 'bell' },
     { href: '/dashboard/notifications', label: 'Alerts & notices', icon: 'alert' },
   ] },
@@ -52,6 +49,7 @@ export default function DashboardLayout({ children }) {
   const { user } = useUser();
   const pathname = usePathname();
   const router = useRouter();
+  const removedFeatureRoute = pathname === '/dashboard/study-planner' || pathname === '/dashboard/exams' || pathname.startsWith('/dashboard/exams/') || pathname === '/dashboard/quizzes' || pathname.startsWith('/dashboard/quizzes/') || pathname === '/dashboard/activity';
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [syncMenuPath, setSyncMenuPath] = useState(null);
   const [syncBusy, setSyncBusy] = useState(false);
@@ -65,6 +63,10 @@ export default function DashboardLayout({ children }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    if (removedFeatureRoute) router.replace('/dashboard');
+  }, [removedFeatureRoute, router]);
 
   const syncMenuOpen = syncMenuPath === pathname;
 
@@ -153,6 +155,8 @@ export default function DashboardLayout({ children }) {
       setSyncBusy(false);
     }
   };
+
+  if (removedFeatureRoute) return null;
 
   return (
     <div className="min-h-screen bg-paper">

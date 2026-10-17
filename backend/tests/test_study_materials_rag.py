@@ -255,6 +255,9 @@ def test_sync_classroom_study_materials_reconnect_required(db_session, monkeypat
         def _sync_course(self, course, is_active=True):
             pass
 
+        def _sync_coursework(self, course_id, since_date=None):
+            return 0
+
         def _sync_coursework_materials(self, course_id):
             return 0
 

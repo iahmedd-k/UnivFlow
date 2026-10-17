@@ -1155,6 +1155,7 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
         extract_execution_metadata,
         strip_execution_metadata,
         export_solution_to_google_doc,
+        append_downloaded_assets_to_zip,
     )
 
     assignment = _get_owned_assignment(db, assignment_id, user_id)
@@ -1222,6 +1223,7 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
             bundle.writestr(f"{safe_title}_Solution.txt", clean_content)
 
         execution_results = extract_execution_metadata(raw_content)
+        append_downloaded_assets_to_zip(bundle, execution_results)
         for index, output in enumerate(execution_results or deliverables.get("terminal_outputs", [])):
             filename = output.get("filename") or f"task_{output.get('task', index + 1)}"
             text = output.get("terminal_output") or output.get("content") or "No terminal output was produced."
@@ -1979,12 +1981,19 @@ def get_solution_status(
         for result in execution_results:
             data_uri = result.get("screenshot_data_uri")
             if not data_uri:
+                image_asset = next((asset for asset in result.get("downloaded_assets", []) if asset.get("is_image") and asset.get("data_uri")), None)
+                data_uri = image_asset.get("data_uri") if image_asset else None
+            is_diagram = result.get("language") in ("mermaid", "diagram", "drawio", "drawio.xml", "plantuml", "graphviz", "dot", "mmd", "puml", "xml", "mxfile", "svg")
+            is_file_attachment = result.get("language") == "artifact"
+            if not data_uri and not is_diagram and not is_file_attachment:
                 png = TerminalCardRenderer.generate_terminal_png(
                     result.get("command") or f"Run {result.get('filename') or 'solution file'}",
                     result.get("terminal_output") or "No terminal output was produced.",
                     title=f"Assignment run — {result.get('filename') or 'solution'}",
                 )
                 data_uri = f"data:image/png;base64,{base64.b64encode(png).decode('ascii')}"
+            if not data_uri:
+                continue
             terminal_screenshots.append({
                 "task": result.get("task"),
                 "filename": result.get("filename"),
@@ -2075,7 +2084,7 @@ def get_solution_status(
         "terminal_screenshots": terminal_screenshots,
         "generated_images": collected_images,
         "crew_progress": crew_progress,
-        "code_files_download_url": f"/api/v1/classroom/assignments/{assignment_id}/solution/files" if deliverables["files"] else None,
+        "code_files_download_url": f"/api/v1/classroom/assignments/{assignment_id}/solution/files" if deliverables["files"] or any(result.get("downloaded_assets") for result in execution_results) else None,
         "validation_errors": cleaned_validation_errors,
         "claude_rate_limit": claude_rate_limit,
         "retry_count": solution.retry_count,
@@ -2110,7 +2119,7 @@ def download_solution_files(
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Download one source file per generated task in a ZIP archive."""
-    from app.services.ai_solution import extract_assignment_deliverables, extract_execution_metadata, strip_execution_metadata
+    from app.services.ai_solution import extract_assignment_deliverables, extract_execution_metadata, strip_execution_metadata, append_downloaded_assets_to_zip
 
     _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
@@ -2118,14 +2127,16 @@ def download_solution_files(
         raise HTTPException(status_code=404, detail="No generated solution is available.")
     deliverables = extract_assignment_deliverables(strip_execution_metadata(solution.validated_content or solution.draft_content or ""))
     files = deliverables["files"]
-    if not files:
+    execution_results = extract_execution_metadata(solution.validated_content or solution.draft_content or "")
+    has_downloaded_assets = any(result.get("downloaded_assets") for result in execution_results)
+    if not files and not has_downloaded_assets:
         raise HTTPException(status_code=404, detail="No task source code files were found in this solution.")
 
     archive = BytesIO()
     with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as bundle:
         for source_file in files:
             bundle.writestr(source_file["name"], source_file["content"])
-        execution_results = extract_execution_metadata(solution.validated_content or solution.draft_content or "")
+        append_downloaded_assets_to_zip(bundle, execution_results)
         for index, output in enumerate(execution_results or deliverables["terminal_outputs"]):
             filename = output.get("filename") or f"terminal_output_task_{output.get('task', index + 1)}.txt"
             text = output.get("terminal_output") or output.get("content") or "No terminal output was produced."

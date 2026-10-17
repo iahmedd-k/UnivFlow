@@ -284,10 +284,6 @@ export const api = {
     return fetchFromApi(`/university/exams${since ? `?since=${encodeURIComponent(since)}` : ''}`, token);
   },
 
-  getQuizzes: async (token = null, since = null) => {
-    return fetchFromApi(`/university/quizzes${since ? `?since=${encodeURIComponent(since)}` : ''}`, token);
-  },
-
   getAnnouncements: async (token = null, since = null) => {
     return fetchFromApi(`/university/announcements${since ? `?since=${encodeURIComponent(since)}` : ''}`, token);
   },
@@ -319,13 +315,9 @@ export const api = {
       body: form,
     });
   },
-  generateStudyPlan: async (data, token = null) => fetchFromApi('/rag/study-plan', token, { method: 'POST', body: JSON.stringify(data) }),
   askCourseMaterials: async (data, token = null) => fetchFromApi('/rag/chat', token, { method: 'POST', body: JSON.stringify(data) }),
   getRagConversations: async (token = null) => fetchFromApi('/rag/conversations', token),
   getRagConversationMessages: async (conversationId, token = null) => fetchFromApi(`/rag/conversations/${conversationId}/messages`, token),
-  getStudyPlans: async (token = null) => fetchFromApi('/rag/study-plans', token),
-  getStudyPlan: async (planId, token = null) => fetchFromApi(`/rag/study-plans/${planId}`, token),
-  updateStudyPlanSession: async (planId, sessionId, payload, token = null) => fetchFromApi(`/rag/study-plans/${planId}/sessions/${sessionId}/status`, token, { method: 'POST', body: JSON.stringify(payload) }),
 
   // Assignment Templates
   getAssignmentTemplates: async (token = null) => fetchFromApi('/classroom/templates', token),
@@ -385,13 +377,6 @@ export const api = {
   }),
   getTutorConversations: async (assignmentId, token = null) => fetchFromApi(`/assignments/${assignmentId}/conversations`, token),
   getTutorConversationMessages: async (assignmentId, conversationId, token = null) => fetchFromApi(`/assignments/${assignmentId}/conversations/${conversationId}/messages`, token),
-
-  reviewDraft: async (assignmentId, { text, file } = {}, token = null) => {
-    return fetchFromApi(`/assignments/${assignmentId}/review`, token, {
-      method: 'POST',
-      body: JSON.stringify({ text: text || (file ? file.name : '') }),
-    });
-  },
 
   scheduleTurnIn: async (assignmentId, payload, token = null) => fetchFromApi(`/assignments/${assignmentId}/schedule-turn-in`, token, {
     method: 'POST',
@@ -477,9 +462,6 @@ export const api = {
     const params = targetDate ? `?target_date=${encodeURIComponent(targetDate)}` : '';
     return fetchFromApi(`/notifications/preview-alerts${params}`, token);
   },
-  getAgentRuns: async (limit = 20, token = null) => fetchFromApi(`/agent/runs?limit=${limit}`, token),
-  getAgentRunStats: async (token = null) => fetchFromApi('/agent/stats/summary', token),
-  getAgentRunEvents: async (runId, token = null) => fetchFromApi(`/agent/runs/${runId}/events`, token),
 
   // Code Execution
   executeCode: async (data, token = null) => fetchFromApi('/execution/execute', token, {
