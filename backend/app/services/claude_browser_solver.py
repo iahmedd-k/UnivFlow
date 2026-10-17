@@ -1084,6 +1084,37 @@ def _is_claude_asking_for_clarification(text: str) -> bool:
     return True
 
 
+def _is_claude_diverting_to_file(text: str) -> bool:
+    """
+    Detect if Claude created an external PDF/file or wrote a summary saying
+    the full solutions/diagrams were put in a PDF or omitted from the reply.
+    """
+    if not text or len(text.strip()) == 0:
+        return False
+    t = text.strip()
+    diverting_patterns = [
+        r"\b(?:put|saved|compiled|stored|generated|created)\s+(?:all\s+.*?|them\s+in|it\s+in)\s+(?:a\s+)?(?:single\s+)?(?:pdf|file|document)\b",
+        r"\b(?:did not|didn't)\s+embed\s+(?:them|the\s+diagrams|the\s+images|the\s+answers|them\s+in)\s+in\s+this\s+reply\b",
+        r"\bfiles are in (?:/mnt/|/home/|outputs/|\./outputs)\b",
+        r"\bdownload the (?:pdf|document|file) (?:from|to view)\b",
+        r"\bthe full (?:solution|report|document|calculations?) (?:is|are) in the (?:attached|generated|output) (?:pdf|file)\b",
+        r"\bI(?:'ve|\s+have)?\s+put\s+(?:them|all\s+three|all\s+questions?|the\s+answers?)\s+in\s+a\s+(?:single\s+)?pdf\b",
+        r"\bI(?:'ve|\s+have)?\s+saved\s+the\s+(?:full\s+)?(?:solution|document|answers?)\s+to\s+[a-zA-Z0-9_\-\.]+\.pdf\b",
+        r"\bsingle PDF,\s+[a-zA-Z0-9_\-\.]+\.pdf\b",
+    ]
+    has_divert_phrase = any(re.search(p, t, re.IGNORECASE) for p in diverting_patterns)
+    if not has_divert_phrase:
+        return False
+
+    # If it also contains extensive solution text with multiple task headings,
+    # it might just be mentioning that it also generated a PDF file.
+    has_full_sections = len(re.findall(r"(?im)^\s{0,3}#{1,4}\s*(?:Task|Question|Problem)\s*\d+", t)) >= 3
+    if has_full_sections and len(t) > 6000:
+        return False
+
+    return True
+
+
 
 def build_academic_cover_markdown(meta: Dict[str, str], assignment_title: str) -> str:
     """Standard Air University introductory cover page in clean Markdown."""
@@ -1702,9 +1733,20 @@ def solve_assignment_via_claude_browser(
             f"   - If any materials from previous sessions or other courses appear in context, IGNORE THEM COMPLETELY.\n"
             f"   - You are strictly forbidden from asking clarifying questions, asking which task to start with, or asking for preferences.\n"
             f"   - Solve ALL questions for this assignment completely right now from start to finish in this single response.\n\n"
+            f"4. ZERO OFFLINE PDF/FILE COMPILATION — DIRECT IN-RESPONSE CONTENT ONLY (CRITICAL REQUIREMENT):\n"
+            f"   - CRITICAL: Even if the assignment instructions or rubric state 'Submit as a single PDF named <RollNo>_<Course>_Assignment1.pdf', DO NOT compile, generate, or save a PDF, DOCX, or external file in /mnt/user-data/outputs/ or anywhere else!\n"
+            f"   - Official PDF compilation, file naming, and Google Docs insertion are handled automatically by OUR downstream platform.\n"
+            f"   - You are STRICTLY FORBIDDEN from putting answers in an external file and providing an abbreviated summary in this chat.\n"
+            f"   - NEVER write 'I put them in a PDF', 'I created a PDF file', 'I saved the solution to a file', 'Files are in /mnt/user-data/outputs', or 'I did not embed them in this reply'. Doing so breaks our pipeline.\n"
+            f"   - You MUST write out the COMPLETE, 100% UNABRIDGED step-by-step solution, all calculations, parameter values, formulas ($...$), derivations, ASCII/Markdown lane grids, Gantt charts, thread timelines, tables, and explanations DIRECTLY inside this chat response.\n"
+            f"   - For every diagram, grid, timeline, or visual: generate and embed it directly in this response (as markdown tables/ASCII diagrams AND visual PNG images or artifacts) so our automated platform can extract both the text and images to assemble the Google Doc and dashboard cards.\n\n"
+            f"5. TASK SOURCE CODE DELIVERABLES (WHEN CODE IS REQUIRED):\n"
+            f"   - Whenever an assignment or task requires programming code (e.g. C, C++, Python, Java, CUDA, OpenMP, Assembly, SQL), write the complete, bug-free, production-ready code directly in language-tagged code fences (e.g. ```c, ```cpp, ```python).\n"
+            f"   - Label each task's code file clearly: `**File:** task<N>_<descriptive_name>.<ext>`.\n"
+            f"   - Our automated platform automatically parses each code block from your response, creates the corresponding source files, and displays them on the student dashboard with one-click download/copy.\n\n"
             f"{domain_instructions}\n\n"
             f"{report_structure}\n"
-            "Do not attempt to generate a Google Doc yourself; our automated system compiles your output into the official Air University Google Doc. "
+            "Do not attempt to generate a Google Doc or PDF file yourself; our automated system compiles your output into the official Air University Google Doc and PDF. "
             "Do not include terminal screenshots or console output unless the assignment explicitly requests executable code output."
         )
 
@@ -1931,23 +1973,45 @@ def solve_assignment_via_claude_browser(
             else:
                 raw_solution_text = page.locator('main').inner_text()
 
-        # Check if Claude asked a clarifying question instead of solving (self-correction loop)
-        if _is_claude_asking_for_clarification(raw_solution_text):
-            logger.warning("Claude asked a clarifying question instead of solving. Autonomously commanding single-assignment focus...")
-            _update_solver_progress(
-                db,
-                assignment_id,
-                3,
-                5,
-                "Clarifying Focus to Claude",
-                f"Claude requested clarification; commanding focus exclusively on '{assignment.title}'...",
-            )
-            follow_up_prompt = (
-                f"Focus EXCLUSIVELY on the assignment '{assignment.title}' for the course '{meta['course_name']}'. "
-                f"Ignore all files, instructions, or materials from other courses or topics. "
-                f"Do not ask questions, do not offer choices, and do not ask how to proceed. "
-                f"Immediately provide the complete, comprehensive academic solution for '{assignment.title}' from start to finish."
-            )
+        # Check if Claude diverted solution into an external PDF or asked for clarification (self-correction loop)
+        is_diverting = _is_claude_diverting_to_file(raw_solution_text)
+        is_clarifying = _is_claude_asking_for_clarification(raw_solution_text)
+
+        if is_diverting or is_clarifying:
+            if is_diverting:
+                logger.warning("Claude diverted solution to external PDF. Autonomously demanding complete in-chat text and visuals...")
+                _update_solver_progress(
+                    db,
+                    assignment_id,
+                    3,
+                    5,
+                    "Demanding Full In-Chat Solution",
+                    f"Claude saved to PDF; demanding full in-chat calculations, tables, and diagrams for '{assignment.title}'...",
+                )
+                follow_up_prompt = (
+                    "CRITICAL REQUIREMENT ERROR: Do NOT save the solution in a PDF or external file, and do NOT omit the calculations or diagrams from this reply! "
+                    "Our automated platform directly extracts your response text, tables, and images to assemble the official Google Doc and Dashboard cards. "
+                    "You MUST immediately print the ENTIRE, UNABRIDGED solution directly in this chat response! "
+                    "Output all parameters, full step-by-step calculations, mathematical derivations, lane grids, Gantt charts, thread timelines, code blocks, and diagrams directly as formatted Markdown text and embedded visuals right now. "
+                    "Do not refer to external files or PDFs—write out every single question's full answer completely in this reply right now."
+                )
+            else:
+                logger.warning("Claude asked a clarifying question instead of solving. Autonomously commanding single-assignment focus...")
+                _update_solver_progress(
+                    db,
+                    assignment_id,
+                    3,
+                    5,
+                    "Clarifying Focus to Claude",
+                    f"Claude requested clarification; commanding focus exclusively on '{assignment.title}'...",
+                )
+                follow_up_prompt = (
+                    f"Focus EXCLUSIVELY on the assignment '{assignment.title}' for the course '{meta['course_name']}'. "
+                    f"Ignore all files, instructions, or materials from other courses or topics. "
+                    f"Do not ask questions, do not offer choices, and do not ask how to proceed. "
+                    f"Immediately provide the complete, comprehensive academic solution for '{assignment.title}' from start to finish."
+                )
+
             try:
                 fu_input = page.locator(prompt_selector).first
                 fu_input.click(force=True, timeout=5000)
@@ -1977,7 +2041,7 @@ def solve_assignment_via_claude_browser(
                     page.wait_for_timeout(2000)
 
                 # Re-extract the response from the follow-up
-                copy_buttons = page.locator('button[aria-label*="Copy" i]').all()
+                copy_buttons = page.locator('button[aria-label*="Copy" i]:not([aria-label*="code" i])').all() or page.locator('button[aria-label*="Copy" i]').all()
                 if copy_buttons:
                     try:
                         copy_buttons[-1].click()
@@ -1990,7 +2054,7 @@ def solve_assignment_via_claude_browser(
                     except Exception:
                         pass
             except Exception as fu_err:
-                logger.warning("Follow-up clarification prompt failed: %s", fu_err)
+                logger.warning("Follow-up self-correction prompt failed: %s", fu_err)
 
         if not raw_solution_text or len(raw_solution_text.strip()) < 100:
             return {

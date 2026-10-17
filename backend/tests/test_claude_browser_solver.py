@@ -30,6 +30,7 @@ from app.services.claude_browser_solver import (
     DOMAIN_THEORY_ACADEMIC,
     _is_material_for_different_course,
     _is_claude_asking_for_clarification,
+    _is_claude_diverting_to_file,
 )
 from app.services.ai_solution import (
     export_solution_to_google_doc,
@@ -760,6 +761,51 @@ Execution time: 0.12s
 ```
 """
     assert _is_claude_asking_for_clarification(real_solution) is False
+
+
+def test_is_claude_diverting_to_file():
+    """Verify autonomous detection when Claude saves to an external PDF instead of printing in chat."""
+    # User's exact prompt text from real PDC run
+    diverting_user_case = (
+        "’ve solved all three questions and put them in a single PDF, 232530_PDC_Assignment1.pdf, "
+        "named as the submission instructions require. It has the parameters, calculations and diagrams "
+        "for each question. The lane grids, mask diagram, Gantt charts and thread timelines are embedded "
+        "as PNG images. I did not embed them in this reply. The assignment is a hand-calculation task, "
+        "so there is no code or terminal output.\n\n"
+        "Files are in /mnt/user-data/outputs:\n"
+        "232530_PDC_Assignment1.pdf"
+    )
+    diverting_2 = "I have compiled all the calculations and graphs into a PDF document in /mnt/user-data/outputs. Please download it to view."
+    diverting_3 = "The full report has been saved to PDC_Assignment1.pdf. I didn't embed the diagrams in this reply."
+
+    assert _is_claude_diverting_to_file(diverting_user_case) is True
+    assert _is_claude_diverting_to_file(diverting_2) is True
+    assert _is_claude_diverting_to_file(diverting_3) is True
+
+    # Real solution responses with full text should NOT be flagged as diverting
+    legit_solution = """
+# Question 1: SIMD divergence (8-wide)
+## 1. Parameters & Given Data
+N = 20, tau = 2, C_A = 5, C_B = 2
+Array: 5,7,3,9,4,6,8,10 | 1,-2,0,-1,-3,2,-4,6 | 4,-1,3,0
+
+## 2. Step-by-Step Derivation
+Group 0 is fully coherent. Group 1 is divergent with lane 7 true.
+Useful lane cycles = 1 * 5 + 7 * 2 = 19.
+
+# Question 2: Multicore Workload Balance
+## 1. Sequential Execution
+Sequential time is 52 cycles.
+With consecutive blocks of 3, 3, 3 and 2 tasks, completion time is 19 cycles.
+
+# Question 3: Hardware Multithreading
+## 1. Utilization Analysis
+One thread gives 4/16 = 25% utilization.
+Two threads give 8/16 = 50% utilization.
+Minimum is 4 threads for 100%.
+"""
+    assert _is_claude_diverting_to_file(legit_solution) is False
+
 
 
 def test_extract_colab_notebooks_extended_fences():
