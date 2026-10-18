@@ -228,7 +228,7 @@ class BrowserSessionHost:
                     processes.append(self._start_process(
                         ["x11vnc", "-display", f":{display}", "-rfbport", str(vnc_port),
                          "-localhost", "-forever", "-shared", "-nopw", "-quiet",
-                         "-wait", "20", "-defer", "20", "-noxdamage", "-ncache", "10", "-cursor", "arrow"],
+                         "-wait", "20", "-defer", "20", "-noxdamage", "-cursor", "arrow"],
                         display,
                     ))
 
