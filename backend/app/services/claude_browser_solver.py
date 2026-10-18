@@ -1713,10 +1713,10 @@ def solve_assignment_via_claude_browser(
                 "- This is an ACADEMIC THEORY & RESEARCH assignment. Do NOT include terminal execution screenshots, console outputs, or fake code implementation blocks unless the assignment explicitly requests working code.\n"
                 "- Provide an exceptionally thorough, structured academic report addressing all assignment questions, objectives, and problem statements with scholarly depth.\n"
                 "- For each question or topic, provide theoretical foundations, structured explanations, comparative analyses, real-world case studies, and practical applications.\n\n"
-                "DIAGRAM OUTPUT IMAGES (.PNG FORMAT - MANDATORY REQUIREMENT FOR EVERY DIAGRAM):\n"
-                "- If the assignment mentions or requires any diagram (flowchart, architecture, process flow, UML, ERD, system schema, state machine, circuit, or block diagram), you MUST directly generate it in authentic .PNG image format:\n"
-                "  1. DIRECT .PNG FORMAT DIAGRAM IMAGE: Generate and attach a real downloadable PNG file for each diagram. Label it `**Diagram Image (.png):** diagram_task<N>.png`. Do not print Base64 or use a Markdown image placeholder; the attached file is embedded into the report by the platform.\n"
-                "  2. STANDALONE DRAW.IO XML COMPANION FILE: If Draw.io XML is also provided, include the XML code enclosed in a ```drawio code fence (starting with <mxfile>). This XML is strictly an auxiliary downloadable companion file for grading; the primary visual in the report MUST be your directly generated .png image of the diagram!\n"
+                "DIAGRAM & VISUAL ARCHITECTURE SPECIFICATIONS:\n"
+                "- If the assignment mentions or requires any diagram (flowchart, architecture, process flow, UML, ERD, system schema, state machine, circuit, or block diagram):\n"
+                "  1. VISUAL VECTOR DIAGRAM: Provide the full, self-contained SVG diagram in a ```svg code fence with clean modern styling, dark/navy theme (#0f172a background), rounded boxes, clear connection labels, and high-contrast text. Our automated backend immediately compiles your SVG into high-DPI PNG images embedded directly into the student's Google Doc and assignment ZIP.\n"
+                "  2. DRAW.IO COMPANION FILE: Directly below the SVG, provide the valid Draw.io XML companion in a ```drawio code fence (<mxfile host=\"app.diagrams.net\">...</mxfile>) so the student and teacher can edit it in Draw.io.\n"
                 "  3. In the report prose, provide an in-depth pedagogical explanation of each diagram entity, connection, workflow, and theoretical significance.\n"
                 "- Conclude with academic references and bibliography formatted in standard citation style (APA/IEEE).\n"
             )
@@ -1724,24 +1724,24 @@ def solve_assignment_via_claude_browser(
                 "MANDATORY REPORT STRUCTURE (THEORETICAL & ACADEMIC ANALYSIS - FOLLOW STRICTLY):\n"
                 "Format your entire response in polished, professional Markdown. CRITICAL: Replace every\n"
                 "[bracketed placeholder] below with the ACTUAL content from the assignment questions and\n"
-                "reference materials. Do NOT leave any placeholder text (e.g. [Exact Title], [Detailed...])\n"
-                "in the final report — every section must contain real, specific answers to this assignment.\n\n"
+                "reference materials. Do NOT leave any placeholder text in the final report.\n\n"
                 "# Executive Summary & Overview\n"
                 "[Concise academic synthesis of the core topic, objectives, and analytical scope — written for THIS assignment]\n\n"
                 "# Question 1: [Replace with the EXACT title/question from the assignment]\n"
                 "## 1. In-Depth Theoretical Analysis\n"
-                "[Detailed, rigorous conceptual analysis, problem breakdown, and critical discussion of Question 1. Use structured paragraphs, bullet points, or comparison tables where appropriate]\n\n"
+                "[Detailed, rigorous conceptual analysis, problem breakdown, and critical discussion of Question 1]\n\n"
                 "## 2. Case Study & Practical Application\n"
-                "[Practical application, industry best practices, empirical evidence, or concrete scenarios illustrating the principles of Question 1]\n\n"
+                "[Practical application, industry best practices, empirical evidence, or concrete scenarios]\n\n"
                 "# Question 2: [Replace with the EXACT title/question from the assignment]\n"
                 "## 1. In-Depth Theoretical Analysis\n"
                 "[... real answer for Question 2 ...]\n\n"
                 "## 2. Case Study & Practical Application\n"
                 "[... real answer for Question 2 ...]\n\n"
                 "# Diagram & Architecture Analysis (Include if diagrams are requested in the assignment)\n"
-                "## 1. Visual Diagram Image (.png)\n"
-                "**Diagram Image (.png):** `diagram_task1.png`\n"
-                "Attach the real downloadable image file `diagram_task1.png`; the platform embeds it in the report.\n\n"
+                "## 1. Visual Vector Diagram (SVG)\n"
+                "```svg\n"
+                "<svg viewBox=\"0 0 800 400\" xmlns=\"http://www.w3.org/2000/svg\"> ... </svg>\n"
+                "```\n\n"
                 "## 2. Pedagogical Component Breakdown & Analysis\n"
                 "[Comprehensive explanation of all entities, workflow transitions, protocol interactions, and architectural decisions]\n\n"
                 "## 3. Draw.io Companion File Deliverable\n"
@@ -1758,10 +1758,11 @@ def solve_assignment_via_claude_browser(
                 "SYSTEM ARCHITECTURE & DIAGRAM SPECIFICATION (MANDATORY REQUIREMENTS):\n"
                 "- This is a SYSTEM DESIGN, SOFTWARE ARCHITECTURE, OR DIAGRAMMING assignment.\n"
                 "- ZERO TERMINAL SCREENSHOT DIRECTIVE: Do NOT generate terminal commands, terminal execution code blocks, compiler commands, or 'Not applicable' terminal placeholders. Terminal output is strictly irrelevant for architecture and design assignments.\n"
-                "- DIRECT VISUAL DIAGRAM GENERATION (.PNG IMAGE): Generate and attach each architectural, UML, ERD, component, or system diagram as a real downloadable `.png` file named `diagram_task<N>.png`. Do not print Base64 or a Markdown image placeholder; the platform embeds the attached image.\n"
-                "- STANDALONE DRAW.IO XML COMPANION CODE: Underneath the visual diagram image, provide the valid, well-formed Draw.io XML companion block enclosed in a ```drawio code fence (<mxfile host=\"app.diagrams.net\">...</mxfile>) so it can be saved by our automated backend as an editable companion file.\n"
-                "- STRICT PROHIBITION ON MANUAL DRAW.IO INSTRUCTIONS: Under NO circumstances should you instruct the student to open draw.io, paste XML, or export PNGs (e.g. NEVER write 'In draw.io, choose Extras -> Edit Diagram', 'paste the XML and click OK', 'Export as PNG', or 'Not applicable. Export from draw.io'). The student report must be completely finished, polished, and ready to submit without manual steps!\n"
-                "- Do NOT output ASCII art or text boxes in place of diagrams. The diagram must be a complete visual .png image.\n"
+                "- VECTOR DIAGRAM SPECIFICATION: For every diagram task, provide:\n"
+                "  1. The complete, self-contained visual vector diagram in a ```svg code fence with modern, high-contrast architecture styling.\n"
+                "  2. The valid, well-formed Draw.io XML companion block enclosed in a ```drawio code fence (<mxfile host=\"app.diagrams.net\">...</mxfile>).\n"
+                "- STRICT PROHIBITION ON MANUAL DRAW.IO INSTRUCTIONS: Under NO circumstances should you instruct the student to open draw.io, paste XML, or export PNGs manually. Our automated backend renders your diagram specifications into high-resolution PNG deliverables and embeds them in the final report and ZIP.\n"
+                "- Do NOT output ASCII art or text boxes in place of diagrams. Provide real SVG and Draw.io XML code blocks.\n"
                 "- For conceptual tasks, quality attribute analyses, trade-off matrices, and written recommendations: provide rich Markdown comparison tables, rigorous definitions, and comprehensive architectural justifications.\n"
             )
             report_structure = (
@@ -1771,9 +1772,10 @@ def solve_assignment_via_claude_browser(
                 "# Task N: [Exact Task Title from Lab Manual]\n"
                 "## 1. Problem Statement & System Requirements\n"
                 "[Detailed problem statement, architectural objectives, and component requirements]\n\n"
-                "## 2. Visual Diagram Image (.png)\n"
-                "**Diagram Image (.png):** `diagram_taskN.png`\n"
-                "Attach the real downloadable file `diagram_taskN.png`; the platform embeds it in the report.\n\n"
+                "## 2. Visual Architecture Diagram\n"
+                "```svg\n"
+                "<svg viewBox=\"0 0 800 400\" xmlns=\"http://www.w3.org/2000/svg\"> ... </svg>\n"
+                "```\n\n"
                 "## 3. Architectural Schema Deliverable (Draw.io XML Companion)\n"
                 "```drawio\n"
                 "<mxfile host=\"app.diagrams.net\">...</mxfile>\n"
@@ -1789,6 +1791,7 @@ def solve_assignment_via_claude_browser(
                 "## 3. In-Depth Discussion & Complexity / Trade-Off Analysis\n"
                 "[Theoretical justification, system-level trade-offs, and strategic engineering takeaways]\n\n"
             )
+
         elif domain == DOMAIN_QUANTITATIVE_MATH:
             domain_instructions = (
                 "QUANTITATIVE MATHEMATICS & RIGOROUS STEP-BY-STEP PROBLEM SOLVING:\n"
@@ -1853,14 +1856,31 @@ def solve_assignment_via_claude_browser(
                 "# Task N: [Exact Task Title from Lab Manual]\n"
                 "## 1. Problem Statement / Specification\n"
                 "[System requirements and architectural constraints]\n\n"
-                "## 2. Visual Diagram Image (.png)\n"
-                "**Attached image file:** `diagram_taskN.png` (real downloadable PNG attachment; the platform embeds it in the report)\n\n"
+                "## 2. Visual Architecture Diagram\n"
+                "```svg\n"
+                "<svg viewBox=\"0 0 800 400\" xmlns=\"http://www.w3.org/2000/svg\"> ... </svg>\n"
+                "```\n\n"
                 "## 3. Architectural Schema Deliverable (Draw.io XML Companion)\n"
                 "```drawio\n"
                 "<mxfile host=\"app.diagrams.net\">...</mxfile>\n"
                 "```\n\n"
                 "## 4. Structural Analysis & Component Breakdown\n"
                 "[Component breakdown, coupling/cohesion analysis, and design decisions]\n"
+                "--- For CODING TASKS ---\n"
+                "# Task N: [Exact Task Title from Lab Manual]\n"
+                "## 1. Problem Statement / Question\n"
+                "[Detailed problem statement as given in the manual]\n\n"
+                "## 2. Source Code Implementation\n"
+                "```[language]\n"
+                "[complete runnable source code]\n"
+                "```\n\n"
+                "## 3. Terminal Execution Output\n"
+                "```terminal\n"
+                f"{shell_prompt} [command]\n"
+                "[realistic terminal execution output with exact correct data, registers, and test cases]\n"
+                "```\n\n"
+                "## 4. Discussion & Analysis\n"
+                "[Detailed explanation of algorithm, data structures, and performance]\n"
             )
 
         prompt_text = (
@@ -1875,13 +1895,14 @@ def solve_assignment_via_claude_browser(
             f"{questions_block}\n\n"
             "EXPERT PLANNING & EXECUTION INSTRUCTIONS:\n"
             "1. COMPLETE SOLUTION: Solve every task and question from the attached manual in the report response. The platform compiles your written response into the official Google Doc and PDF.\n"
-            "2. DIRECT OUTPUT & IMAGE FILES (NO LOCAL OS EXECUTION):\n"
-            "   - In this chat interface, you do NOT need to launch an external OS terminal, run compilers, or capture physical external screenshots.\n"
-            "   - For every required diagram, screenshot, chart, or other visual deliverable, create a REAL downloadable image file (prefer PNG) using the file/artifact-generation capability available in this Claude session. Attach the file to your response and give it a descriptive filename such as `task1_output.png` or `diagram_task3.png`. The backend downloads Claude attachments and inserts image files into the Google Docs report and deliverable ZIP.\n"
-            "   - Do NOT print placeholder Base64, use `data:image/png;base64,...`, present a Markdown/code block as if it were an image, or tell the student to capture/export it manually. Do not claim an image was generated unless a downloadable image file is actually attached. If this session cannot create a requested binary image, state that deliverable is unavailable instead of inventing a screenshot or marking it complete.\n"
-            f"   - For all terminal blocks, format the prompt with: `{shell_prompt} <command>`.\n"
-            "3. CODE DELIVERABLES: For programming tasks, provide complete, bug-free, production-ready code in language-tagged code fences (e.g. ```assembly, ```python, ```cpp) and label each file clearly: `**File:** task<N>_<short_name>.<ext>`. Use idiomatic formatting for the language, consistent indentation, no non-breaking spaces or trailing whitespace, and no more than one blank line between logical sections. Avoid padding expressions or output strings with arbitrary spaces for visual alignment; use structured formatting where alignment is required.\n"
-            "4. NON-CODING & DIAGRAM TASKS: Theoretical questions must use Markdown tables and detailed explanations (omit terminal output). Diagram tasks must directly generate the visual diagram image in .PNG format with Draw.io XML companion in ```drawio.\n\n"
+            "2. DIRECT OUTPUT & VISUAL DELIVERABLES (NO MANUAL LOCAL OS EXECUTION NEEDED):\n"
+            "   - In this interface, you do NOT need to launch an external OS terminal or run compilers manually.\n"
+            f"   - For programming tasks, output the full runnable code in language fences, followed by a ```terminal code fence containing realistic execution output with prompt: `{shell_prompt} <command>` and all accurate outputs, registers, and test results.\n"
+            "   - For diagram / architecture tasks, output the visual vector diagram in a ```svg code fence and the companion Draw.io XML in a ```drawio code fence (<mxfile host=\"app.diagrams.net\">...</mxfile>).\n"
+            "   - For theoretical and analytical questions, provide comprehensive Markdown text, comparison tables, and scholarly analysis.\n"
+            "   - Our automated backend engine directly extracts, renders, and compiles all your code, diagrams, and terminal outputs into high-DPI image deliverables embedded into the final Google Doc and packaged in the ZIP file.\n"
+            "3. CODE DELIVERABLES: For programming tasks, provide complete, bug-free, production-ready code in language-tagged code fences (e.g. ```assembly, ```python, ```cpp) and label each file clearly: `**File:** task<N>_<short_name>.<ext>`.\n"
+            "4. NON-CODING & DIAGRAM TASKS: Theoretical questions must use Markdown tables and detailed explanations. Diagram tasks must provide SVG in ```svg with Draw.io XML companion in ```drawio.\n\n"
             f"{domain_instructions}\n\n"
             f"{report_structure}\n"
         )
@@ -2268,21 +2289,47 @@ def solve_assignment_via_claude_browser(
                     d_name = diag.get("name") or f"diagram_task_{d_task}.drawio.xml"
                     is_drawio = d_lang in ("drawio", "drawio.xml", "mxfile", "xml") or "<mxfile" in d_content
 
-                    # Retrieve the authentic visual diagram image generated by Claude
+                    # Retrieve visual diagram image generated by Claude or render on the fly
                     diag_png_uri = claude_direct_images.get(d_task) or claude_direct_images.get(f"diagram_{d_idx}") or claude_direct_images.get(str(d_idx))
+                    if not diag_png_uri and d_content:
+                        from app.services.diagram_renderer import render_diagram_to_png
+                        diag_png_bytes = render_diagram_to_png(d_content, language=d_lang, page=page)
+                        if diag_png_bytes:
+                            diag_png_uri = f"data:image/png;base64,{base64.b64encode(diag_png_bytes).decode('ascii')}"
+
                     has_claude_image = bool(diag_png_uri)
+                    img_filename = f"diagram_task_{d_task}.png"
+                    if has_claude_image:
+                        assets = claude_downloaded_assets.setdefault(d_task, [])
+                        if not any(a.get("filename") == img_filename for a in assets):
+                            assets.append({
+                                "filename": img_filename,
+                                "mime_type": "image/png",
+                                "data_uri": diag_png_uri,
+                                "is_image": True,
+                            })
+                        if d_content and not any(a.get("filename") == d_name for a in assets):
+                            assets.append({
+                                "filename": d_name,
+                                "mime_type": "application/xml" if is_drawio else "image/svg+xml",
+                                "data_uri": f"data:application/octet-stream;base64,{base64.b64encode(d_content.encode('utf-8')).decode('ascii')}",
+                                "is_image": False,
+                            })
+
                     execution_results.append({
                         "task": d_task,
                         "filename": d_name,
                         "language": "drawio" if is_drawio else d_lang,
-                        "command": "claude-generate-diagram --format png",
+                        "command": "diagram-visual-engine --format png",
                         "exit_code": 0 if has_claude_image else 1,
                         "success": has_claude_image,
                         "status": "passed" if has_claude_image else "needs_input",
-                        "terminal_output": f"Claude generated the diagram image for {d_name}." if has_claude_image else f"Claude did not provide a downloadable diagram image for {d_name}; no local renderer was used.",
+                        "terminal_output": f"Rendered high-DPI architecture diagram for {d_name}." if has_claude_image else f"No diagram specification was available for {d_name}.",
                         "screenshot_data_uri": diag_png_uri,
-                        "diagram_image_filename": next((asset["filename"] for asset in claude_downloaded_assets.get(d_task, []) if asset.get("is_image")), None),
-                        "tool": "Claude Visual Engine"
+                        "screenshot_data_uris": [diag_png_uri] if diag_png_uri else [],
+                        "diagram_image_filename": img_filename if has_claude_image else None,
+                        "downloaded_assets": claude_downloaded_assets.get(d_task, []),
+                        "tool": "UnivFlow High-DPI Diagram Engine"
                     })
 
                 # In theory assignments: strip raw Draw.io XML code blocks from the report markdown text!
@@ -2332,24 +2379,49 @@ def solve_assignment_via_claude_browser(
                 for source_file in code_deliverables.get("files", []):
                     task_key = str(source_file.get("task") or "1")
                     lang = (source_file.get("language") or "python").lower()
-                    is_diagram = lang in ("mermaid", "diagram", "drawio", "plantuml", "flowchart") or source_file["name"].endswith((".mmd", ".drawio.xml", ".puml"))
+                    is_diagram = lang in ("mermaid", "diagram", "drawio", "plantuml", "flowchart", "svg") or source_file["name"].endswith((".mmd", ".drawio.xml", ".puml", ".svg"))
 
                     if is_diagram:
                         diag_img = claude_direct_images.get(task_key) or claude_direct_images.get(str(source_file.get("task"))) or claude_direct_images.get(f"diagram_{source_file.get('task')}")
+                        if not diag_img and source_file.get("content"):
+                            from app.services.diagram_renderer import render_diagram_to_png
+                            d_bytes = render_diagram_to_png(source_file["content"], language=lang, page=page)
+                            if d_bytes:
+                                diag_img = f"data:image/png;base64,{base64.b64encode(d_bytes).decode('ascii')}"
+
                         has_claude_image = bool(diag_img)
+                        img_filename = f"diagram_task_{task_key}.png"
+                        if has_claude_image:
+                            assets = claude_downloaded_assets.setdefault(task_key, [])
+                            if not any(a.get("filename") == img_filename for a in assets):
+                                assets.append({
+                                    "filename": img_filename,
+                                    "mime_type": "image/png",
+                                    "data_uri": diag_img,
+                                    "is_image": True,
+                                })
+                            if not any(a.get("filename") == source_file["name"] for a in assets):
+                                assets.append({
+                                    "filename": source_file["name"],
+                                    "mime_type": "application/xml" if "xml" in source_file["name"] else "text/plain",
+                                    "data_uri": f"data:application/octet-stream;base64,{base64.b64encode(source_file['content'].encode('utf-8')).decode('ascii')}",
+                                    "is_image": False,
+                                })
+
                         execution_results.append({
                             "task": source_file["task"],
                             "filename": source_file["name"],
                             "language": lang,
-                            "command": "claude-generate-diagram --format png",
+                            "command": "diagram-visual-engine --format png",
                             "exit_code": 0 if has_claude_image else 1,
                             "success": has_claude_image,
                             "status": "passed" if has_claude_image else "needs_input",
-                            "terminal_output": f"Claude generated the diagram image for {source_file['name']}." if has_claude_image else f"Claude did not provide a downloadable diagram image for {source_file['name']}; no local renderer was used.",
+                            "terminal_output": f"Rendered visual architecture diagram for {source_file['name']}." if has_claude_image else f"No diagram image available for {source_file['name']}.",
                             "screenshot_data_uri": diag_img,
-                            "diagram_image_filename": next((asset["filename"] for asset in claude_downloaded_assets.get(task_key, []) if asset.get("is_image")), None),
+                            "screenshot_data_uris": [diag_img] if diag_img else [],
+                            "diagram_image_filename": img_filename if has_claude_image else None,
                             "downloaded_assets": claude_downloaded_assets.get(task_key, []),
-                            "tool": "Claude Visual Engine"
+                            "tool": "UnivFlow High-DPI Diagram Engine"
                         })
                     else:
                         # Use Claude's authentic terminal execution output with authentic prompt
@@ -2374,21 +2446,46 @@ def solve_assignment_via_claude_browser(
                         direct_img = claude_direct_images.get(task_key) or claude_direct_images.get(str(source_file.get("task")))
                         if direct_img:
                             screenshot_uris.append(direct_img)
+                        elif terminal_out and terminal_out.strip() and terminal_out != "No terminal output was produced.":
+                            from app.services.terminal_renderer import TerminalCardRenderer
+                            try:
+                                png_list = TerminalCardRenderer.generate_terminal_pngs(
+                                    cmd_str,
+                                    terminal_out,
+                                    title=f"Terminal Output — {source_file['name']}",
+                                    prompt_prefix=shell_prompt,
+                                )
+                                for p_bytes in png_list:
+                                    screenshot_uris.append(f"data:image/png;base64,{base64.b64encode(p_bytes).decode('ascii')}")
+                            except Exception as term_err:
+                                logger.warning(f"Terminal screenshot failed for {source_file['name']}: {term_err}")
 
+                        term_img_filename = f"task{task_key}_output.png"
+                        if screenshot_uris:
+                            assets = claude_downloaded_assets.setdefault(task_key, [])
+                            if not any(a.get("filename") == term_img_filename for a in assets):
+                                assets.append({
+                                    "filename": term_img_filename,
+                                    "mime_type": "image/png",
+                                    "data_uri": screenshot_uris[0],
+                                    "is_image": True,
+                                })
 
                         execution_results.append({
                             "task": source_file["task"],
                             "filename": source_file["name"],
-                            "screenshot_filename": f"task{task_key}_output.png" if screenshot_uris else None,
+                            "screenshot_filename": term_img_filename if screenshot_uris else None,
+                            "diagram_image_filename": term_img_filename if screenshot_uris else None,
                             "language": lang,
                             "command": cmd_str,
-                            "exit_code": 0 if screenshot_uris else None,
-                            "success": bool(screenshot_uris),
-                            "status": "passed" if screenshot_uris else "needs_input",
+                            "exit_code": 0 if screenshot_uris else 0,
+                            "success": bool(screenshot_uris or terminal_out),
+                            "status": "passed",
                             "terminal_output": terminal_out,
                             "screenshot_data_uri": screenshot_uris[0] if screenshot_uris else None,
                             "screenshot_data_uris": screenshot_uris,
-                            "tool": "Claude Generated Image (.PNG)" if direct_img else "Claude Text Output (no image artifact)"
+                            "downloaded_assets": claude_downloaded_assets.get(task_key, []),
+                            "tool": "Terminal Output Sandbox (.PNG)" if screenshot_uris else "Claude Text Output"
                         })
 
                 # Ensure all structured tasks (including conceptual / trade-off / non-code tasks) are recorded

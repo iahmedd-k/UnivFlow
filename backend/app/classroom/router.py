@@ -1233,7 +1233,7 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
             bundle.writestr(f"{safe_title}_Solution.txt", clean_content)
 
         execution_results = extract_execution_metadata(raw_content)
-        append_downloaded_assets_to_zip(bundle, execution_results)
+        append_downloaded_assets_to_zip(bundle, execution_results, solution_markdown=clean_content, files=files)
         for index, output in enumerate(execution_results or deliverables.get("terminal_outputs", [])):
             filename = output.get("filename") or f"task_{output.get('task', index + 1)}"
             text = output.get("terminal_output") or output.get("content") or "No terminal output was produced."
@@ -2135,18 +2135,20 @@ def download_solution_files(
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
     if not solution or not (solution.validated_content or solution.draft_content):
         raise HTTPException(status_code=404, detail="No generated solution is available.")
-    deliverables = extract_assignment_deliverables(strip_execution_metadata(solution.validated_content or solution.draft_content or ""))
+    raw_text = solution.validated_content or solution.draft_content or ""
+    clean_text = strip_execution_metadata(raw_text)
+    deliverables = extract_assignment_deliverables(clean_text)
     files = deliverables["files"]
-    execution_results = extract_execution_metadata(solution.validated_content or solution.draft_content or "")
+    execution_results = extract_execution_metadata(raw_text)
     has_downloaded_assets = any(result.get("downloaded_assets") for result in execution_results)
-    if not files and not has_downloaded_assets:
-        raise HTTPException(status_code=404, detail="No task source code files were found in this solution.")
+    if not files and not has_downloaded_assets and not deliverables.get("tasks"):
+        raise HTTPException(status_code=404, detail="No task deliverables were found in this solution.")
 
     archive = BytesIO()
     with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as bundle:
         for source_file in files:
             bundle.writestr(source_file["name"], source_file["content"])
-        append_downloaded_assets_to_zip(bundle, execution_results)
+        append_downloaded_assets_to_zip(bundle, execution_results, solution_markdown=clean_text, files=files)
         for index, output in enumerate(execution_results or deliverables["terminal_outputs"]):
             filename = output.get("filename") or f"terminal_output_task_{output.get('task', index + 1)}.txt"
             text = output.get("terminal_output") or output.get("content") or "No terminal output was produced."

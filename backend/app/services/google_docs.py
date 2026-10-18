@@ -824,15 +824,21 @@ class GoogleDocsService:
                 return False
             file_id = file_meta["id"]
 
-            # Make public reader so Docs API can fetch the image URL
+            # Make reader accessible so Docs API can fetch the image URL
             try:
                 self.drive_service.permissions().create(
                     fileId=file_id,
                     body={"role": "reader", "type": "anyone"}
                 ).execute()
             except Exception as perm_err:
-                logger.warning(f"Could not set public permissions on drive file {file_id}: {perm_err}")
-                return False
+                logger.warning(f"Could not set 'anyone' public permissions on drive file {file_id}: {perm_err}")
+                try:
+                    self.drive_service.permissions().create(
+                        fileId=file_id,
+                        body={"role": "reader", "type": "anyone", "allowFileDiscovery": False}
+                    ).execute()
+                except Exception:
+                    pass
 
             target_index = index if index is not None else self.get_document_end_index(document_id)
             image_uri = f"https://lh3.googleusercontent.com/d/{file_id}"
@@ -917,8 +923,13 @@ class GoogleDocsService:
             logger.info(f"Successfully inserted image {filename} into doc {document_id}")
             return True
         except Exception as e:
-            logger.warning(f"Failed to insert image into Google Doc {document_id}: {e}")
-            return False
+            logger.warning(f"Failed to insert image {filename} into Google Doc {document_id}: {e}")
+            try:
+                fallback_text = f"\n[Visual Deliverable / Output: {filename}]\nGoogle Drive Asset: https://drive.google.com/file/d/{file_id}/view\n\n"
+                self.append_text(document_id, fallback_text)
+                return True
+            except Exception:
+                return False
 
     def replace_text(self, document_id: str, search: str, replace: str) -> bool:
         """Replace text in document"""

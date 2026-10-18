@@ -36,36 +36,40 @@ _CODE_EXTENSIONS = {
     "mermaid": "mmd", "mmd": "mmd", "plantuml": "puml", "puml": "puml",
     "graphviz": "dot", "dot": "dot", "erd": "erd", "nomnoml": "nomnoml",
     "drawio": "drawio.xml", "drawio.xml": "drawio.xml", "mxfile": "drawio.xml",
+    "svg": "svg", "csv": "csv", "tsv": "tsv", "yaml": "yaml", "yml": "yml",
 }
 
 
 def extract_diagram_deliverables(markdown: str) -> List[Dict[str, Any]]:
     """
-    Extract all visual diagrams (Draw.io XML, Mermaid, PlantUML, Graphviz) from markdown with their task/section context.
+    Extract all visual diagrams (Draw.io XML, SVG, Mermaid, PlantUML, Graphviz) from markdown with their task/section context.
     """
     if not markdown:
         return []
-    
-    diagram_tags = {"mermaid", "plantuml", "puml", "graphviz", "dot", "erd", "nomnoml", "c4plantuml", "d2", "bpmn", "drawio", "xml", "mxfile", "mxgraph"}
+
+    diagram_tags = {
+        "mermaid", "plantuml", "puml", "graphviz", "dot", "erd", "nomnoml",
+        "c4plantuml", "d2", "bpmn", "drawio", "drawio.xml", "xml", "mxfile", "mxgraph", "svg",
+    }
     diagrams = []
     task_header = re.compile(
         r"^\s{0,3}#{1,6}\s*.*?\b(?:Task|Exercise|Problem|Question|Section|Part)\s*(\d+|[A-Z])\b.*$",
         re.I,
     )
-    
+
     lines = markdown.splitlines()
     active_task = "1"
     active_heading = ""
     fence = None
     diag_lines = []
     diag_count = 0
-    
+
     for line in lines:
         task_match = task_header.match(line)
         if task_match and fence is None:
             active_task = task_match.group(1).lower()
             active_heading = line.strip().lstrip("#").strip()
-            
+
         marker = re.match(r"^\s*```\s*([^\s`]*)?.*$", line)
         if marker:
             if fence is None:
@@ -77,12 +81,23 @@ def extract_diagram_deliverables(markdown: str) -> List[Dict[str, Any]]:
                 diag_type = fence
                 source = "\n".join(diag_lines).strip()
                 if source:
+                    # Filter out regular XML that does not contain diagram models or SVG
+                    if diag_type == "xml" and ("<mxfile" not in source and "<mxGraphModel" not in source and "<svg" not in source):
+                        fence = None
+                        diag_lines = []
+                        continue
+                    if "<mxfile" in source or "<mxGraphModel" in source:
+                        diag_type = "drawio"
+                    elif "<svg" in source:
+                        diag_type = "svg"
+
                     diag_count += 1
+                    ext = _CODE_EXTENSIONS.get(diag_type, "drawio.xml" if diag_type == "drawio" else "svg" if diag_type == "svg" else "mmd")
                     diagrams.append({
                         "task": active_task,
                         "heading": active_heading or f"Task {active_task} Diagram",
                         "type": diag_type,
-                        "name": f"task_{active_task}_diagram_{diag_count}.{_CODE_EXTENSIONS.get(diag_type, 'mmd')}",
+                        "name": f"task_{active_task}_diagram_{diag_count}.{ext}",
                         "content": source
                     })
                 fence = None
@@ -90,7 +105,28 @@ def extract_diagram_deliverables(markdown: str) -> List[Dict[str, Any]]:
             continue
         if fence is not None:
             diag_lines.append(line)
-            
+
+    # Fallback: scan for unfenced raw <mxfile> and <svg> blocks
+    if not diagrams:
+        for unfenced_match in re.finditer(r"(<mxfile[\s\S]*?</mxfile>)", markdown):
+            diag_count += 1
+            diagrams.append({
+                "task": "1",
+                "heading": f"Task 1 Diagram {diag_count}",
+                "type": "drawio",
+                "name": f"task_1_diagram_{diag_count}.drawio.xml",
+                "content": unfenced_match.group(1).strip()
+            })
+        for unfenced_svg in re.finditer(r"(<svg[\s\S]*?</svg>)", markdown):
+            diag_count += 1
+            diagrams.append({
+                "task": "1",
+                "heading": f"Task 1 Vector Diagram {diag_count}",
+                "type": "svg",
+                "name": f"task_1_diagram_{diag_count}.svg",
+                "content": unfenced_svg.group(1).strip()
+            })
+
     return diagrams
 
 
@@ -98,7 +134,7 @@ def extract_claude_diagram_images(markdown: str) -> Dict[str, str]:
     """Return directly embedded Claude image data URLs keyed by task number."""
     images: Dict[str, str] = {}
     pattern = re.compile(
-        r"!\[(?P<label>[^\]]*)\]\((?P<uri>data:image/(?:png|jpeg|jpg|gif|webp);base64,[A-Za-z0-9+/=_-]+)\)",
+        r"!\[(?P<label>[^\]]*)\]\((?P<uri>data:image/(?:png|jpeg|jpg|gif|webp|svg\+xml);base64,[A-Za-z0-9+/=_-]+)\)",
         re.IGNORECASE,
     )
     for ordinal, match in enumerate(pattern.finditer(markdown or ""), 1):
@@ -107,7 +143,30 @@ def extract_claude_diagram_images(markdown: str) -> Dict[str, str]:
         if not task_match:
             task_match = re.search(r"\b(\d+)\b", label)
         task_id = task_match.group(1) if task_match else str(ordinal)
-        images.setdefault(task_id, match.group("uri"))
+        uri = match.group("uri")
+        # If SVG data URI, render to high-DPI PNG data URI for Google Docs compatibility
+        if "svg+xml" in uri:
+            try:
+                from app.services.diagram_renderer import render_svg_to_png
+                raw_svg = base64.b64decode(uri.split(",", 1)[1]).decode("utf-8")
+                png_bytes = render_svg_to_png(raw_svg)
+                if png_bytes:
+                    uri = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
+            except Exception:
+                pass
+        images.setdefault(task_id, uri)
+        images.setdefault(f"diagram_{task_id}", uri)
+
+    # HTML <img> tags
+    html_pattern = re.compile(
+        r"""<img\s+[^>]*src=["'](?P<uri>data:image/(?:png|jpeg|jpg|gif|webp|svg\+xml);base64,[A-Za-z0-9+/=_-]+)["'][^>]*>""",
+        re.IGNORECASE,
+    )
+    for ordinal, match in enumerate(html_pattern.finditer(markdown or ""), 1):
+        task_id = str(ordinal)
+        uri = match.group("uri")
+        images.setdefault(task_id, uri)
+
     return images
 
 
@@ -547,32 +606,167 @@ def extract_execution_metadata(markdown: str) -> List[Dict[str, Any]]:
         return []
 
 
-def append_downloaded_assets_to_zip(bundle, execution_results: List[Dict[str, Any]]) -> int:
-    """Add all original Claude-downloaded output files to an assignment ZIP."""
+def append_downloaded_assets_to_zip(
+    bundle,
+    execution_results: List[Dict[str, Any]],
+    solution_markdown: Optional[str] = None,
+    files: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    """Add all Claude output files, diagram images, companion XMLs, and terminal screenshots to an assignment ZIP."""
     added = 0
     used_names = set()
-    for result in execution_results or []:
-        assets = result.get("downloaded_assets") or []
-        if not assets and result.get("diagram_image_filename"):
-            assets = [{"filename": result["diagram_image_filename"], "data_uri": result.get("screenshot_data_uri")}]
+
+    combined_results = list(execution_results or [])
+    if files:
+        for f in files:
+            fname = f.get("name", "")
+            flang = (f.get("language") or "").lower()
+            is_diag = flang in ("drawio", "drawio.xml", "xml", "mxfile", "svg", "mermaid", "plantuml") or fname.endswith((".drawio.xml", ".xml", ".svg", ".mmd", ".puml"))
+            if is_diag and not any(r.get("filename") == fname for r in combined_results):
+                combined_results.append({
+                    "task": str(f.get("task", "1")),
+                    "filename": fname,
+                    "language": flang,
+                    "content": f.get("content", ""),
+                    "is_diagram": True,
+                })
+
+    for result in combined_results:
+        assets = list(result.get("downloaded_assets") or [])
+        task_str = str(result.get("task") or (added + 1))
+        lang = (result.get("language") or "").lower()
+        is_diag = (
+            result.get("is_diagram")
+            or lang in ("drawio", "drawio.xml", "xml", "mxfile", "svg", "mermaid", "plantuml")
+            or str(result.get("filename", "")).endswith((".drawio.xml", ".xml", ".svg", ".mmd", ".puml"))
+        )
+
+        # On-the-fly rendering fallback for diagrams
+        if is_diag and not any(a.get("is_image") for a in assets) and not result.get("screenshot_data_uri"):
+            content = result.get("content") or ""
+            if not content and solution_markdown:
+                diags = extract_diagram_deliverables(solution_markdown)
+                matched_diag = next((d for d in diags if str(d.get("task")) == task_str or d.get("name") == result.get("filename")), None)
+                if matched_diag:
+                    content = matched_diag.get("content", "")
+
+            if content:
+                from app.services.diagram_renderer import render_diagrams_to_png_list
+                png_pairs = render_diagrams_to_png_list(content, language=lang)
+                for diag_title, png_bytes in png_pairs:
+                    clean_diag_name = f"diagram_task_{task_str}_{diag_title}"
+                    assets.append({
+                        "filename": clean_diag_name,
+                        "content": png_bytes,
+                        "is_image": True,
+                    })
+                c_name = result.get("filename") or f"diagram_task_{task_str}.drawio.xml"
+                if not any(a.get("filename") == c_name for a in assets):
+                    assets.append({
+                        "filename": c_name,
+                        "content": content,
+                        "is_image": False,
+                    })
+
+        # On-the-fly rendering fallback for terminal outputs
+        term_out = result.get("terminal_output") or ""
+        if not is_diag and term_out and term_out.strip() and term_out != "No terminal output was produced.":
+            if not any(a.get("is_image") for a in assets) and not result.get("screenshot_data_uri"):
+                from app.services.terminal_renderer import TerminalCardRenderer
+                try:
+                    cmd_str = result.get("command") or f"run {result.get('filename', 'task')}"
+                    term_pngs = TerminalCardRenderer.generate_terminal_pngs(
+                        cmd_str,
+                        term_out,
+                        title=f"Terminal Output — {result.get('filename', 'task')}",
+                    )
+                    for p_idx, p_bytes in enumerate(term_pngs):
+                        suffix = f"_part{p_idx + 1}" if len(term_pngs) > 1 else ""
+                        assets.append({
+                            "filename": f"task{task_str}_output{suffix}.png",
+                            "content": p_bytes,
+                            "is_image": True,
+                        })
+                except Exception as t_err:
+                    logger.debug(f"Terminal rendering in zip failed: {t_err}")
+
+        # Check diagram_image_filename or screenshot_filename with data URI
+        img_name = result.get("diagram_image_filename") or result.get("screenshot_filename")
+        main_uri = result.get("screenshot_data_uri")
+        if main_uri and not any(a.get("data_uri") == main_uri for a in assets):
+            assets.append({
+                "filename": img_name or f"task_{task_str}_output.png",
+                "data_uri": main_uri,
+                "is_image": True,
+            })
+
+        for s_idx, s_uri in enumerate(result.get("screenshot_data_uris") or []):
+            if s_uri and not any(a.get("data_uri") == s_uri for a in assets):
+                assets.append({
+                    "filename": f"task_{task_str}_output_part{s_idx + 1}.png",
+                    "data_uri": s_uri,
+                    "is_image": True,
+                })
+
         for asset in assets:
             filename = asset.get("filename")
             data_uri = asset.get("data_uri") or ""
-            if not filename or not data_uri.startswith("data:") or "," not in data_uri:
+            if not filename:
                 continue
-            try:
-                file_bytes = base64.b64decode(data_uri.split(",", 1)[1], validate=True)
-            except (ValueError, TypeError):
-                logger.warning("Skipping invalid downloaded Claude file for task %s", result.get("task"))
+
+            file_bytes = None
+            if data_uri.startswith("data:") and "," in data_uri:
+                try:
+                    file_bytes = base64.b64decode(data_uri.split(",", 1)[1], validate=True)
+                except Exception:
+                    continue
+            elif isinstance(asset.get("content"), (bytes, str)):
+                raw_c = asset["content"]
+                file_bytes = raw_c if isinstance(raw_c, bytes) else raw_c.encode("utf-8")
+
+            if not file_bytes:
                 continue
+
             safe_filename = re.sub(r"[^A-Za-z0-9_.-]", "_", str(filename).replace("\\", "/").split("/")[-1])
-            task = re.sub(r"[^A-Za-z0-9_-]", "_", str(result.get("task") or added + 1))
-            archive_name = f"claude_outputs/task_{task}_{safe_filename}"
+            task_clean = re.sub(r"[^A-Za-z0-9_-]", "_", task_str)
+
+            # Determine appropriate subfolder
+            if safe_filename.endswith(".png") or safe_filename.endswith((".jpg", ".jpeg", ".webp")):
+                folder = "diagrams" if "diagram" in safe_filename.lower() else "screenshots"
+            elif safe_filename.endswith((".xml", ".drawio", ".mmd", ".svg")):
+                folder = "diagrams"
+            else:
+                folder = "outputs"
+
+            archive_name = f"{folder}/task_{task_clean}_{safe_filename}"
             if archive_name in used_names:
-                archive_name = f"claude_outputs/task_{task}_{added + 1}_{safe_filename}"
+                archive_name = f"{folder}/task_{task_clean}_{added + 1}_{safe_filename}"
             bundle.writestr(archive_name, file_bytes)
             used_names.add(archive_name)
+
+            # Also mirror to claude_outputs/ for backward compatibility
+            legacy_name = f"claude_outputs/task_{task_clean}_{safe_filename}"
+            if legacy_name not in used_names:
+                bundle.writestr(legacy_name, file_bytes)
+                used_names.add(legacy_name)
+
             added += 1
+
+    # Extract any embedded direct images from solution_markdown if provided
+    if solution_markdown:
+        direct_images = extract_claude_diagram_images(solution_markdown)
+        for t_id, d_uri in direct_images.items():
+            if d_uri and "base64," in d_uri:
+                try:
+                    d_bytes = base64.b64decode(d_uri.split("base64,")[1], validate=True)
+                    direct_name = f"diagrams/task_{t_id}_visual_output.png"
+                    if direct_name not in used_names:
+                        bundle.writestr(direct_name, d_bytes)
+                        used_names.add(direct_name)
+                        added += 1
+                except Exception:
+                    pass
+
     return added
 
 
@@ -1393,9 +1587,14 @@ def export_solution_to_google_doc(
                     style_type="BOLD_LABEL"
                 )
 
-                # Embed all screenshot image parts (with on-the-fly fallback if needed)
+                # Embed all screenshot image parts (with on-the-fly rendering fallback if needed)
                 all_screenshot_uris = result.get("screenshot_data_uris") or ([result.get("screenshot_data_uri")] if result.get("screenshot_data_uri") else [])
-                if result.get("tool") != "Claude Text Output (no image artifact)" and not is_diagram and not all_screenshot_uris and terminal_output and terminal_output.strip() and terminal_output != "No terminal output was produced.":
+                if is_diagram and not all_screenshot_uris and source_file.get("content"):
+                    from app.services.diagram_renderer import render_diagram_to_png
+                    d_bytes = render_diagram_to_png(source_file["content"], language=lang)
+                    if d_bytes:
+                        all_screenshot_uris.append(f"data:image/png;base64,{base64.b64encode(d_bytes).decode('ascii')}")
+                elif not is_diagram and not all_screenshot_uris and terminal_output and terminal_output.strip() and terminal_output != "No terminal output was produced.":
                     from app.services.terminal_renderer import TerminalCardRenderer
                     try:
                         cmd = result.get("command")
@@ -1547,53 +1746,48 @@ def export_solution_to_google_doc(
                         is_drawio = fence_lang in ("drawio", "drawio.xml", "xml", "mxfile", "mxgraph") or ("<mxfile" in code_content or "<mxGraphModel" in code_content)
                         is_diagram = fence_lang in ("mermaid", "plantuml", "graphviz", "dot", "mmd", "puml", "svg") or is_drawio
                         if is_diagram:
+                            from app.services.diagram_renderer import render_diagrams_to_png_list
+                            diag_lang = "drawio" if is_drawio else fence_lang
+                            diag_filename = f"diagram_architecture.{'drawio.xml' if is_drawio else _CODE_EXTENSIONS.get(fence_lang, 'svg')}"
+
+                            png_pairs = []
                             nonlocal_diagram_results = [res for res in execution_results if res.get("language") == ("drawio" if is_drawio else fence_lang) or (is_drawio and res.get("language") in ("drawio", "drawio.xml", "xml", "mxfile"))]
                             matched_result = nonlocal_diagram_results[diagram_result_cursor] if diagram_result_cursor < len(nonlocal_diagram_results) else None
                             diagram_result_cursor += 1
-                            matched_png = None
-                            diag_lang = "drawio" if is_drawio else fence_lang
-                            diag_filename = f"diagram_architecture.{'drawio.xml' if is_drawio else _CODE_EXTENSIONS.get(fence_lang, 'png')}"
-                            if matched_result:
+                            if matched_result and matched_result.get("screenshot_data_uri"):
                                 try:
-                                    matched_png = base64.b64decode(matched_result["screenshot_data_uri"].split("base64,")[1])
+                                    m_bytes = base64.b64decode(matched_result["screenshot_data_uri"].split("base64,")[1])
+                                    png_pairs.append((f"diagram_{diag_lang}.png", m_bytes))
                                 except Exception:
                                     pass
 
-                            # Diagram images must ONLY be generated directly by Claude as PNG images.
-                            # Manual / dashboard diagram generator fallbacks are strictly disabled.
+                            if not png_pairs and code_content:
+                                png_pairs = render_diagrams_to_png_list(code_content, language=diag_lang)
 
-                            if matched_png:
-                                image_uri = matched_result.get("screenshot_data_uri") if matched_result else None
-                                already_in_markdown = bool(image_uri and image_uri in solution_content)
-                                if not already_in_markdown:
+                            if png_pairs:
+                                for diag_title, png_bytes in png_pairs:
+                                    clean_caption = diag_title.replace("_", " ").replace(".png", "").strip() or "Architecture Diagram"
+                                    img_fname = f"diagram_{diag_title if diag_title.endswith('.png') else diag_title + '.png'}"
                                     inserted = docs_service.insert_image_from_bytes(
                                         document_id=doc_id,
-                                        image_bytes=matched_png,
-                                        filename=f"diagram_{diag_lang}.png",
-                                        width_pt=460
+                                        image_bytes=png_bytes,
+                                        filename=img_fname,
+                                        width_pt=460,
                                     )
                                     if inserted:
-                                        embedded_claude_asset_names.update(
-                                            asset.get("filename") for asset in matched_result.get("downloaded_assets", [])
-                                            if asset.get("filename") and asset.get("data_uri") == image_uri
-                                        )
+                                        embedded_claude_asset_names.add(diag_title)
+                                        embedded_claude_asset_names.add(img_fname)
                                         docs_service.append_styled_block(
                                             doc_id,
-                                            f"Figure: Visual Educational Diagram Architecture ({diag_filename} attached)\n\n",
+                                            f"Figure: Visual Educational Diagram — {clean_caption} ({diag_filename} attached)\n\n",
                                             style_type="NORMAL",
                                             italic=True,
                                             alignment="CENTER",
                                         )
-                                    else:
-                                        docs_service.append_styled_block(
-                                            doc_id,
-                                            "Claude generated the diagram image, but Google Docs could not embed it. See the companion diagram source below.\n\n",
-                                            style_type="NORMAL",
-                                        )
                             else:
                                 docs_service.append_styled_block(
                                     doc_id,
-                                    "No Claude-generated diagram image was available for this diagram, so no replacement image was rendered. See the companion diagram source below.\n\n",
+                                    f"Companion diagram specification provided in attached {diag_filename}.\n\n",
                                     style_type="NORMAL",
                                 )
 
@@ -1724,20 +1918,31 @@ def export_solution_to_google_doc(
             flush_table()
             flush_chunk()
 
-            # Also embed any remaining standalone diagram results
+            # Also embed any remaining standalone diagram or terminal results
             for res in execution_results:
-                screenshot_uri = res.get("screenshot_data_uri")
-                if screenshot_uri and "base64," in screenshot_uri and res.get("language") in ("mermaid", "plantuml", "graphviz", "dot"):
-                    try:
-                        diag_bytes = base64.b64decode(screenshot_uri.split("base64,")[1])
-                        docs_service.insert_image_from_bytes(
-                            document_id=doc_id,
-                            image_bytes=diag_bytes,
-                            filename=f"diagram_{res.get('filename', 'diagram')}.png",
-                            width_pt=460
-                        )
-                    except Exception as diag_err:
-                        logger.warning(f"Could not embed diagram screenshot: {diag_err}")
+                uris = res.get("screenshot_data_uris") or ([res.get("screenshot_data_uri")] if res.get("screenshot_data_uri") else [])
+                for u_idx, s_uri in enumerate(uris):
+                    if s_uri and "base64," in s_uri and s_uri not in embedded_claude_asset_names:
+                        try:
+                            img_bytes = base64.b64decode(s_uri.split("base64,")[1])
+                            t_id = str(res.get("task", u_idx + 1))
+                            f_name = re.sub(r"[^A-Za-z0-9_.-]", "_", str(res.get("filename") or f"deliverable_task_{t_id}"))
+                            docs_service.insert_image_from_bytes(
+                                document_id=doc_id,
+                                image_bytes=img_bytes,
+                                filename=f"{f_name}.png",
+                                width_pt=460
+                            )
+                            embedded_claude_asset_names.add(s_uri)
+                            docs_service.append_styled_block(
+                                doc_id,
+                                f"Figure: Output / Verification Deliverable (Task {t_id})\n\n",
+                                style_type="NORMAL",
+                                italic=True,
+                                alignment="CENTER",
+                            )
+                        except Exception as shot_err:
+                            logger.warning(f"Could not embed deliverable screenshot: {shot_err}")
 
         for notebook in notebook_deliverables:
             docs_service.append_styled_block(
