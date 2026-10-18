@@ -118,6 +118,18 @@ export default function DashboardLayout({ children }) {
     setAccessBusy(true); setAccessNotice('');
     try {
       const token = getToken ? await getToken() : null;
+      const primaryEmail = user?.primaryEmailAddress;
+      const email = primaryEmail?.emailAddress?.trim();
+      if (!userId || !email || primaryEmail?.verification?.status !== 'verified') {
+        throw new Error('Your Clerk account needs a verified primary email before requesting workspace access.');
+      }
+      await api.syncUser({
+        userId,
+        email,
+        firstName: user?.firstName || '',
+        lastName: user?.lastName || '',
+        imageUrl: user?.imageUrl || '',
+      }, token);
       const result = await api.requestPrivateAccess(token);
       setAccessNotice(result.message || 'Request sent to the administrator.');
     } catch (error) {
