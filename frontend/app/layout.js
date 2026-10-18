@@ -60,19 +60,20 @@ export const metadata = {
       "Autonomous academic workflow hub: 4-agent assignment solver, Google Classroom & Portal sync, weekly timetable manager, and intelligent attendance tracker.",
     images: [
       {
-        url: "/globe.svg",
-        width: 1200,
-        height: 630,
+        url: "/icon.png",
+        width: 512,
+        height: 512,
         alt: "UnivFlow - Unified Academic Assistant",
       },
     ],
   },
   twitter: {
-    card: "summary_large_image",
+    card: "summary",
     title: "UnivFlow · Unified Academic OS & AI Assistant",
     description:
       "Autonomous academic workflow hub: 4-agent assignment solver, Google Classroom & Portal sync, weekly timetable manager, and intelligent attendance tracker.",
     creator: "@UnivFlow",
+    images: ["/icon.png"],
   },
   robots: {
     index: false,
@@ -87,10 +88,14 @@ export const metadata = {
   },
   icons: {
     icon: [
-      { url: "/favicon.ico" },
-      { url: "/globe.svg", type: "image/svg+xml" },
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/icon.png", type: "image/png", sizes: "512x512" },
     ],
-    shortcut: "/favicon.ico",
+    apple: [
+      { url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
+    ],
+    shortcut: "/icon.svg",
   },
   manifest: "/site.webmanifest",
 };

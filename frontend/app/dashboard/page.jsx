@@ -70,6 +70,9 @@ export default function DashboardOverview() {
 
   const [turningInId, setTurningInId] = useState(null);
   const [turnInNotice, setTurnInNotice] = useState('');
+  const [turnInError, setTurnInError] = useState('');
+  const [classroomLoginRequired, setClassroomLoginRequired] = useState(false);
+  const [classroomViewerUrl, setClassroomViewerUrl] = useState('');
   const [dismissingId, setDismissingId] = useState(null);
   const [showClearTimetable, setShowClearTimetable] = useState(false);
   const [clearingTimetable, setClearingTimetable] = useState(false);
@@ -112,14 +115,23 @@ export default function DashboardOverview() {
     if (!window.confirm(`Submit "${assignment?.title || 'this assignment'}" to Google Classroom now? Uniflow will attach the Google Doc and a ZIP of deliverables.`)) return;
     setTurningInId(assignmentId);
     setError('');
+    setTurnInError('');
     setTurnInNotice('');
+    setClassroomLoginRequired(false);
+    setClassroomViewerUrl('');
     try {
       const token = await getToken();
       const res = await api.quickTurnInAssignment(assignmentId, token);
+      if (res.needs_browser_login) {
+        setClassroomLoginRequired(true);
+        setClassroomViewerUrl(res.viewer_url || '');
+        setTurnInNotice(res.message || 'Sign in to Google Classroom in your private browser, then retry Quick Turn In.');
+        return;
+      }
       setTurnInNotice(res.message || 'Successfully turned in Google Doc and ZIP deliverables to Google Classroom!');
       await loadData(false);
     } catch (err) {
-      setError(err.message || 'Quick turn-in failed. Please try again.');
+      setTurnInError(err.message || 'Quick turn-in failed. Please try again.');
     } finally {
       setTurningInId(null);
     }
@@ -307,13 +319,25 @@ export default function DashboardOverview() {
             );
           })}
 
+          {turnInError && (
+            <div className="mb-2 flex items-start gap-2 rounded-lg border border-rose-border bg-rose-bg px-4 py-2.5 text-xs text-rose" role="alert">
+              <Icon name="alert" size={14} />
+              <span><strong className="font-semibold">Quick Turn In failed:</strong> {turnInError}</span>
+            </div>
+          )}
+
           {turnInNotice && (
-            <div className="mb-2 flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-emerald-800">
-              <div className="flex items-center gap-2">
-                <Icon name="checkCircle" size={14} />
+            <div className={`mb-2 flex items-center justify-between rounded-lg border px-4 py-2.5 text-xs font-semibold ${classroomLoginRequired ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}>
+              <div className="flex flex-wrap items-center gap-2">
+                <Icon name={classroomLoginRequired ? 'externalLink' : 'checkCircle'} size={14} />
                 <span>{turnInNotice}</span>
+                {classroomViewerUrl && (
+                  <a href={classroomViewerUrl} target="_blank" rel="noopener noreferrer" className="underline">
+                    Open private sign-in browser
+                  </a>
+                )}
               </div>
-              <button type="button" onClick={() => setTurnInNotice('')} className="text-emerald-700 hover:text-emerald-900">
+              <button type="button" onClick={() => { setTurnInNotice(''); setClassroomLoginRequired(false); setClassroomViewerUrl(''); }} className={classroomLoginRequired ? 'text-amber-800 hover:text-amber-950' : 'text-emerald-700 hover:text-emerald-900'}>
                 <Icon name="close" size={12} />
               </button>
             </div>
