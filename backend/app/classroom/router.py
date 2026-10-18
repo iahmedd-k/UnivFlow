@@ -1362,20 +1362,6 @@ def _attach_submission_files(
         submission_id = sub_obj["id"]
         sub_state = sub_obj.get("state", "NEW")
 
-        # If already turned in, reclaim first so new attachments can be added.
-        # Google Classroom requires body={} on reclaim requests.
-        if sub_state == "TURNED_IN":
-            try:
-                reclaim_res = submissions_api.reclaim(
-                    courseId=course_id,
-                    courseWorkId=coursework_id,
-                    id=submission_id,
-                    body={},
-                ).execute()
-                sub_state = reclaim_res.get("state", "RECLAIMED_BY_STUDENT")
-            except Exception as reclaim_err:
-                logger.warning(f"Could not reclaim submission {submission_id} (submissions may be locked/closed): {reclaim_err}")
-
         # Check existing attachments so we don't try to re-add duplicate attachments
         existing_attachments = sub_obj.get("assignmentSubmission", {}).get("attachments", [])
         existing_drive_ids = set()
@@ -1446,6 +1432,16 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
     existing_sub = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
     student_doc_id = existing_sub.google_doc_id if (existing_sub and existing_sub.google_doc_id) else None
+    # The solution exporter persists its Doc ID before quick-turn-in attaches
+    # anything. If a prior attempt stopped at the exporter/response-contract
+    # boundary, that row has the same ID in both Doc/Drive columns and no
+    # Classroom submission ID. Reuse it rather than generating orphan Docs.
+    pending_export_doc = bool(
+        existing_sub
+        and existing_sub.google_doc_id
+        and existing_sub.google_doc_id == existing_sub.google_drive_file_id
+        and not existing_sub.classroom_attachment_id
+    )
 
     raw_content = ""
     if solution:
@@ -1526,14 +1522,26 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
             "message": "Existing private deliverables were retried; " + ("the assignment is turned in." if turned_in else "Classroom is still not accepting turn-in."),
         }
 
-    student_doc_id = existing_sub.google_doc_id if (existing_sub and same_content_as_previous and existing_sub.google_doc_id) else None
+    student_doc_id = (
+        existing_sub.google_doc_id
+        if existing_sub and existing_sub.google_doc_id and (same_content_as_previous or pending_export_doc)
+        else None
+    )
 
     # 1. Ensure Google Doc exists for this submission
     if not student_doc_id:
         doc_info = export_solution_to_google_doc(db, assignment, raw_content, user_id=user_id)
-        if not doc_info or not doc_info.get("google_doc_id"):
+        # export_solution_to_google_doc's public contract uses `doc_id` (and
+        # `drive_file_id`); older callers/mocks may provide `google_doc_id`.
+        # Accept both so a successfully created Doc is not reported as a failure.
+        exported_doc_id = (
+            (doc_info or {}).get("google_doc_id")
+            or (doc_info or {}).get("doc_id")
+            or (doc_info or {}).get("drive_file_id")
+        )
+        if not exported_doc_id:
             raise HTTPException(status_code=502, detail="Failed to create Google Doc for assignment solution")
-        student_doc_id = doc_info["google_doc_id"]
+        student_doc_id = exported_doc_id
 
     # 2. Package deliverables into a single ZIP archive
     deliverables = extract_assignment_deliverables(clean_content)
@@ -1710,10 +1718,15 @@ def check_and_execute_course_auto_turn_in(db: Session, course_id: int, user_id: 
         # Never auto-submit after the deadline; scan cadence can miss narrow windows.
         if 0.0 <= time_to_deadline_mins <= float(max(5, min(minutes_before, 1440))):
             prior_submission = db.query(Submission).filter(Submission.assignment_id == asgn.id).first()
-            if prior_submission and prior_submission.submitted_at:
-                # A failed/closed submission already has attached files and is left
-                # for a deliberate manual retry instead of uploading duplicate ZIPs.
+            prior_state = (
+                getattr(prior_submission.submission_state, "value", prior_submission.submission_state)
+                if prior_submission else None
+            )
+            if prior_submission and prior_state in {SubmissionState.TURNED_IN.value, SubmissionState.RETURNED.value}:
                 continue
+            # CREATED means files may have been attached while Classroom rejected
+            # turn-in. Let the scheduled flow retry within its configured window;
+            # execute_quick_turn_in reuses the existing private files by digest.
             sol = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == asgn.id).first()
             if sol and (sol.validated_content or sol.draft_content):
                 try:

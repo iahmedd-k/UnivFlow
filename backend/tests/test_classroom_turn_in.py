@@ -180,7 +180,8 @@ def test_execute_quick_turn_in_attaches_doc_and_zip(monkeypatch):
     monkeypatch.setattr(classroom_mod, "get_google_docs_service", lambda _db, user_id: fake_docs)
     monkeypatch.setattr(
         "app.services.ai_solution.export_solution_to_google_doc",
-        lambda _db, _asgn, _content, user_id: {"google_doc_id": "doc-drive-id-123", "doc_url": "https://docs.google.com/..."}
+        # Match the real exporter response shape; quick-turn-in must consume doc_id.
+        lambda _db, _asgn, _content, user_id: {"doc_id": "doc-drive-id-123", "doc_url": "https://docs.google.com/..."}
     )
 
     res = execute_quick_turn_in(db, assignment.id, "test_user")
@@ -207,7 +208,7 @@ def test_execute_quick_turn_in_attaches_doc_and_zip(monkeypatch):
     assert assignment.submission_state == SubmissionState.TURNED_IN
 
 
-def test_attach_submission_files_reclaims_turned_in_submission_with_empty_body():
+def test_attach_submission_files_does_not_unsubmit_already_turned_in_work():
     classroom = FakeClassroomService(initial_state="TURNED_IN")
 
     submission_id, state = _attach_submission_files(
@@ -215,9 +216,8 @@ def test_attach_submission_files_reclaims_turned_in_submission_with_empty_body()
     )
 
     assert submission_id == "submission-123"
-    assert state == "RECLAIMED_BY_STUDENT"
-    assert classroom.submissions.reclaim_arguments["id"] == "submission-123"
-    assert classroom.submissions.reclaim_arguments["body"] == {}
+    assert state == "TURNED_IN"
+    assert classroom.submissions.reclaim_arguments is None
     assert classroom.submissions.modify_arguments["id"] == "submission-123"
     assert classroom.submissions.modify_arguments["body"] == {
         "addAttachments": [{"driveFile": {"id": "doc-1"}}]
@@ -270,7 +270,7 @@ def test_execute_quick_turn_in_handles_closed_submissions_safely(monkeypatch):
     monkeypatch.setattr(classroom_mod, "get_google_docs_service", lambda _db, user_id: fake_docs)
     monkeypatch.setattr(
         "app.services.ai_solution.export_solution_to_google_doc",
-        lambda _db, _asgn, _content, user_id: {"google_doc_id": "doc-drive-id-123", "doc_url": "https://docs.google.com/..."}
+        lambda _db, _asgn, _content, user_id: {"doc_id": "doc-drive-id-123", "doc_url": "https://docs.google.com/..."}
     )
 
     res = execute_quick_turn_in(db, assignment.id, "test_user")
@@ -289,7 +289,7 @@ def test_check_and_execute_course_auto_turn_in_strictly_scopes_to_course(monkeyp
     from sqlalchemy.orm import sessionmaker
     from datetime import datetime, timezone, timedelta
     from app.db.database import Base
-    from app.db.models import Course, Assignment, AssignmentSolution, Setting, SubmissionState
+    from app.db.models import Course, Assignment, AssignmentSolution, Setting, Submission, SubmissionState
     from app.classroom.router import check_and_execute_course_auto_turn_in
     import json
     import sys
@@ -319,13 +319,21 @@ def test_check_and_execute_course_auto_turn_in_strictly_scopes_to_course(monkeyp
 
     sol1 = AssignmentSolution(id=1, assignment_id=101, validated_content="Code 1")
     sol2 = AssignmentSolution(id=2, assignment_id=201, validated_content="Code 2")
+    # An earlier attempt attached files but did not turn in; auto-turn-in must retry it.
+    prior_failed_attempt = Submission(
+        id=1, assignment_id=101, user_id=user_id,
+        submitted_at=now - timedelta(minutes=1),
+        submission_state=SubmissionState.CREATED,
+        google_doc_id="doc-101", google_drive_file_id="zip-101",
+        classroom_attachment_id="submission-101",
+    )
 
     # Auto turn-in enabled ONLY for course 10
     setting_c1 = Setting(
         key=f"auto_turnin_course_{user_id}_10",
         value=json.dumps({"enabled": True, "minutes_before": 60})
     )
-    db.add_all([course1, course2, asgn1, asgn2, sol1, sol2, setting_c1])
+    db.add_all([course1, course2, asgn1, asgn2, sol1, sol2, prior_failed_attempt, setting_c1])
     db.commit()
 
     turn_in_calls = []
