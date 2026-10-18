@@ -22,6 +22,7 @@ from app.db.models import Setting
 from app.core.logging import logger
 from app.auth.clerk_auth import get_current_user_optional, require_current_user
 from app.core.redis import check_rate_limit as redis_check_rate_limit
+from app.core.security import decrypt_token_if_encrypted, get_google_credential_tokens, encrypt_token_if_needed
 from pydantic import BaseModel, EmailStr
 
 # Only allow HTTP transport in local development/test environments
@@ -165,9 +166,10 @@ def get_auth_status(
         else:
             # 2. Only fetch via network if never saved
             try:
+                access_token, refresh_token = get_google_credential_tokens(db, cred)
                 creds = Credentials(
-                    token=cred.access_token,
-                    refresh_token=cred.refresh_token,
+                    token=access_token,
+                    refresh_token=refresh_token,
                     token_uri=cred.token_uri or "https://oauth2.googleapis.com/token",
                     client_id=cred.client_id or settings.google_client_id,
                     client_secret=settings.google_client_secret,
@@ -391,7 +393,7 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
         repo = GoogleCredentialRepository(db)
         existing_cred = repo.get(user_id)
         if not refresh_token and existing_cred:
-            refresh_token = existing_cred.refresh_token
+            refresh_token = decrypt_token_if_encrypted(existing_cred.refresh_token)
 
         user_email = ""
         try:
@@ -407,8 +409,8 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
             logger.warning(f"Failed to fetch userinfo in callback: {e}")
 
         cred_data = {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
+            "access_token": encrypt_token_if_needed(access_token),
+            "refresh_token": encrypt_token_if_needed(refresh_token),
             "token_uri": "https://oauth2.googleapis.com/token",
             "client_id": settings.google_client_id,
             "client_secret": None,
@@ -475,9 +477,10 @@ def get_current_user(
     google_data = None
     if cred:
         try:
+            access_token, refresh_token = get_google_credential_tokens(db, cred)
             creds = Credentials(
-                token=cred.access_token,
-                refresh_token=cred.refresh_token,
+                token=access_token,
+                refresh_token=refresh_token,
                 token_uri=cred.token_uri or "https://oauth2.googleapis.com/token",
                 client_id=cred.client_id or settings.google_client_id,
                 client_secret=cred.client_secret or settings.google_client_secret,

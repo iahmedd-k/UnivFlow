@@ -256,12 +256,22 @@ def get_courses(
 ):
     user_id = _classroom_user_id(clerk_user)
     query = db.query(Course).filter(Course.user_id == user_id)
+    # Portal timetable/attendance imports share the Course table for academic
+    # views, but they are not Google Classroom courses and have no Classroom
+    # coursework. Keeping them out of this endpoint prevents duplicate cards.
+    query = query.filter(~Course.external_id.startswith("portal-"))
     if active_only:
         query = query.filter(Course.course_state.in_(["ACTIVE", "active", ""]) | Course.course_state.is_(None))
     since_dt = _get_semester_start_dt(db, since, user_id=user_id)
     if since_dt:
         query = query.filter((Course.created_at >= since_dt) | (Course.updated_at >= since_dt) | Course.created_at.is_(None))
-    courses = query.order_by(Course.name.asc()).all()
+    courses = query.order_by(Course.name.asc(), Course.id.asc()).all()
+    # Be defensive with legacy databases that predate the per-user unique
+    # constraint. Google Classroom's course ID is the canonical identity.
+    unique_courses = {}
+    for course in courses:
+        unique_courses.setdefault(course.external_id, course)
+    courses = list(unique_courses.values())
     return [
         {
             "id": c.id,

@@ -62,6 +62,10 @@ class AssignmentMaterial(Base):
     drive_file_id = Column(String(255))
     mime_type = Column(String(100))
     content = Column(Text)
+    storage_key = Column(String(512))
+    drive_modified_time = Column(DateTime(timezone=True))
+    drive_checksum = Column(String(128))
+    file_size = Column(Integer)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     assignment = relationship("Assignment", back_populates="materials")

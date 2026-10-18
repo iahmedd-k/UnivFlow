@@ -233,8 +233,6 @@ def test_dashboard_clear_timetable(client, test_db):
 # =========================================================================
 
 def test_attendance_crud(client, test_db):
-    headers = {"Authorization": "Bearer dev_token"}
-
     # Ensure course exists
     course = test_db.query(Course).first()
     if not course:
@@ -249,7 +247,7 @@ def test_attendance_crud(client, test_db):
         "attended": 18,
         "total": 20,
     }
-    create_res = client.post("/api/v1/attendance", json=att_payload, headers=headers)
+    create_res = client.post("/api/v1/attendance", json=att_payload)
     assert create_res.status_code == 200
     record_id = create_res.json()["id"]
     assert create_res.json()["percentage"] == 90.0
@@ -259,13 +257,13 @@ def test_attendance_crud(client, test_db):
         "attended": 19,
         "total": 21,
     }
-    put_res = client.put(f"/api/v1/attendance/{record_id}", json=upd_payload, headers=headers)
+    put_res = client.put(f"/api/v1/attendance/{record_id}", json=upd_payload)
     assert put_res.status_code == 200
     assert put_res.json()["attended"] == 19
     assert put_res.json()["total"] == 21
 
     # Delete attendance record
-    del_res = client.delete(f"/api/v1/attendance/{record_id}", headers=headers)
+    del_res = client.delete(f"/api/v1/attendance/{record_id}")
     assert del_res.status_code == 200
     assert del_res.json()["deleted"] is True
 
@@ -275,8 +273,6 @@ def test_attendance_crud(client, test_db):
 # =========================================================================
 
 def test_university_exams_crud_and_quizzes_retired(client, test_db):
-    headers = {"Authorization": "Bearer dev_token"}
-
     # 1. Exam CRUD
     exam_payload = {
         "title": "Midterm Examination",
@@ -284,18 +280,18 @@ def test_university_exams_crud_and_quizzes_retired(client, test_db):
         "room": "Auditorium",
         "status": "scheduled",
     }
-    create_exam_res = client.post("/api/v1/university/exams", json=exam_payload, headers=headers)
+    create_exam_res = client.post("/api/v1/university/exams", json=exam_payload)
     assert create_exam_res.status_code == 200
     exam_id = create_exam_res.json()["id"]
 
-    get_exam_res = client.get(f"/api/v1/university/exams/{exam_id}", headers=headers)
+    get_exam_res = client.get(f"/api/v1/university/exams/{exam_id}")
     assert get_exam_res.status_code == 200
 
-    put_exam_res = client.put(f"/api/v1/university/exams/{exam_id}", json={"room": "Main Hall"}, headers=headers)
+    put_exam_res = client.put(f"/api/v1/university/exams/{exam_id}", json={"room": "Main Hall"})
     assert put_exam_res.status_code == 200
     assert put_exam_res.json()["room"] == "Main Hall"
 
-    del_exam_res = client.delete(f"/api/v1/university/exams/{exam_id}", headers=headers)
+    del_exam_res = client.delete(f"/api/v1/university/exams/{exam_id}")
     assert del_exam_res.status_code == 200
     assert del_exam_res.json()["deleted"] is True
 
@@ -306,9 +302,9 @@ def test_university_exams_crud_and_quizzes_retired(client, test_db):
         "room": "C-102",
         "status": "scheduled",
     }
-    create_quiz_res = client.post("/api/v1/university/quizzes", json=quiz_payload, headers=headers)
+    create_quiz_res = client.post("/api/v1/university/quizzes", json=quiz_payload)
     assert create_quiz_res.status_code == 404
-    assert client.get("/api/v1/university/quizzes", headers=headers).status_code == 404
-    assert client.get("/api/v1/university/quizzes/1", headers=headers).status_code == 404
-    assert client.put("/api/v1/university/quizzes/1", json={"title": "Quiz 1 - Advanced Gates"}, headers=headers).status_code == 404
-    assert client.delete("/api/v1/university/quizzes/1", headers=headers).status_code == 404
+    assert client.get("/api/v1/university/quizzes").status_code == 404
+    assert client.get("/api/v1/university/quizzes/1").status_code == 404
+    assert client.put("/api/v1/university/quizzes/1", json={"title": "Quiz 1 - Advanced Gates"}).status_code == 404
+    assert client.delete("/api/v1/university/quizzes/1").status_code == 404

@@ -6,6 +6,8 @@ from app.db.database import get_db
 from app.db.repositories import AttendanceRecordRepository
 from app.db.models import AttendanceRecord, Course
 from app.services.alert_service import calculate_attendance_recovery, calculate_safe_bunks
+from app.auth.clerk_auth import get_current_user_optional
+from app.auth.ownership import require_user_id, user_owner_ids
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
@@ -41,22 +43,25 @@ def _format_record(r: AttendanceRecord, course_name: str | None) -> dict:
 
 
 @router.get("", response_model=List[dict])
-def get_attendance_records(db: Session = Depends(get_db)):
-    repo = AttendanceRecordRepository(db)
-    records = repo.get_all()
+def get_attendance_records(db: Session = Depends(get_db), clerk_user: dict | None = Depends(get_current_user_optional)):
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
+    records = db.query(AttendanceRecord).filter(AttendanceRecord.user_id.in_(owners)).all()
     result = []
     for r in records:
-        course = db.query(Course).filter(Course.id == r.course_id).first()
+        course = db.query(Course).filter(Course.id == r.course_id, Course.user_id.in_(owners)).first()
         result.append(_format_record(r, course.name if course else None))
     return result
 
 
 @router.get("/{record_id}", response_model=dict)
-def get_attendance_record(record_id: int, db: Session = Depends(get_db)):
-    record = db.query(AttendanceRecord).filter(AttendanceRecord.id == record_id).first()
+def get_attendance_record(record_id: int, db: Session = Depends(get_db), clerk_user: dict | None = Depends(get_current_user_optional)):
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
+    record = db.query(AttendanceRecord).filter(AttendanceRecord.id == record_id, AttendanceRecord.user_id.in_(owners)).first()
     if not record:
         raise HTTPException(status_code=404, detail="Attendance record not found")
-    course = db.query(Course).filter(Course.id == record.course_id).first()
+    course = db.query(Course).filter(Course.id == record.course_id, Course.user_id.in_(owners)).first()
     return _format_record(record, course.name if course else None)
 
 
@@ -81,32 +86,35 @@ class AttendanceRecordUpdate(BaseModel):
 
 
 @router.get("/course/{course_id}", response_model=dict)
-def get_attendance_by_course(course_id: int, db: Session = Depends(get_db)):
-    repo = AttendanceRecordRepository(db)
-    record = repo.get_by_course(course_id)
+def get_attendance_by_course(course_id: int, db: Session = Depends(get_db), clerk_user: dict | None = Depends(get_current_user_optional)):
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
+    record = db.query(AttendanceRecord).filter(AttendanceRecord.course_id == course_id, AttendanceRecord.user_id.in_(owners)).first()
     if not record:
         raise HTTPException(status_code=404, detail="Attendance record not found for this course")
-    course = db.query(Course).filter(Course.id == course_id).first()
+    course = db.query(Course).filter(Course.id == course_id, Course.user_id.in_(owners)).first()
     return _format_record(record, course.name if course else None)
 
 
 @router.post("", response_model=dict)
-def create_attendance_record(item: AttendanceRecordInput, db: Session = Depends(get_db)):
+def create_attendance_record(item: AttendanceRecordInput, db: Session = Depends(get_db), clerk_user: dict | None = Depends(get_current_user_optional)):
     """Create a new attendance record (CRUD Create)"""
+    user_id = require_user_id(clerk_user)
     if item.attended > item.total:
         raise HTTPException(status_code=422, detail="Attended classes cannot exceed total classes.")
     
-    course = db.query(Course).filter(Course.id == item.course_id).first()
+    owners = user_owner_ids(user_id)
+    course = db.query(Course).filter(Course.id == item.course_id, Course.user_id.in_(owners)).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found.")
 
     pct = round((item.attended / item.total) * 100, 2) if item.total > 0 else 0.0
     ext_id = f"manual-att:{item.course_id}:{hashlib.sha256(item.subject.encode('utf-8')).hexdigest()[:16]}"
     
-    record = db.query(AttendanceRecord).filter(AttendanceRecord.external_id == ext_id).first()
+    record = db.query(AttendanceRecord).filter(AttendanceRecord.external_id == ext_id, AttendanceRecord.user_id.in_(owners)).first()
     if not record:
         record = AttendanceRecord(
-            user_id="legacy",
+            user_id=user_id,
             external_id=ext_id,
             course_id=item.course_id,
             subject=item.subject.strip(),
@@ -128,9 +136,11 @@ def create_attendance_record(item: AttendanceRecordInput, db: Session = Depends(
 
 
 @router.put("/{record_id}", response_model=dict)
-def update_attendance_record(record_id: int, item: AttendanceRecordUpdate, db: Session = Depends(get_db)):
+def update_attendance_record(record_id: int, item: AttendanceRecordUpdate, db: Session = Depends(get_db), clerk_user: dict | None = Depends(get_current_user_optional)):
     """Update an attendance record (CRUD Update)"""
-    record = db.query(AttendanceRecord).filter(AttendanceRecord.id == record_id).first()
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
+    record = db.query(AttendanceRecord).filter(AttendanceRecord.id == record_id, AttendanceRecord.user_id.in_(owners)).first()
     if not record:
         raise HTTPException(status_code=404, detail="Attendance record not found.")
 
@@ -150,14 +160,15 @@ def update_attendance_record(record_id: int, item: AttendanceRecordUpdate, db: S
     db.commit()
     invalidate_attendance_summary_cache()
     db.refresh(record)
-    course = db.query(Course).filter(Course.id == record.course_id).first()
+    course = db.query(Course).filter(Course.id == record.course_id, Course.user_id.in_(owners)).first()
     return _format_record(record, course.name if course else None)
 
 
 @router.delete("/{record_id}", response_model=dict)
-def delete_attendance_record(record_id: int, db: Session = Depends(get_db)):
+def delete_attendance_record(record_id: int, db: Session = Depends(get_db), clerk_user: dict | None = Depends(get_current_user_optional)):
     """Delete an attendance record (CRUD Delete)"""
-    record = db.query(AttendanceRecord).filter(AttendanceRecord.id == record_id).first()
+    user_id = require_user_id(clerk_user)
+    record = db.query(AttendanceRecord).filter(AttendanceRecord.id == record_id, AttendanceRecord.user_id.in_(user_owner_ids(user_id))).first()
     if not record:
         raise HTTPException(status_code=404, detail="Attendance record not found.")
     db.delete(record)

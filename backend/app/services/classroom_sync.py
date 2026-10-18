@@ -24,6 +24,7 @@ from app.db.models import (
     AssignmentStatus,
 )
 from app.core.config import settings
+from app.core.security import get_google_credential_tokens, encrypt_token_if_needed
 from app.core.logging import logger
 from app.core.redis import check_rate_limit as redis_check_rate_limit
 
@@ -94,9 +95,10 @@ class ClassroomSyncService:
             return False
 
         try:
+            access_token, refresh_token = get_google_credential_tokens(self.db, cred_row)
             creds = Credentials(
-                token=cred_row.access_token,
-                refresh_token=cred_row.refresh_token,
+                token=access_token,
+                refresh_token=refresh_token,
                 token_uri=cred_row.token_uri or "https://oauth2.googleapis.com/token",
                 client_id=cred_row.client_id or settings.google_client_id,
                 client_secret=cred_row.client_secret or settings.google_client_secret,
@@ -107,7 +109,7 @@ class ClassroomSyncService:
                 from google.auth.transport.requests import Request
                 creds.refresh(Request())
                 # Update stored token
-                cred_row.access_token = creds.token
+                cred_row.access_token = encrypt_token_if_needed(creds.token)
                 cred_row.expiry = creds.expiry
                 self.db.commit()
 
@@ -131,9 +133,10 @@ class ClassroomSyncService:
             if not cred_row:
                 return None
 
+            access_token, refresh_token = get_google_credential_tokens(self.db, cred_row)
             creds = GCreds(
-                token=cred_row.access_token,
-                refresh_token=cred_row.refresh_token,
+                token=access_token,
+                refresh_token=refresh_token,
                 token_uri=cred_row.token_uri or "https://oauth2.googleapis.com/token",
                 client_id=cred_row.client_id or settings.google_client_id,
                 client_secret=cred_row.client_secret or settings.google_client_secret,
@@ -142,7 +145,7 @@ class ClassroomSyncService:
             if creds.expired and creds.refresh_token:
                 from google.auth.transport.requests import Request
                 creds.refresh(Request())
-                cred_row.access_token = creds.token
+                cred_row.access_token = encrypt_token_if_needed(creds.token)
                 cred_row.expiry = creds.expiry
                 self.db.commit()
 
@@ -151,7 +154,49 @@ class ClassroomSyncService:
             logger.warning(f"Could not initialize Drive service for material extraction: {e}")
             return None
 
-    def _extract_drive_file_text(self, drive_service, file_id: str, mime_type: str, filename: str = "") -> str:
+    def _download_drive_file_bytes(self, drive_service, file_id: str, mime_type: str):
+        """Download one source version for the durable course-file cache."""
+        google_exports = {
+            "application/vnd.google-apps.document": "application/pdf",
+            "application/vnd.google-apps.presentation": "application/pdf",
+            "application/vnd.google-apps.spreadsheet": "application/pdf",
+            "application/vnd.google-apps.drawing": "application/pdf",
+        }
+        export_mime = google_exports.get(mime_type)
+        request = (
+            drive_service.files().export_media(fileId=file_id, mimeType=export_mime)
+            if export_mime
+            else drive_service.files().get_media(fileId=file_id)
+        )
+        data = request.execute()
+        return data if isinstance(data, bytes) else bytes(data), (export_mime or mime_type)
+
+    def _store_drive_file(self, file_id: str, mime_type: str, modified_time: Optional[datetime], checksum: Optional[str], raw: bytes) -> Optional[str]:
+        """Persist the downloaded original/export in the configured S3-compatible bucket."""
+        try:
+            import mimetypes
+            from app.db.s3_client import get_s3_client
+
+            s3 = get_s3_client()
+            if not s3:
+                return None
+            user_key = hashlib.sha256(self.user_id.encode("utf-8")).hexdigest()
+            version = checksum or (modified_time.isoformat() if modified_time else hashlib.sha256(raw).hexdigest())
+            version_key = hashlib.sha256(version.encode("utf-8")).hexdigest()[:24]
+            extension = mimetypes.guess_extension(mime_type or "") or ""
+            key = f"users/{user_key}/classroom/{file_id}/{version_key}{extension}"
+            s3.put_object(
+                Bucket="uniflow-files",
+                Key=key,
+                Body=raw,
+                ContentType=mime_type or "application/octet-stream",
+            )
+            return key
+        except Exception as error:
+            logger.warning("Could not cache Classroom file %s in object storage: %s", file_id, error)
+            return None
+
+    def _extract_drive_file_text(self, drive_service, file_id: str, mime_type: str, filename: str = "", raw_data: Optional[bytes] = None) -> str:
         """Extract text from cached Classroom sync downloads, including office uploads."""
         try:
             import io
@@ -174,12 +219,12 @@ class ClassroomSyncService:
                 data = drive_service.files().export_media(fileId=file_id, mimeType="text/csv").execute()
                 return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
             if mime_type == "application/pdf":
-                data = drive_service.files().get_media(fileId=file_id).execute()
+                data = raw_data if raw_data is not None else drive_service.files().get_media(fileId=file_id).execute()
                 from pypdf import PdfReader
                 pdf = PdfReader(io.BytesIO(data if isinstance(data, bytes) else bytes(data)))
                 return "\n".join(page.extract_text() or "" for page in pdf.pages)
             if mime_type and (mime_type.startswith("text/") or mime_type in ("application/json", "application/javascript")):
-                data = drive_service.files().get_media(fileId=file_id).execute()
+                data = raw_data if raw_data is not None else drive_service.files().get_media(fileId=file_id).execute()
                 return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
             # DriveFile attachments can be uploaded Office files rather than Google Docs.
             # Download and extract these during sync so chat never needs a live Drive call.
@@ -189,7 +234,7 @@ class ClassroomSyncService:
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             ):
-                data = drive_service.files().get_media(fileId=file_id).execute()
+                data = raw_data if raw_data is not None else drive_service.files().get_media(fileId=file_id).execute()
                 raw = data if isinstance(data, bytes) else bytes(data)
                 if ext == ".pptx" or "presentationml" in (mime_type or ""):
                     import zipfile
@@ -564,7 +609,9 @@ class ClassroomSyncService:
                 f"Google Classroom course listing failed (HTTP {status}): {last_error.reason}"
             ) from last_error
 
-        return courses
+        # A page retry or API inconsistency must not create duplicate course
+        # cards or repeat all per-course sync work for the same Classroom ID.
+        return list({course.get("id"): course for course in courses if course.get("id")}.values())
 
     def _sync_course(self, course_data: Dict, is_active: bool = True) -> Course:
         """Sync a single course to database"""
@@ -752,7 +799,7 @@ class ClassroomSyncService:
                 })
             try:
                 from app.services.alert_service import AlertService
-                AlertService(self.db).notify_new_assignment(assignment)
+                AlertService(self.db).notify_new_assignment(assignment, user_id=self.user_id)
             except Exception as e:
                 logger.warning(f"Could not dispatch new assignment notification for {assignment.id}: {e}")
             return assignment
@@ -1059,14 +1106,16 @@ class ClassroomSyncService:
             drive_file_id = drive_file.get("id")
             mime_type = drive_file.get("mimeType")
             content = ""
+            existing_row = by_drive_id.get(drive_file_id) if drive_file_id else None
 
-            # Classroom attachment objects commonly omit MIME type and a usable name.
-            # Resolve these from Drive during sync (never during a chat request).
+            # Classroom attachment objects omit version metadata. Read lightweight
+            # Drive metadata first, then download/export only when its version changed.
+            metadata = {}
             if drive_service and drive_file_id:
                 try:
                     metadata = drive_service.files().get(
                         fileId=drive_file_id,
-                        fields="id,name,mimeType,webViewLink",
+                        fields="id,name,mimeType,webViewLink,modifiedTime,md5Checksum,size",
                     ).execute()
                     mime_type = mime_type or metadata.get("mimeType")
                     drive_file["title"] = drive_file.get("title") or metadata.get("name")
@@ -1079,9 +1128,48 @@ class ClassroomSyncService:
                 except Exception as metadata_error:
                     logger.warning("Could not resolve Drive metadata for %s during sync: %s", drive_file_id, metadata_error)
 
-            # Extract full text from Drive so the study assistant can answer
-            # from the document even when Drive isn't connected at chat time.
-            if drive_service and drive_file_id and mime_type and (
+            modified_time = None
+            modified_value = metadata.get("modifiedTime")
+            if modified_value:
+                try:
+                    modified_time = datetime.fromisoformat(modified_value.replace("Z", "+00:00"))
+                except (TypeError, ValueError):
+                    modified_time = None
+            checksum = metadata.get("md5Checksum")
+            cached_modified_time = existing_row.drive_modified_time if existing_row else None
+            if cached_modified_time and cached_modified_time.tzinfo is None:
+                cached_modified_time = cached_modified_time.replace(tzinfo=timezone.utc)
+            same_version = bool(
+                existing_row
+                and (
+                    (checksum and existing_row.drive_checksum == checksum)
+                    or (modified_time and cached_modified_time == modified_time)
+                )
+            )
+            has_cached_copy = bool(existing_row and (existing_row.storage_key or existing_row.content))
+            cache_hit = has_cached_copy and (same_version or not metadata)
+
+            storage_key = existing_row.storage_key if cache_hit else None
+            file_size = metadata.get("size")
+            raw_data = None
+            if not cache_hit and drive_service and drive_file_id and metadata:
+                try:
+                    # Google's native documents are kept as PDF exports, while
+                    # uploaded PDFs, images, Office files, and other attachments
+                    # retain their original bytes and MIME type.
+                    raw, stored_mime = self._download_drive_file_bytes(drive_service, drive_file_id, mime_type or "")
+                    if len(raw) <= 100 * 1024 * 1024:
+                        raw_data = raw
+                        storage_key = self._store_drive_file(drive_file_id, stored_mime, modified_time, checksum, raw)
+                        file_size = file_size or len(raw)
+                    else:
+                        logger.warning("Skipping object cache for oversized Classroom file %s (%s bytes)", drive_file_id, len(raw))
+                except Exception as download_error:
+                    logger.warning("Could not download Classroom file %s for cache: %s", drive_file_id, download_error)
+
+            # Extract text from the same binary download whenever possible, so
+            # changed PDF/Office/text uploads need one media request, not two.
+            if not cache_hit and drive_service and drive_file_id and mime_type and (
                 mime_type == "application/vnd.google-apps.document"
                 or mime_type == "application/vnd.google-apps.presentation"
                 or mime_type == "application/vnd.google-apps.spreadsheet"
@@ -1091,7 +1179,9 @@ class ClassroomSyncService:
                 or mime_type in ("application/json", "application/javascript")
                 or str(drive_file.get("title") or "").lower().endswith((".pptx", ".docx", ".xlsx"))
             ):
-                content = self._extract_drive_file_text(drive_service, drive_file_id, mime_type, drive_file.get("title") or "")
+                content = self._extract_drive_file_text(
+                    drive_service, drive_file_id, mime_type, drive_file.get("title") or "", raw_data=raw_data
+                )
 
             title = (
                 drive_file.get("title")
@@ -1124,12 +1214,17 @@ class ClassroomSyncService:
                 "drive_file_id": drive_file_id,
                 "mime_type": mime_type,
                 "content": content[:30000] if content else None,
+                "storage_key": storage_key,
+                "drive_modified_time": modified_time or (existing_row.drive_modified_time if cache_hit else None),
+                "drive_checksum": checksum or (existing_row.drive_checksum if cache_hit else None),
+                "file_size": int(file_size) if file_size else (existing_row.file_size if cache_hit else None),
             }
-            existing_row = by_drive_id.get(drive_file_id) if drive_file_id else by_identity.get((mat_dict["material_type"], (title or "").strip().lower()))
+            if not existing_row and not drive_file_id:
+                existing_row = by_identity.get((mat_dict["material_type"], (title or "").strip().lower()))
             if existing_row:
-                # Preserve previously extracted text if Drive is temporarily unavailable.
+                # Preserve a good cached copy when Drive is temporarily unavailable.
                 for key, value in mat_dict.items():
-                    if key == "content" and not value:
+                    if key in {"content", "storage_key", "drive_modified_time", "drive_checksum", "file_size"} and value is None:
                         continue
                     setattr(existing_row, key, value)
                 self.db.add(existing_row)

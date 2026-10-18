@@ -150,7 +150,11 @@ def get_classroom_materials(
 
     seen, result = set(), []
     for material, assignment, course in rows:
-        unique_key = material.drive_file_id or f"mat_{material.id}"
+        # A Drive attachment may be linked from more than one assignment or
+        # course. Keep one card per course, and use the DB row ID for selection
+        # so selecting a source in one course cannot resolve to another course's
+        # association for the same Drive file.
+        unique_key = (course.id, material.drive_file_id) if material.drive_file_id else (course.id, f"mat_{material.id}")
         if unique_key in seen:
             continue
         seen.add(unique_key)
@@ -164,8 +168,9 @@ def get_classroom_materials(
             continue
 
         result.append({
-            "id": unique_key,
+            "id": f"mat_{material.id}",
             "material_id": material.id,
+            "drive_file_id": material.drive_file_id,
             "assignment_id": assignment.id,
             "title": material.title or assignment.title or "Untitled document",
             "course_id": course.id,

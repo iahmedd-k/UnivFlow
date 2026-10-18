@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.core.config import settings
+from app.auth.ownership import user_owner_ids
 from app.core.logging import logger
 from app.db.models import (
     AttendanceRecord,
@@ -108,31 +109,23 @@ def get_user_recipient_email(db: Session, user_id: str = "") -> str:
     Resolve the most accurate notification recipient email for a student.
     Strictly prioritizes the email address the student saved in Dashboard -> Settings.
     """
-    import json
+    if not user_id:
+        return ""
 
-    # 1. Exact user setting for user_id (if passed)
-    if user_id:
-        s = db.query(Setting).filter(Setting.key == f"notification_email_{user_id}").first()
-        if s and s.value and s.value.strip() and "@" in s.value:
-            return s.value.strip()
+    setting = db.query(Setting).filter(Setting.key == f"notification_email_{user_id}").first()
+    if setting and setting.value and setting.value.strip() and "@" in setting.value:
+        return setting.value.strip()
+    if user_id == "dev_student_user" and not settings.is_production:
+        local_default = db.query(Setting).filter(Setting.key == "notification_email_default").first()
+        if local_default and local_default.value and "@" in local_default.value:
+            return local_default.value.strip()
+        # Local fixtures and a fresh development database may not have an email
+        # configured. Keep alert generation deterministic without borrowing an
+        # address belonging to a real account.
+        return "dev-student@localhost.invalid"
 
-    # 2. Any user-configured notification email in Settings (saved in Dashboard)
-    custom = (
-        db.query(Setting)
-        .filter(Setting.key.like("notification_email_%"))
-        .order_by(Setting.updated_at.desc())
-        .first()
-    )
-    if custom and custom.value and custom.value.strip() and "@" in custom.value:
-        return custom.value.strip()
-
-    # 3. Clerk account profile email
-    clerk_s = (
-        db.query(Setting)
-        .filter(Setting.key.like("clerk_user_%"))
-        .order_by(Setting.updated_at.desc())
-        .first()
-    )
+    # Only use profile or integration emails associated with this exact user.
+    clerk_s = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
     if clerk_s and clerk_s.value:
         try:
             data = json.loads(clerk_s.value)
@@ -142,23 +135,17 @@ def get_user_recipient_email(db: Session, user_id: str = "") -> str:
         except Exception:
             pass
 
-    # 4. University portal login email
-    portal_email = (
-        db.query(Setting)
-        .filter(Setting.key.like("%university_portal_login_email"))
-        .order_by(Setting.updated_at.desc())
-        .first()
-    )
+    portal_email = db.query(Setting).filter(
+        Setting.key == f"portal:{user_id}:university_portal_login_email"
+    ).first()
     if portal_email and portal_email.value and portal_email.value.strip() and "@" in portal_email.value:
         return portal_email.value.strip()
 
-    # 5. Google connected university email
-    g_email = db.query(Setting).filter(Setting.key == "google_connected_email").first()
+    g_email = db.query(Setting).filter(Setting.key == f"google_connected_email_{user_id}").first()
     if g_email and g_email.value and g_email.value.strip() and "@" in g_email.value:
         return g_email.value.strip()
 
-    # 6. Fallback default
-    return "ahmed9171496@gmail.com"
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -1485,11 +1472,13 @@ class AlertService:
 
         weekday_int = target_date.weekday()
         recipient = get_user_recipient_email(self.db, user_id)
+        if not recipient:
+            return []
 
         # 1. Get today's classes from TimetableEntry
         scheduled_today = (
             self.db.query(TimetableEntry)
-            .filter(TimetableEntry.weekday == weekday_int)
+            .filter(TimetableEntry.user_id.in_(user_owner_ids(user_id)), TimetableEntry.weekday == weekday_int)
             .order_by(TimetableEntry.start_time)
             .all()
         )
@@ -1498,7 +1487,7 @@ class AlertService:
             return []
 
         # 2. Get student's attendance records
-        att_records = self.db.query(AttendanceRecord).all()
+        att_records = self.db.query(AttendanceRecord).filter(AttendanceRecord.user_id.in_(user_owner_ids(user_id))).all()
         if not att_records:
             return []
 
@@ -1531,7 +1520,7 @@ class AlertService:
             idempotency_key = f"att-warn:{user_id}:{match.id}:{target_date.isoformat()}"
             existing = (
                 self.db.query(Notification)
-                .filter(Notification.idempotency_key == idempotency_key)
+                .filter(Notification.user_id.in_(user_owner_ids(user_id)), Notification.idempotency_key == idempotency_key)
                 .first()
             )
             if existing:
@@ -1560,6 +1549,7 @@ class AlertService:
             )
 
             notification = Notification(
+                user_id=user_id,
                 notification_type="attendance_warning",
                 recipient=recipient,
                 subject=subject_title,
@@ -1630,7 +1620,7 @@ class AlertService:
         idempotency_key = f"daily-morning-digest:{user_id}:{target_date.isoformat()}"
         existing = (
             self.db.query(Notification)
-            .filter(Notification.idempotency_key == idempotency_key)
+            .filter(Notification.user_id.in_(user_owner_ids(user_id)), Notification.idempotency_key == idempotency_key)
             .first()
         )
         if existing:
@@ -1638,18 +1628,20 @@ class AlertService:
             return None
 
         recipient = get_user_recipient_email(self.db, user_id)
+        if not recipient:
+            return None
         weekday_int = target_date.weekday()
 
         # 1. Fetch today's classes
         scheduled_today = (
             self.db.query(TimetableEntry)
-            .filter(TimetableEntry.weekday == weekday_int)
+            .filter(TimetableEntry.user_id.in_(user_owner_ids(user_id)), TimetableEntry.weekday == weekday_int)
             .order_by(TimetableEntry.start_time)
             .all()
         )
 
         # 2. Correlate with student attendance records
-        att_records = self.db.query(AttendanceRecord).all()
+        att_records = self.db.query(AttendanceRecord).filter(AttendanceRecord.user_id.in_(user_owner_ids(user_id))).all()
         classes_data = []
         urgent_warnings = []
         seen_courses = set()
@@ -1697,7 +1689,7 @@ class AlertService:
         now_dt = datetime.now(tz)
         assignments = (
             self.db.query(Assignment)
-            .filter(Assignment.state == CourseworkState.PUBLISHED)
+            .filter(Assignment.user_id.in_(user_owner_ids(user_id)), Assignment.state == CourseworkState.PUBLISHED)
             .all()
         )
         for a in assignments:
@@ -1730,6 +1722,7 @@ class AlertService:
 
         subject = f"[Uniflow] Morning Briefing: Today's Classes & Attendance ({date_formatted})"
         notification = Notification(
+            user_id=user_id,
             notification_type="daily_morning_digest",
             recipient=recipient,
             subject=subject,
@@ -1790,7 +1783,7 @@ class AlertService:
         idempotency_key = f"daily-class-list:{user_id}:{target_date.isoformat()}"
         existing = (
             self.db.query(Notification)
-            .filter(Notification.idempotency_key == idempotency_key)
+            .filter(Notification.user_id.in_(user_owner_ids(user_id)), Notification.idempotency_key == idempotency_key)
             .first()
         )
         if existing:
@@ -1807,7 +1800,7 @@ class AlertService:
         # Fetch today's classes
         scheduled_today = (
             self.db.query(TimetableEntry)
-            .filter(TimetableEntry.weekday == weekday_int)
+            .filter(TimetableEntry.user_id.in_(user_owner_ids(user_id)), TimetableEntry.weekday == weekday_int)
             .order_by(TimetableEntry.start_time)
             .all()
         )
@@ -1830,6 +1823,7 @@ class AlertService:
 
         subject = f"[Uniflow] Today's Class Schedule ({date_formatted})"
         notification = Notification(
+            user_id=user_id,
             notification_type="daily_class_list",
             recipient=recipient,
             subject=subject,
@@ -1903,11 +1897,13 @@ class AlertService:
             return []
 
         recipient = get_user_recipient_email(self.db, user_id)
+        if not recipient:
+            return []
 
         # 1. Get today's classes
         classes_today = (
             self.db.query(TimetableEntry)
-            .filter(TimetableEntry.weekday == weekday_int)
+            .filter(TimetableEntry.user_id.in_(user_owner_ids(user_id)), TimetableEntry.weekday == weekday_int)
             .order_by(TimetableEntry.start_time)
             .all()
         )
@@ -1964,7 +1960,7 @@ class AlertService:
             idempotency_key = f"tt-remind-{milestone}:{user_id}:{entry.id}:{today.isoformat()}"
             existing = (
                 self.db.query(Notification)
-                .filter(Notification.idempotency_key == idempotency_key)
+                .filter(Notification.user_id.in_(user_owner_ids(user_id)), Notification.idempotency_key == idempotency_key)
                 .first()
             )
             if existing:
@@ -1995,6 +1991,7 @@ class AlertService:
             )
 
             notification = Notification(
+                user_id=user_id,
                 notification_type=f"timetable_reminder_{milestone}",
                 recipient=recipient,
                 subject=subject_title,
@@ -2059,10 +2056,12 @@ class AlertService:
 
         today = target_dt.date()
         recipient = get_user_recipient_email(self.db, user_id)
+        if not recipient:
+            return []
 
         assignments = (
             self.db.query(Assignment)
-            .filter(Assignment.state == CourseworkState.PUBLISHED)
+            .filter(Assignment.user_id.in_(user_owner_ids(user_id)), Assignment.state == CourseworkState.PUBLISHED)
             .all()
         )
         if not assignments:
@@ -2095,7 +2094,7 @@ class AlertService:
             idempotency_key = f"gcr-deadline:{user_id}:{assignment.id}:{today.isoformat()}"
             existing = (
                 self.db.query(Notification)
-                .filter(Notification.idempotency_key == idempotency_key)
+                .filter(Notification.user_id.in_(user_owner_ids(user_id)), Notification.idempotency_key == idempotency_key)
                 .first()
             )
             if existing:
@@ -2124,6 +2123,7 @@ class AlertService:
             )
 
             notification = Notification(
+                user_id=user_id,
                 notification_type="assignment_deadline",
                 recipient=recipient,
                 subject=subject_title,
@@ -2181,13 +2181,15 @@ class AlertService:
         idempotency_key = f"gcr-new-task:{user_id}:{assignment.id}"
         existing = (
             self.db.query(Notification)
-            .filter(Notification.idempotency_key == idempotency_key)
+            .filter(Notification.user_id.in_(user_owner_ids(user_id)), Notification.idempotency_key == idempotency_key)
             .first()
         )
         if existing:
             return None
 
         recipient = get_user_recipient_email(self.db, user_id)
+        if not recipient or assignment.user_id not in user_owner_ids(user_id):
+            return None
         course_name = assignment.course.name if assignment.course else "University Course"
         is_quiz = assignment.is_quiz or (assignment.work_type and "quiz" in assignment.work_type.lower())
         due = assignment.due_at or assignment.due_date
@@ -2204,6 +2206,7 @@ class AlertService:
         )
 
         notification = Notification(
+            user_id=user_id,
             notification_type="new_assignment",
             recipient=recipient,
             subject=subject,

@@ -151,12 +151,13 @@ def _run_daily_morning_digest_job():
     try:
         from app.services.alert_service import AlertService
         service = AlertService(db)
-        digest = service.generate_daily_morning_digest(send_immediately=True)
-        if digest:
-            logger.info(
-                f"[Scheduler] Daily morning digest dispatched: {digest.get('classes_count')} classes, "
-                f"{digest.get('urgent_warnings')} advisories, {digest.get('upcoming_tasks')} tasks to {digest.get('recipient')}."
-            )
+        for user_id in _alert_user_ids(db):
+            digest = service.generate_daily_morning_digest(user_id=user_id, send_immediately=True)
+            if digest:
+                logger.info(
+                    "[Scheduler] Daily digest dispatched for %s: %s classes, %s advisories, %s tasks.",
+                    user_id, digest.get("classes_count"), digest.get("urgent_warnings"), digest.get("upcoming_tasks"),
+                )
     except Exception as e:
         logger.warning(f"[Scheduler] Daily morning digest job error: {e}")
     finally:
@@ -169,7 +170,7 @@ def _run_attendance_warning_job():
     try:
         from app.services.alert_service import AlertService
         service = AlertService(db)
-        alerts = service.generate_daily_attendance_warnings(send_immediately=True)
+        alerts = [item for uid in _alert_user_ids(db) for item in service.generate_daily_attendance_warnings(user_id=uid, send_immediately=True)]
         if alerts:
             logger.info(f"[Scheduler] Generated and dispatched {len(alerts)} low-attendance warning(s).")
     except Exception as e:
@@ -184,7 +185,7 @@ def _run_timetable_reminder_job():
     try:
         from app.services.alert_service import AlertService
         service = AlertService(db)
-        reminders = service.generate_upcoming_class_reminders(send_immediately=True)
+        reminders = [item for uid in _alert_user_ids(db) for item in service.generate_upcoming_class_reminders(user_id=uid, send_immediately=True)]
         if reminders:
             logger.info(f"[Scheduler] Generated and dispatched {len(reminders)} upcoming class reminder(s).")
     except Exception as e:
@@ -199,7 +200,7 @@ def _run_assignment_deadline_job():
     try:
         from app.services.alert_service import AlertService
         service = AlertService(db)
-        deadline_alerts = service.generate_upcoming_assignment_reminders(lookahead_hours=24, send_immediately=True)
+        deadline_alerts = [item for uid in _alert_user_ids(db) for item in service.generate_upcoming_assignment_reminders(user_id=uid, lookahead_hours=24, send_immediately=True)]
         if deadline_alerts:
             logger.info(f"[Scheduler] Generated and dispatched {len(deadline_alerts)} assignment deadline alert(s).")
     except Exception as e:
@@ -244,13 +245,39 @@ def _run_daily_class_list_email():
     try:
         from app.services.alert_service import AlertService
         service = AlertService(db)
-        result = service.generate_daily_class_list_email(send_immediately=True)
-        if result:
-            logger.info(f"[Scheduler] Daily class list email dispatched: {result.get('classes_count')} classes to {result.get('recipient')}.")
+        for user_id in _alert_user_ids(db):
+            result = service.generate_daily_class_list_email(user_id=user_id, send_immediately=True)
+            if result:
+                logger.info("[Scheduler] Daily class list dispatched for %s (%s classes).", user_id, result.get("classes_count"))
     except Exception as e:
         logger.warning(f"[Scheduler] Daily class list email error: {e}")
     finally:
         db.close()
+
+
+def _alert_user_ids(db):
+    """Enumerate exact account IDs with a user-owned email/profile setting."""
+    user_ids = set()
+    for setting in db.query(Setting.key).filter(
+        (Setting.key.like("notification_email_%"))
+        | (Setting.key.like("clerk_user_%"))
+        | (Setting.key.like("google_connected_email_%"))
+        | (Setting.key.like("portal:%:university_portal_login_email"))
+    ).all():
+        key = setting[0]
+        if key.startswith("notification_email_"):
+            user_id = key[len("notification_email_"):]
+            if user_id != "default":
+                user_ids.add(user_id)
+        elif key.startswith("clerk_user_") and not key.startswith("clerk_user_revoked_"):
+            user_ids.add(key[len("clerk_user_"):])
+        elif key.startswith("google_connected_email_"):
+            user_ids.add(key[len("google_connected_email_"):])
+        elif key.startswith("portal:"):
+            parts = key.split(":", 2)
+            if len(parts) == 3:
+                user_ids.add(parts[1])
+    return sorted(user_id for user_id in user_ids if user_id and user_id != "dev_student_user")
 
 
 def start_scheduler():
@@ -382,17 +409,6 @@ def start_scheduler():
             replace_existing=True,
             misfire_grace_time=60,
             max_instances=1,
-            coalesce=True,
-        )
-
-        # 11. Daily Class List Email: Every morning at 07:00 AM (strictly once per day)
-        scheduler.add_job(
-            _run_daily_class_list_email,
-            CronTrigger(hour=7, minute=0, timezone=settings.timezone),
-            id="daily_class_list_email",
-            name="Daily Class List Email (07:00 AM)",
-            replace_existing=True,
-            misfire_grace_time=3600,
             coalesce=True,
         )
 

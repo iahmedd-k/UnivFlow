@@ -121,7 +121,7 @@ class NotificationService:
 
         # Use subject from data if not set
         if not final_subject:
-            final_subject = subject or data.get("subject") or "Uniflow Notification"
+            final_subject = subject or (template_data or {}).get("subject") or "Uniflow Notification"
 
         notification = Notification(
             user_id=user_id,

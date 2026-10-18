@@ -10,18 +10,22 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import GoogleCredential, Setting
+from app.core.security import get_google_credential_tokens, encrypt_token_if_needed
+from app.auth.clerk_auth import get_current_user_optional
+from app.auth.ownership import require_user_id
 
 router = APIRouter(prefix="/integrations/google", tags=["Google integrations"])
 
 
-def _services(db: Session):
-    credential = db.query(GoogleCredential).first()
+def _services(db: Session, user_id: str):
+    credential = db.query(GoogleCredential).filter(GoogleCredential.user_id == user_id).first()
     if not credential:
         raise HTTPException(status_code=409, detail="Connect your Google account first.")
 
+    access_token, refresh_token = get_google_credential_tokens(db, credential)
     credentials = Credentials(
-        token=credential.access_token,
-        refresh_token=credential.refresh_token,
+        token=access_token,
+        refresh_token=refresh_token,
         token_uri=credential.token_uri or "https://oauth2.googleapis.com/token",
         client_id=credential.client_id or settings.google_client_id,
         client_secret=credential.client_secret or settings.google_client_secret,
@@ -31,7 +35,7 @@ def _services(db: Session):
         from google.auth.transport.requests import Request
 
         credentials.refresh(Request())
-        credential.access_token = credentials.token
+        credential.access_token = encrypt_token_if_needed(credentials.token)
         credential.expiry = credentials.expiry
         db.commit()
 
@@ -50,10 +54,10 @@ def _execute(request):
         raise HTTPException(status_code=502, detail="Google could not return this data right now.") from error
 
 
-def _get_semester_start(db: Session, override: Optional[str] = None) -> Optional[datetime]:
+def _get_semester_start(db: Session, override: Optional[str] = None, user_id: str = "") -> Optional[datetime]:
     val = override
-    if not val:
-        setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
+    if not val and user_id:
+        setting = db.query(Setting).filter(Setting.key == f"classroom:{user_id}:semester_start_date").first()
         if setting and setting.value:
             val = setting.value.strip().replace('"', '')
     if val:
@@ -105,12 +109,14 @@ def get_recent_emails(
     limit: int = Query(20, ge=1, le=50),
     since: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
-    credentials = _services(db)
+    user_id = require_user_id(clerk_user)
+    credentials = _services(db, user_id)
     gmail = build("gmail", "v1", credentials=credentials, cache_discovery=False)
 
-    since_dt = _get_semester_start(db, since)
+    since_dt = _get_semester_start(db, since, user_id)
     q_filter = ""
     if since_dt:
         # Gmail after query format: YYYY/MM/DD
@@ -161,12 +167,14 @@ def get_recent_emails(
 def get_recent_drive_files(
     limit: int = Query(12, ge=1, le=50),
     since: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
-    credentials = _services(db)
+    user_id = require_user_id(clerk_user)
+    credentials = _services(db, user_id)
     drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
 
-    since_dt = _get_semester_start(db, since)
+    since_dt = _get_semester_start(db, since, user_id)
     q_filter = "trashed = false"
     if since_dt:
         iso_str = since_dt.strftime('%Y-%m-%dT%H:%M:%SZ')

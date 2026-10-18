@@ -5,15 +5,17 @@ from datetime import datetime, timedelta, timezone
 
 from app.db.database import get_db
 from app.db.repositories import ExamRepository, AnnouncementRepository
-from app.db.models import Exam, Announcement, Setting
+from app.db.models import Exam, Announcement, Setting, Course
+from app.auth.clerk_auth import get_current_user_optional
+from app.auth.ownership import require_user_id, user_owner_ids
 
 router = APIRouter(prefix="/university", tags=["University"])
 
 
-def _semester_start(db: Session, value: Optional[str] = None) -> Optional[datetime]:
+def _semester_start(db: Session, value: Optional[str] = None, user_id: str = "") -> Optional[datetime]:
     raw = value
-    if not raw:
-        setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
+    if not raw and user_id:
+        setting = db.query(Setting).filter(Setting.key == f"classroom:{user_id}:semester_start_date").first()
         raw = setting.value if setting and setting.value else None
     if not raw:
         return None
@@ -36,11 +38,19 @@ def _is_on_or_after(dt: Optional[datetime], start: Optional[datetime]) -> bool:
 def get_exams(
     days: int = Query(30, ge=1, le=365),
     since: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: dict | None = Depends(get_current_user_optional),
 ):
-    repo = ExamRepository(db)
-    start = _semester_start(db, since)
-    exams = [item for item in repo.get_upcoming(days) if _is_on_or_after(item.date, start)]
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
+    start = _semester_start(db, since, user_id)
+    now = datetime.now(timezone.utc)
+    exams = db.query(Exam).filter(
+        Exam.user_id.in_(owners),
+        Exam.date >= now,
+        Exam.date <= now + timedelta(days=days),
+    ).order_by(Exam.date).all()
+    exams = [item for item in exams if _is_on_or_after(item.date, start)]
     return [
         {
             "id": e.id,
@@ -59,8 +69,9 @@ def get_exams(
 
 
 @router.get("/exams/{exam_id}", response_model=dict)
-def get_exam(exam_id: int, db: Session = Depends(get_db)):
-    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+def get_exam(exam_id: int, db: Session = Depends(get_db), clerk_user: dict | None = Depends(get_current_user_optional)):
+    user_id = require_user_id(clerk_user)
+    exam = db.query(Exam).filter(Exam.id == exam_id, Exam.user_id.in_(user_owner_ids(user_id))).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
     return {
@@ -99,11 +110,14 @@ class ExamUpdate(BaseModel):
 
 
 @router.post("/exams", response_model=dict)
-def create_exam(item: ExamInput, db: Session = Depends(get_db)):
+def create_exam(item: ExamInput, db: Session = Depends(get_db), clerk_user: dict | None = Depends(get_current_user_optional)):
     """Create a new exam (CRUD Create)"""
+    user_id = require_user_id(clerk_user)
+    if item.course_id is not None and not db.query(Course.id).filter(Course.id == item.course_id, Course.user_id.in_(user_owner_ids(user_id))).first():
+        raise HTTPException(status_code=404, detail="Course not found.")
     ext_id = f"manual-exam:{hashlib.sha256(item.title.encode('utf-8')).hexdigest()[:16]}:{int(datetime.now(timezone.utc).timestamp())}"
     exam = Exam(
-        user_id="legacy",
+        user_id=user_id,
         external_id=ext_id,
         course_id=item.course_id,
         title=item.title.strip(),
@@ -130,9 +144,10 @@ def create_exam(item: ExamInput, db: Session = Depends(get_db)):
 
 
 @router.put("/exams/{exam_id}", response_model=dict)
-def update_exam(exam_id: int, item: ExamUpdate, db: Session = Depends(get_db)):
+def update_exam(exam_id: int, item: ExamUpdate, db: Session = Depends(get_db), clerk_user: dict | None = Depends(get_current_user_optional)):
     """Update an exam (CRUD Update)"""
-    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    user_id = require_user_id(clerk_user)
+    exam = db.query(Exam).filter(Exam.id == exam_id, Exam.user_id.in_(user_owner_ids(user_id))).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
     if item.title is not None:
@@ -162,9 +177,10 @@ def update_exam(exam_id: int, item: ExamUpdate, db: Session = Depends(get_db)):
 
 
 @router.delete("/exams/{exam_id}", response_model=dict)
-def delete_exam(exam_id: int, db: Session = Depends(get_db)):
+def delete_exam(exam_id: int, db: Session = Depends(get_db), clerk_user: dict | None = Depends(get_current_user_optional)):
     """Delete an exam (CRUD Delete)"""
-    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    user_id = require_user_id(clerk_user)
+    exam = db.query(Exam).filter(Exam.id == exam_id, Exam.user_id.in_(user_owner_ids(user_id))).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
     db.delete(exam)
@@ -176,10 +192,12 @@ def delete_exam(exam_id: int, db: Session = Depends(get_db)):
 def get_announcements(
     limit: int = Query(50, ge=1, le=200),
     since: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: dict | None = Depends(get_current_user_optional),
 ):
-    query = db.query(Announcement)
-    start = _semester_start(db, since)
+    user_id = require_user_id(clerk_user)
+    query = db.query(Announcement).filter(Announcement.user_id.in_(user_owner_ids(user_id)))
+    start = _semester_start(db, since, user_id)
     if start:
         query = query.filter((Announcement.published_at >= start) | (Announcement.created_at >= start) | Announcement.published_at.is_(None))
     announcements = query.order_by(Announcement.published_at.desc().nullslast()).limit(limit).all()
@@ -199,8 +217,9 @@ def get_announcements(
 
 
 @router.get("/announcements/{announcement_id}", response_model=dict)
-def get_announcement(announcement_id: int, db: Session = Depends(get_db)):
-    announcement = db.query(Announcement).filter(Announcement.id == announcement_id).first()
+def get_announcement(announcement_id: int, db: Session = Depends(get_db), clerk_user: dict | None = Depends(get_current_user_optional)):
+    user_id = require_user_id(clerk_user)
+    announcement = db.query(Announcement).filter(Announcement.id == announcement_id, Announcement.user_id.in_(user_owner_ids(user_id))).first()
     if not announcement:
         raise HTTPException(status_code=404, detail="Announcement not found")
     return {

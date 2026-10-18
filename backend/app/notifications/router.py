@@ -12,6 +12,7 @@ from app.services.email import send_email
 from app.core.config import settings
 from app.core.logging import logger
 from app.auth.clerk_auth import get_current_user_optional
+from app.auth.ownership import require_user_id, user_owner_ids
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
@@ -25,24 +26,17 @@ class CreateNotificationForMeRequest(BaseModel):
 
 
 def _get_user_notification_email(db: Session, user_id: str = "") -> Optional[str]:
-    """Get the user's configured notification email from settings, prioritizing dashboard email"""
+    """Resolve only this user's configured address; never borrow another account's email."""
     if user_id:
         setting = db.query(Setting).filter(Setting.key == f"notification_email_{user_id}").first()
         if setting and setting.value and setting.value.strip() and "@" in setting.value:
             return setting.value.strip()
+        if user_id == "dev_student_user" and not settings.is_production:
+            default_s = db.query(Setting).filter(Setting.key == "notification_email_default").first()
+            if default_s and default_s.value and "@" in default_s.value:
+                return default_s.value.strip()
 
-    # Fallback to default notification email
-    default_s = db.query(Setting).filter(Setting.key == "notification_email_default").first()
-    if default_s and default_s.value and default_s.value.strip() and "@" in default_s.value:
-        return default_s.value.strip()
-
-    # Fallback to any configured notification_email_* in settings (from Dashboard Settings page)
-    custom = db.query(Setting).filter(Setting.key.like("notification_email_%")).order_by(Setting.updated_at.desc()).first()
-    if custom and custom.value and custom.value.strip() and "@" in custom.value:
-        return custom.value.strip()
-
-    # Fallback to Clerk account email
-    clerk_s = db.query(Setting).filter(Setting.key.like("clerk_user_%")).order_by(Setting.updated_at.desc()).first()
+    clerk_s = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first() if user_id else None
     if clerk_s and clerk_s.value:
         try:
             import json
@@ -74,10 +68,11 @@ def get_my_notification_email(
 def get_notifications(
     status: str = None,
     limit: int = 50,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
-    repo = NotificationRepository(db)
-    query = db.query(Notification)
+    user_id = require_user_id(clerk_user)
+    query = db.query(Notification).filter(Notification.user_id.in_(user_owner_ids(user_id)))
     if status:
         try:
             status_enum = NotificationStatus[status.upper()]
@@ -105,9 +100,12 @@ def get_notifications(
 
 
 @router.get("/pending", response_model=List[dict])
-def get_pending_notifications(db: Session = Depends(get_db)):
-    repo = NotificationRepository(db)
-    notifications = repo.get_pending()
+def get_pending_notifications(db: Session = Depends(get_db), clerk_user: Optional[dict] = Depends(get_current_user_optional)):
+    user_id = require_user_id(clerk_user)
+    notifications = db.query(Notification).filter(
+        Notification.user_id.in_(user_owner_ids(user_id)),
+        Notification.status == NotificationStatus.PENDING,
+    ).order_by(Notification.created_at.desc()).all()
     return [
         {
             "id": n.id,
@@ -126,8 +124,9 @@ def get_pending_notifications(db: Session = Depends(get_db)):
 
 
 @router.get("/{notification_id}", response_model=dict)
-def get_notification(notification_id: int, db: Session = Depends(get_db)):
-    notification = db.query(Notification).filter(Notification.id == notification_id).first()
+def get_notification(notification_id: int, db: Session = Depends(get_db), clerk_user: Optional[dict] = Depends(get_current_user_optional)):
+    user_id = require_user_id(clerk_user)
+    notification = db.query(Notification).filter(Notification.id == notification_id, Notification.user_id.in_(user_owner_ids(user_id))).first()
     if not notification:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {
@@ -147,11 +146,13 @@ def get_notification(notification_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/stats/summary", response_model=dict)
-def get_notification_stats(db: Session = Depends(get_db)):
-    total = db.query(Notification).count()
-    pending = db.query(Notification).filter(Notification.status == NotificationStatus.PENDING).count()
-    sent = db.query(Notification).filter(Notification.status == NotificationStatus.SENT).count()
-    failed = db.query(Notification).filter(Notification.status == NotificationStatus.FAILED).count()
+def get_notification_stats(db: Session = Depends(get_db), clerk_user: Optional[dict] = Depends(get_current_user_optional)):
+    user_id = require_user_id(clerk_user)
+    owned = db.query(Notification).filter(Notification.user_id.in_(user_owner_ids(user_id)))
+    total = owned.count()
+    pending = owned.filter(Notification.status == NotificationStatus.PENDING).count()
+    sent = owned.filter(Notification.status == NotificationStatus.SENT).count()
+    failed = owned.filter(Notification.status == NotificationStatus.FAILED).count()
 
     return {
         "total": total,
@@ -253,9 +254,10 @@ def _send_notification_email(notification_id: int):
 
 
 @router.post("/send/{notification_id}", response_model=dict)
-def send_notification(notification_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def send_notification(notification_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db), clerk_user: Optional[dict] = Depends(get_current_user_optional)):
     """Queue a notification for sending via email"""
-    notification = db.query(Notification).filter(Notification.id == notification_id).first()
+    user_id = require_user_id(clerk_user)
+    notification = db.query(Notification).filter(Notification.id == notification_id, Notification.user_id.in_(user_owner_ids(user_id))).first()
     if not notification:
         raise HTTPException(status_code=404, detail="Notification not found")
 
@@ -267,11 +269,13 @@ def send_notification(notification_id: int, background_tasks: BackgroundTasks, d
 
 
 @router.post("/send-pending", response_model=dict)
-def send_pending_notifications(background_tasks: BackgroundTasks, limit: int = 50, db: Session = Depends(get_db)):
+def send_pending_notifications(background_tasks: BackgroundTasks, limit: int = 50, db: Session = Depends(get_db), clerk_user: Optional[dict] = Depends(get_current_user_optional)):
     """Queue all pending notifications for sending"""
+    user_id = require_user_id(clerk_user)
     notifications = db.query(Notification).filter(
-        Notification.status == NotificationStatus.PENDING
-    ).limit(limit).all()
+        Notification.user_id.in_(user_owner_ids(user_id)),
+        Notification.status == NotificationStatus.PENDING,
+    ).limit(max(1, min(limit, 100))).all()
 
     if not notifications:
         return {"message": "No pending notifications", "count": 0}
@@ -295,28 +299,32 @@ def create_notification(
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """Create a new notification and immediately dispatch it via SendGrid to the recipient."""
-    # Determine recipient
-    if not recipient:
-        user_id = clerk_user.get("id") if clerk_user else None
-        if not user_id:
-            raise HTTPException(status_code=401, detail="User not authenticated and no recipient provided")
-        recipient = _get_user_notification_email(db, user_id)
-        if not recipient:
-            raise HTTPException(status_code=400, detail="No notification email configured. Please set one in Settings.")
+    user_id = require_user_id(clerk_user)
+    configured_recipient = _get_user_notification_email(db, user_id)
+    if not configured_recipient:
+        raise HTTPException(status_code=400, detail="No notification email configured. Please set one in Settings.")
+    if recipient and recipient.strip().casefold() != configured_recipient.casefold():
+        raise HTTPException(status_code=403, detail="Notifications can only be sent to your configured email address.")
+    recipient = configured_recipient
+    scoped_idempotency_key = f"{user_id}:{idempotency_key}" if idempotency_key else None
 
     # Check idempotency
     if idempotency_key:
-        existing = db.query(Notification).filter(Notification.idempotency_key == idempotency_key).first()
+        existing = db.query(Notification).filter(
+            Notification.user_id == user_id,
+            Notification.idempotency_key == scoped_idempotency_key,
+        ).first()
         if existing:
             return {"message": "Already exists", "notification_id": existing.id, "status": existing.status.value}
 
     notification = Notification(
+        user_id=user_id,
         notification_type=notification_type,
         recipient=recipient,
         subject=subject,
         payload=payload,
         external_id=external_id,
-        idempotency_key=idempotency_key,
+        idempotency_key=scoped_idempotency_key,
         status=NotificationStatus.PENDING,
     )
     db.add(notification)
@@ -371,8 +379,10 @@ def send_test_email(
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """Directly dispatch an immediate test alert via SendGrid to verify delivery to the user's dashboard email"""
-    user_id = clerk_user.get("id") if clerk_user else ""
-    target_email = recipient or _get_user_notification_email(db, user_id)
+    user_id = require_user_id(clerk_user)
+    target_email = _get_user_notification_email(db, user_id)
+    if recipient and target_email and recipient.strip().casefold() != target_email.casefold():
+        raise HTTPException(status_code=403, detail="Test email can only be sent to your configured email address.")
     if not target_email:
         raise HTTPException(status_code=400, detail="No notification email found. Please configure an alert email in Settings.")
 
@@ -422,7 +432,7 @@ def trigger_daily_digest(
 ):
     """Trigger the Daily Morning Schedule & Attendance Digest via SendGrid."""
     from app.services.alert_service import AlertService
-    user_id = clerk_user.get("id") if clerk_user else "dev_student_user"
+    user_id = require_user_id(clerk_user)
     service = AlertService(db)
     digest = service.generate_daily_morning_digest(user_id=user_id, send_immediately=True)
     if not digest:
@@ -444,7 +454,7 @@ def check_and_send_alerts(
 ):
     """Trigger on-demand check for morning digest, low-attendance class-day warnings, 20m/5m class reminders, and GCR deadlines."""
     from app.services.alert_service import AlertService
-    user_id = clerk_user.get("id") if clerk_user else "dev_student_user"
+    user_id = require_user_id(clerk_user)
     service = AlertService(db)
     digest = service.generate_daily_morning_digest(user_id=user_id, send_immediately=True)
     att_alerts = service.generate_daily_attendance_warnings(user_id=user_id, send_immediately=True)
@@ -471,7 +481,7 @@ def preview_alerts(
     """Preview low-attendance warnings without persisting or sending emails."""
     from app.services.alert_service import AlertService
     from datetime import date
-    user_id = clerk_user.get("id") if clerk_user else "dev_student_user"
+    user_id = require_user_id(clerk_user)
     service = AlertService(db)
     
     t_date = date.fromisoformat(target_date) if target_date else None

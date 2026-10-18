@@ -10,6 +10,7 @@ from app.db.database import get_db
 from app.db.models import GoogleCredential
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.security import get_google_credential_tokens, encrypt_token_if_needed
 import io
 
 
@@ -30,9 +31,10 @@ class GoogleDocsService:
             return False
 
         try:
+            access_token, refresh_token = get_google_credential_tokens(self.db, cred_row)
             creds = Credentials(
-                token=cred_row.access_token,
-                refresh_token=cred_row.refresh_token,
+                token=access_token,
+                refresh_token=refresh_token,
                 token_uri=cred_row.token_uri or "https://oauth2.googleapis.com/token",
                 client_id=cred_row.client_id or settings.google_client_id,
                 client_secret=cred_row.client_secret or settings.google_client_secret,
@@ -42,7 +44,7 @@ class GoogleDocsService:
             if creds.expired and creds.refresh_token:
                 from google.auth.transport.requests import Request
                 creds.refresh(Request())
-                cred_row.access_token = creds.token
+                cred_row.access_token = encrypt_token_if_needed(creds.token)
                 cred_row.expiry = creds.expiry
                 self.db.commit()
 

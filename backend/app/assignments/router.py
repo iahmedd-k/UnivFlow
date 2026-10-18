@@ -417,7 +417,7 @@ def ask_assignment_tutor(
     if materials:
         try:
             from app.integrations.google_drive import get_drive_service
-            drive_service = get_drive_service(db)
+            drive_service = get_drive_service(db, assignment.user_id)
         except Exception as e:
             drive_service = None
             logger.warning(f"Tutor RAG: could not load Google Drive service: {e}")

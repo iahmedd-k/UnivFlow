@@ -32,6 +32,42 @@ def encrypt_token(token: str, version: str = None) -> str:
     encrypted = f.encrypt(token.encode()).decode()
     return json.dumps({"v": version, "data": encrypted})
 
+def is_encrypted_token(value: str) -> bool:
+    if not value:
+        return False
+    try:
+        payload = json.loads(value)
+        return isinstance(payload, dict) and payload.get("v") in {"v1", "v2"} and bool(payload.get("data"))
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+def encrypt_token_if_needed(value: str | None) -> str | None:
+    if not value or is_encrypted_token(value):
+        return value
+    return encrypt_token(value)
+
+def decrypt_token_if_encrypted(value: str | None) -> str | None:
+    if not value:
+        return value
+    if is_encrypted_token(value):
+        return decrypt_token(value)
+    return value
+
+def get_google_credential_tokens(db, credential) -> tuple[str | None, str | None]:
+    """Read OAuth tokens and transparently migrate a legacy plaintext row."""
+    access = decrypt_token_if_encrypted(credential.access_token)
+    refresh = decrypt_token_if_encrypted(credential.refresh_token)
+    changed = False
+    if access != credential.access_token:
+        credential.access_token = encrypt_token_if_needed(access)
+        changed = True
+    if refresh != credential.refresh_token:
+        credential.refresh_token = encrypt_token_if_needed(refresh)
+        changed = True
+    if changed:
+        db.commit()
+    return access, refresh
+
 def decrypt_token(encrypted_token: str) -> str:
     try:
         payload = json.loads(encrypted_token)
