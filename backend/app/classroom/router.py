@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, B
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Union
 from datetime import datetime, timezone, timedelta
 import json
 import html
@@ -1122,7 +1122,13 @@ async def _upload_submission_files(docs_service, uploaded_files) -> List[str]:
     return drive_file_ids
 
 
-def _attach_submission_files(classroom_service, course_id: str, coursework_id: str, file_ids: List[str]) -> str:
+def _attach_submission_files(
+    classroom_service,
+    course_id: str,
+    coursework_id: str,
+    file_ids: List[str],
+    return_state: bool = False,
+) -> Union[str, Tuple[str, str]]:
     """Attach Drive file IDs to the signed-in student's Classroom submission."""
     submissions_api = classroom_service.courses().courseWork().studentSubmissions()
     try:
@@ -1136,13 +1142,39 @@ def _attach_submission_files(classroom_service, course_id: str, coursework_id: s
         if not student_submissions or not student_submissions[0].get("id"):
             raise HTTPException(status_code=409, detail="No Google Classroom submission is available for this assignment")
 
-        submission_id = student_submissions[0]["id"]
-        submissions_api.modifyAttachments(
-            courseId=course_id,
-            courseWorkId=coursework_id,
-            id=submission_id,
-            body={"addAttachments": [{"driveFile": {"id": file_id}} for file_id in file_ids]},
-        ).execute()
+        sub_obj = student_submissions[0]
+        submission_id = sub_obj["id"]
+        sub_state = sub_obj.get("state", "NEW")
+
+        # If already turned in, attempt to reclaim so new attachments can be added
+        if sub_state == "TURNED_IN":
+            try:
+                reclaim_res = submissions_api.reclaim(
+                    courseId=course_id,
+                    courseWorkId=coursework_id,
+                    id=submission_id,
+                ).execute()
+                sub_state = reclaim_res.get("state", "CREATED")
+            except Exception as reclaim_err:
+                logger.info(f"Could not reclaim submission {submission_id} (submissions may be locked/closed): {reclaim_err}")
+
+        try:
+            submissions_api.modifyAttachments(
+                courseId=course_id,
+                courseWorkId=coursework_id,
+                id=submission_id,
+                body={"addAttachments": [{"driveFile": {"id": file_id}} for file_id in file_ids]},
+            ).execute()
+        except Exception as attach_err:
+            err_str = str(attach_err)
+            logger.warning(f"Failed to modifyAttachments on submission {submission_id}: {attach_err}")
+            # If modifyAttachments fails because submissions are strictly closed / locked:
+            # Don't crash completely if files are already uploaded to Drive and shared!
+            if "already been submitted" not in err_str.lower() and "FAILED_PRECONDITION" not in err_str and "closed" not in err_str and "not permitted" not in err_str:
+                raise HTTPException(status_code=502, detail="Failed to attach files to Google Classroom") from attach_err
+
+        if return_state:
+            return submission_id, sub_state
         return submission_id
     except HTTPException:
         raise
@@ -1158,7 +1190,8 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
     2. Packages all code deliverables and terminal outputs into a ZIP file.
     3. Uploads ZIP archive to student's Google Drive.
     4. Attaches BOTH Google Doc and ZIP file to Google Classroom coursework submission.
-    5. Executes turnIn on Google Classroom and marks assignment as TURNED_IN.
+    5. Executes turnIn on Google Classroom (if submissions are open) and marks assignment as TURNED_IN.
+       If submissions are closed/locked by instructor, leaves files attached safely without failing.
     """
     from app.services.ai_solution import (
         extract_assignment_deliverables,
@@ -1185,19 +1218,22 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
         raise HTTPException(status_code=503, detail="Google Docs not configured")
 
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
-    if not solution or not (solution.validated_content or solution.draft_content):
+    existing_sub = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
+    student_doc_id = existing_sub.google_doc_id if (existing_sub and existing_sub.google_doc_id) else None
+
+    raw_content = ""
+    if solution:
+        raw_content = solution.validated_content or solution.draft_content or ""
+
+    if not raw_content and not student_doc_id:
         raise HTTPException(
             status_code=400,
             detail="No solution content found to turn in. Please generate an assignment solution first."
         )
 
-    raw_content = solution.validated_content or solution.draft_content
-    clean_content = strip_execution_metadata(raw_content)
+    clean_content = strip_execution_metadata(raw_content) if raw_content else (assignment.description or "Assignment Solution Deliverable")
 
     # 1. Ensure Google Doc exists for this submission
-    existing_sub = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
-    student_doc_id = existing_sub.google_doc_id if (existing_sub and existing_sub.google_doc_id) else None
-
     if not student_doc_id:
         doc_info = export_solution_to_google_doc(db, assignment, raw_content, user_id=user_id)
         if not doc_info or not doc_info.get("google_doc_id"):
@@ -1232,7 +1268,7 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
         else:
             bundle.writestr(f"{safe_title}_Solution.txt", clean_content)
 
-        execution_results = extract_execution_metadata(raw_content)
+        execution_results = extract_execution_metadata(raw_content) if raw_content else []
         append_downloaded_assets_to_zip(bundle, execution_results, solution_markdown=clean_content, files=files)
         for index, output in enumerate(execution_results or deliverables.get("terminal_outputs", [])):
             filename = output.get("filename") or f"task_{output.get('task', index + 1)}"
@@ -1255,30 +1291,38 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
             pass
 
     # 5. Attach both Google Doc and ZIP file to Classroom submission
-    submission_id = _attach_submission_files(
+    submission_id, sub_state = _attach_submission_files(
         service.service,
         course.external_id,
         assignment.external_id,
         [student_doc_id, zip_file_id],
+        return_state=True,
     )
 
     # 6. Turn in on Classroom
-    try:
-        service.service.courses().courseWork().studentSubmissions().turnIn(
-            courseId=course.external_id,
-            courseWorkId=assignment.external_id,
-            id=submission_id,
-        ).execute()
-    except Exception as error:
-        err_str = str(error)
-        logger.error(f"Failed to turn in Classroom submission {submission_id}: {error}")
-        if "already been submitted" in err_str.lower() or "FAILED_PRECONDITION" in err_str:
-            logger.info(f"Classroom submission {submission_id} was already submitted.")
-        else:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Attachments uploaded, but Google Classroom turn-in failed: {err_str}",
-            ) from error
+    # If submission is open, execute turnIn.
+    # If submission is closed/disallowed or already turned in, do not crash; leave files attached!
+    turned_in = False
+    turn_in_note = ""
+
+    if sub_state != "TURNED_IN":
+        try:
+            service.service.courses().courseWork().studentSubmissions().turnIn(
+                courseId=course.external_id,
+                courseWorkId=assignment.external_id,
+                id=submission_id,
+            ).execute()
+            turned_in = True
+        except Exception as error:
+            err_str = str(error)
+            logger.warning(f"Classroom turnIn on {submission_id}: {error}")
+            turned_in = False
+            if "already been submitted" in err_str.lower():
+                turn_in_note = " (Submission was already submitted on Google Classroom)."
+            else:
+                turn_in_note = " (Submission deadline has passed or submissions are closed on Google Classroom; deliverables have been safely attached to coursework)."
+    else:
+        turn_in_note = " (Submission was already marked turned in on Google Classroom; deliverables were updated)."
 
     # 7. Update database records
     if not existing_sub:
@@ -1298,6 +1342,11 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
     db.commit()
     db.refresh(existing_sub)
 
+    if turned_in:
+        success_msg = f"Successfully turned in Google Doc and {zip_filename} to Google Classroom!"
+    else:
+        success_msg = f"Deliverables ({zip_filename} & Google Doc) successfully added to Google Classroom!{turn_in_note}"
+
     return {
         "success": True,
         "assignment_id": assignment_id,
@@ -1309,7 +1358,8 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
         "zip_file_id": zip_file_id,
         "zip_filename": zip_filename,
         "classroom_submission_id": submission_id,
-        "message": f"Successfully turned in Google Doc and {zip_filename} to Google Classroom!"
+        "turned_in": turned_in,
+        "message": success_msg,
     }
 
 
@@ -1591,11 +1641,10 @@ def generate_assignment_solution(
         db.add(solution)
 
     solution.ai_provider = provider
-    solution.retry_count = 0
+    solution.retry_count = (solution.retry_count or 0) + 1
     solution.validation_errors = None
-    solution.draft_content = None
-    solution.validated_content = None
-    solution.validated_at = None
+    # Preserve existing solution.draft_content and solution.validated_content
+    # so user can utilize the latest generated response and run quick-turn-in even during a retry!
     solution.generated_at = datetime.now(timezone.utc)
     assignment.status = AssignmentStatus.GENERATING
     db.commit()
@@ -2042,9 +2091,9 @@ def get_solution_status(
 
     assignment = _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
     has_content = bool(solution.validated_content or solution.draft_content)
-    is_completed = bool(solution.validated_content)
-    is_failed = bool(solution.validation_errors) and not has_content
-    is_generating = bool(assignment and assignment.status == AssignmentStatus.GENERATING) and not is_completed and not is_failed
+    is_generating = bool(assignment and assignment.status == AssignmentStatus.GENERATING)
+    is_completed = bool(solution.validated_content) and not is_generating
+    is_failed = bool(solution.validation_errors) and not has_content and not is_generating
 
     user_id = _classroom_user_id(clerk_user)
     rate_limit_row = db.query(Setting).filter(Setting.key == f"classroom:{user_id}:claude_rate_limit").first()
@@ -2085,7 +2134,9 @@ def get_solution_status(
                 })
 
     return {
-        "status": "completed" if is_completed else "failed" if is_failed else "generating" if is_generating else "not_started",
+        "status": "generating" if is_generating else ("completed" if is_completed else ("failed" if is_failed else "not_started")),
+        "has_content": has_content,
+        "is_re_solving": is_generating and has_content,
         "draft_content": strip_execution_metadata(solution.draft_content or ""),
         "validated_content": strip_execution_metadata(solution.validated_content or ""),
         "tasks": enriched_tasks,

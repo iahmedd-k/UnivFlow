@@ -23,8 +23,10 @@ def normalize_model_name(provider: Provider, raw_model: str) -> str:
     if provider == "gemini":
         if cleaned.startswith("gemini/"):
             cleaned = cleaned[7:]
-        if cleaned in ("gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-flash", "gemini-pro", ""):
-            return "gemini-2.0-flash"
+        # Gemini 2.0 Flash is no longer a safe default. Also prevent a legacy
+        # Groq model value from being sent to Google's model endpoint.
+        if cleaned in ("gemini-2.0-flash", "gemini-flash", "gemini-pro", "") or not cleaned.startswith("gemini-"):
+            return "gemini-3.8-flash"
         return cleaned
     elif provider == "groq":
         if cleaned.startswith("groq/"):
@@ -38,7 +40,7 @@ def normalize_model_name(provider: Provider, raw_model: str) -> str:
 def get_agent_models() -> dict[str, AgentModel]:
     """Return the configured model for each independently addressable role."""
     return {
-        "planner": AgentModel("planner", "groq", normalize_model_name("groq", settings.planner_agent_model)),
+        "planner": AgentModel("planner", "gemini", normalize_model_name("gemini", settings.planner_agent_model)),
         "theory_research": AgentModel("theory_research", "gemini", normalize_model_name("gemini", settings.theory_agent_model)),
         "coder_diagram": AgentModel("coder_diagram", "groq", normalize_model_name("groq", settings.coder_agent_model)),
         "reporter_fixer": AgentModel("reporter_fixer", "gemini", normalize_model_name("gemini", settings.reporter_agent_model)),

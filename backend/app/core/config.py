@@ -34,15 +34,16 @@ class Settings(BaseSettings):
     groq_model: str = "openai/gpt-oss-120b"
     groq_chat_model: str = "openai/gpt-oss-120b"
     gemini_api_key: str = ""
+    study_assistant_model: str = "gemini-3.8-flash"
     pollinations_api_key: str = ""
     pollinations_base_url: str = "https://gen.pollinations.ai"
     pollinations_image_model: str = "zimage"
 
     # Model assignments used by the sequential CrewAI assignment workflow.
-    planner_agent_model: str = "llama-3.3-70b-versatile"
-    theory_agent_model: str = "gemini-2.0-flash"
+    planner_agent_model: str = "gemini-3.8-flash"
+    theory_agent_model: str = "gemini-3.8-flash"
     coder_agent_model: str = "llama-3.3-70b-versatile"
-    reporter_agent_model: str = "gemini-2.0-flash"
+    reporter_agent_model: str = "gemini-3.8-flash"
 
     claude_enabled: bool = False
 

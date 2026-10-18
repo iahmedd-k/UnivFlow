@@ -9,7 +9,7 @@ from sqlalchemy import or_, and_, func
 from app.db.database import get_db
 from app.core.config import settings
 from app.auth.clerk_auth import get_current_user_optional
-from app.services.ai_solution import _call_groq
+from app.services.gemini import generate_study_answer
 from app.db.models import AssignmentMaterial, Assignment, Course, ChatConversation, ChatMessage, StudyPlan, StudyPlanSession
 from app.rag.study_planning import (
     SPACED_REVIEW_OFFSETS,
@@ -946,11 +946,12 @@ async def rag_chat(request: ChatRequest, db=Depends(get_db), clerk_user: Optiona
             "Never claim a source supports information when its saved text is missing or irrelevant."
         )
         user_prompt = f"Query: {request.query}\n\nContext:\n" + "\n\n".join(context_parts)
-        # Call Groq LLM (use chat model defined in settings)
-        answer = _call_groq(
+        # Keep Study Assistant model selection separate from other Groq-backed
+        # features so they can continue using their existing models.
+        answer = generate_study_answer(
             prompt=user_prompt,
             system_prompt=system_prompt,
-            model=settings.groq_chat_model
+            model=settings.study_assistant_model,
         )
 
         # Persist the assistant's turn.

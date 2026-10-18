@@ -42,7 +42,7 @@ def _agent_llm(role: str) -> LLM:
     if not api_key:
         if provider == "groq" and settings.gemini_api_key:
             provider = "gemini"
-            model_name = "gemini-2.0-flash"
+            model_name = "gemini-3.8-flash"
             api_key = settings.gemini_api_key
         elif provider == "gemini" and settings.groq_api_key:
             provider = "groq"
@@ -177,6 +177,7 @@ Decide domain_type with this prioritized order (first match wins):
 PLANNER_PROMPT = (
     "You are the master curriculum planner and academic architect for a university assignment system. "
     "Your plan is the ONLY source of routing truth for the specialists that follow you, so it must be precise, complete and machine-readable.\n\n"
+    "PLANNING METHOD (preserve every routing rule and schema below): First inventory source statements and deliverables, then classify each part, route it, map explicit dependencies, and validate the final plan against the source. Keep source facts, reasonable assumptions, and missing information distinct. Prefer concise requirements that retain every constraint; do not copy large source passages into the JSON. Before responding, check valid JSON syntax, exact schema keys, source order, unique part IDs, valid owners/dependencies, and that each required artifact is represented. If source material is incomplete or conflicting, report it using the existing fields; never resolve uncertainty by inventing facts or changing the rules below.\n\n"
     + STUDENT_BLOCK + "\n"
     + GLOBAL_RULES + "\n"
     "INPUTS: assignment title/description, course name, and any supplied reference materials (lab manuals, rubrics, slides, sample diagrams, datasets, already-solved activities).\n\n"

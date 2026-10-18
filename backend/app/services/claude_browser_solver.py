@@ -2242,6 +2242,20 @@ def solve_assignment_via_claude_browser(
         cover_md = build_academic_cover_markdown(meta, assignment.title or "Assignment Solution")
         final_solution_content = cover_md + raw_solution_text.strip()
 
+        # Immediately preserve latest generated response in database so student never loses it
+        solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+        if not solution:
+            solution = AssignmentSolution(assignment_id=assignment_id, user_id=user_id)
+            db.add(solution)
+        solution.draft_content = final_solution_content
+        solution.validated_content = final_solution_content
+        solution.ai_provider = "claude_browser"
+        solution.validation_errors = None
+        solution.generated_at = datetime.now(timezone.utc)
+        solution.validated_at = datetime.now(timezone.utc)
+        assignment.status = AssignmentStatus.READY_FOR_REVIEW
+        db.commit()
+
         # 10. Extract deliverables, parse Claude's terminal outputs, and build visual cards
         execution_results = []
         notebook_deliverables = []
@@ -2536,6 +2550,9 @@ def solve_assignment_via_claude_browser(
 
             if execution_results:
                 final_solution_content = append_execution_metadata(final_solution_content, execution_results)
+                solution.draft_content = final_solution_content
+                solution.validated_content = final_solution_content
+                db.commit()
 
         except Exception as exec_err:
             logger.warning(f"Deliverables extraction skipped: {exec_err}")

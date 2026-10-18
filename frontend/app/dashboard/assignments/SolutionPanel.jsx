@@ -198,7 +198,7 @@ export default function SolutionPanel({ assignment }) {
       const token = getToken ? await getToken() : null;
       const result = await api.generateAssignmentImage(assignment.id, imagePrompt.trim(), token);
       setSolution((current) => ({ ...current, generated_images: result.images || [result.image] }));
-      setNotice('Illustration generated and included in the downloadable HTML and Word reports.');
+      setNotice('Illustration generated and included in the Google Doc and deliverable files.');
     } catch (e) {
       setError(e.message || 'Could not generate the illustration.');
     } finally {
@@ -209,7 +209,7 @@ export default function SolutionPanel({ assignment }) {
   const [quickSubmitting, setQuickSubmitting] = useState(false);
 
   const handleQuickTurnIn = async () => {
-    if (!solution?.validated_content && !solution?.draft_content && state !== 'completed') {
+    if (!solution?.validated_content && !solution?.draft_content && !hasContent) {
       setError('Please generate the assignment solution first (e.g. click "Solve with Claude" or "Multi-Agent" below), then Quick Turn In will automatically package and submit both the Google Doc and deliverables ZIP to Google Classroom.');
       return;
     }
@@ -290,7 +290,11 @@ export default function SolutionPanel({ assignment }) {
   const screenshots = solution?.terminal_screenshots || [];
   const generatedImages = solution?.generated_images || [];
   const crewAgents = solution?.crew_progress?.agents || [];
-  const state = (solution?.status === 'completed' || Boolean(solution?.validated_content)) ? 'completed' : (solution?.status || 'not_started');
+  const hasContent = Boolean(solution?.validated_content || solution?.draft_content);
+  const isGenerating = solution?.status === 'generating' || starting;
+  const state = isGenerating
+    ? 'generating'
+    : ((solution?.status === 'completed' || hasContent) ? 'completed' : (solution?.status || 'not_started'));
 
   const displayTasks = useMemo(() => {
     if (tasks && tasks.length > 0) {
@@ -332,7 +336,6 @@ export default function SolutionPanel({ assignment }) {
   }, [tasks, files, outputs, screenshots]);
 
   const crewProgress = solution?.crew_progress;
-  const isGenerating = state === 'generating' || starting;
   const activeStep = crewProgress?.current_step || (starting ? 1 : 2);
   const totalSteps = crewProgress?.total_steps || 5;
   const stepTitle = crewProgress?.step_title || (starting ? 'Connecting to Solver' : 'Synthesizing Solution');
@@ -341,7 +344,7 @@ export default function SolutionPanel({ assignment }) {
   const getStepStyle = (stepNum) => {
     let isDone = false;
     let isActive = false;
-    if (state === 'completed') {
+    if (state === 'completed' && !isGenerating) {
       isDone = true;
     } else if (isGenerating) {
       if (stepNum === 1) {
@@ -409,8 +412,8 @@ export default function SolutionPanel({ assignment }) {
         </div>
       )}
 
-      {/* Hero Solver Station Card (shown while starting/running) */}
-      {state !== 'completed' && (
+      {/* Hero Solver Station Card (shown while starting/running, or if no solution yet) */}
+      {(state !== 'completed' || isGenerating) && (
         <section
           className="rounded-xl border border-violet/20 bg-gradient-to-br from-white to-violet-light/40 p-5 shadow-sm sm:p-7"
           style={{
@@ -449,7 +452,7 @@ export default function SolutionPanel({ assignment }) {
               }}
             >
               <Icon name="sparkles" size={14} />
-              <span>Autonomous Solver Engine</span>
+              <span>{hasContent && isGenerating ? 'Re-Solving Assignment (Preserving Latest Output Below)' : 'Autonomous Solver Engine'}</span>
             </div>
             <h2
               style={{
@@ -464,7 +467,7 @@ export default function SolutionPanel({ assignment }) {
             </h2>
             <p style={{ margin: 0, fontSize: 13, color: '#686d80', lineHeight: 1.5 }}>
               Runs the four configured CrewAI specialists in sequence, executes technical files when
-              a supported runner is available, and prepares reviewable Google Docs and Word reports
+              a supported runner is available, and prepares reviewable Google Docs and deliverable files
               with actual run output and terminal screenshots.
             </p>
           </div>
@@ -473,7 +476,7 @@ export default function SolutionPanel({ assignment }) {
             <button
               type="button"
               onClick={handleQuickTurnIn}
-              disabled={quickSubmitting || isGenerating}
+              disabled={quickSubmitting || (!hasContent && isGenerating)}
               className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
               style={{ background: '#059669', color: '#ffffff', cursor: 'pointer' }}
               title="Automatically export Google Doc, ZIP deliverables, and turn in immediately to Google Classroom"
@@ -567,7 +570,7 @@ export default function SolutionPanel({ assignment }) {
             { num: 1, title: 'Rubric Analysis', sub: 'Decompose tasks' },
             { num: 2, title: 'Code Synthesis', sub: 'Generate solution' },
             { num: 3, title: 'Sandbox Run', sub: 'Terminal verification' },
-            { num: 4, title: 'Report Build', sub: 'Docs & Word report' },
+            { num: 4, title: 'Report Build', sub: 'Google Doc report' },
           ].map(({ num, title, sub }) => {
             const style = getStepStyle(num);
             return (
@@ -950,7 +953,7 @@ export default function SolutionPanel({ assignment }) {
       )}
 
       {/* State: Completed Results Studio */}
-      {state === 'completed' && (
+      {(state === 'completed' || hasContent) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           {/* 1. Sleek Action Header Card */}
           <section
@@ -973,17 +976,17 @@ export default function SolutionPanel({ assignment }) {
                   alignItems: 'center',
                   gap: 6,
                   padding: '3px 10px',
-                  background: '#ecfdf5',
-                  color: '#059669',
+                  background: isGenerating ? '#fef3c7' : '#ecfdf5',
+                  color: isGenerating ? '#92400e' : '#059669',
                   borderRadius: 99,
                   fontSize: 11,
                   fontWeight: 700,
                   marginBottom: 8,
-                  border: '1px solid #a7f3d0',
+                  border: isGenerating ? '1px solid #fde68a' : '1px solid #a7f3d0',
                 }}
               >
-                <Icon name="checkCircle" size={13} />
-                <span>Solution Ready · Verified</span>
+                <Icon name={isGenerating ? "sparkles" : "checkCircle"} size={13} />
+                <span>{isGenerating ? "Preserved Latest Output · (Re-solving in progress)" : "Solution Ready · Verified"}</span>
               </div>
               <h2
                 style={{
@@ -1053,26 +1056,6 @@ export default function SolutionPanel({ assignment }) {
                   <span>Download Code (.zip)</span>
                 </button>
               )}
-
-              <a
-                href={`/api/backend/classroom/assignments/${assignment.id}/solution/report/docx`}
-                download={`assignment-${assignment.id}-report.docx`}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3.5 text-xs font-semibold text-ink transition hover:bg-paper shadow-sm"
-                style={{ textDecoration: 'none' }}
-              >
-                <Icon name="download" size={13} />
-                <span>Word (.docx)</span>
-              </a>
-
-              <a
-                href={`/api/backend/classroom/assignments/${assignment.id}/solution/report`}
-                download={`assignment-${assignment.id}-report.html`}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3.5 text-xs font-semibold text-ink transition hover:bg-paper shadow-sm"
-                style={{ textDecoration: 'none' }}
-              >
-                <Icon name="download" size={13} />
-                <span>HTML</span>
-              </a>
 
               <button
                 type="button"
