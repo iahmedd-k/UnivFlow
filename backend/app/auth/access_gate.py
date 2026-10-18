@@ -121,12 +121,225 @@ def request_access_otp(request: Request, user: dict, db: Session) -> dict:
         f"One-time approval code: {otp}\nExpires in {ttl} minutes.\n"
         "Only give this code to the person whose account details are shown above."
     )
-    html_body = "<br>".join(escape(line) for line in text_body.splitlines())
+    applicant_name = escape(user.get("name") or "Unknown")
+    applicant_email = escape(email)
+    applicant_id = escape(user_id)
+
+    html_content = f"""<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>Private Access Approval Request</title>
+  <style>
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background-color: #f1f5f9;
+      color: #0f172a;
+      margin: 0;
+      padding: 32px 12px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }}
+    .email-container {{
+      max-width: 580px;
+      margin: 0 auto;
+      background: #ffffff;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.08);
+    }}
+    .accent-bar {{
+      height: 4px;
+      background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 50%, #d946ef 100%);
+      line-height: 4px;
+      font-size: 0;
+    }}
+    .header-bar {{
+      background: #090d16;
+      padding: 26px 32px;
+      border-bottom: 1px solid #1e293b;
+    }}
+    .brand-title {{
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #94a3b8;
+      margin-bottom: 6px;
+    }}
+    .header-title {{
+      color: #ffffff;
+      font-size: 21px;
+      font-weight: 700;
+      margin: 0;
+      letter-spacing: -0.02em;
+      line-height: 1.3;
+    }}
+    .content-body {{
+      padding: 32px;
+      background: #ffffff;
+    }}
+    .status-badge {{
+      display: inline-block;
+      padding: 5px 12px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      background: #eef2ff;
+      color: #3730a3;
+      border: 1px solid #c7d2fe;
+      margin-bottom: 20px;
+    }}
+    .details-table {{
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      margin: 20px 0;
+      font-size: 13px;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      overflow: hidden;
+    }}
+    .details-table tr:last-child td {{
+      border-bottom: none;
+    }}
+    .details-table td {{
+      padding: 12px 16px;
+      border-bottom: 1px solid #f1f5f9;
+      color: #0f172a;
+      vertical-align: middle;
+    }}
+    .details-table td.label-col {{
+      width: 32%;
+      font-weight: 600;
+      color: #475569;
+      background: #f8fafc;
+      border-right: 1px solid #f1f5f9;
+    }}
+    .otp-card {{
+      background: #090d16;
+      border-radius: 10px;
+      padding: 22px 16px;
+      text-align: center;
+      margin: 24px 0;
+    }}
+    .otp-label {{
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #94a3b8;
+      margin-bottom: 8px;
+    }}
+    .otp-code {{
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 34px;
+      font-weight: 800;
+      letter-spacing: 0.22em;
+      color: #ffffff;
+      line-height: 1.1;
+    }}
+    .security-notice {{
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-left: 4px solid #f59e0b;
+      border-radius: 8px;
+      padding: 14px 18px;
+      font-size: 13px;
+      color: #92400e;
+      line-height: 1.6;
+    }}
+    .footer-bar {{
+      background: #f8fafc;
+      padding: 22px 32px;
+      font-size: 11px;
+      color: #64748b;
+      text-align: center;
+      border-top: 1px solid #e2e8f0;
+      line-height: 1.65;
+    }}
+    @media only screen and (max-width: 620px) {{
+      .email-container {{
+        width: 100% !important;
+        border-radius: 8px !important;
+      }}
+      .content-body {{
+        padding: 20px 16px !important;
+      }}
+      .header-bar {{
+        padding: 20px 18px !important;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <div style="display:none;font-size:1px;color:#ffffff;line-height:1px;max-height:0px;max-width:0px;opacity:0;overflow:hidden;mso-hide:all;">
+    Private Access Request: {applicant_name} ({applicant_email}) has requested authorization. Code: {otp}.
+    &#847; &zwnj; &nbsp; &#8199; &shy; &#847; &zwnj; &nbsp; &#8199; &shy;
+  </div>
+  <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color:#f1f5f9; padding:0; margin:0;">
+    <tr>
+      <td align="center">
+        <div class="email-container">
+          <div class="accent-bar"></div>
+          <div class="header-bar">
+            <div class="brand-title">Uniflow Access Gate · Security Verification</div>
+            <h1 class="header-title">Private Access Approval Request</h1>
+          </div>
+          <div class="content-body">
+            <div class="status-badge">SECURITY NOTICE · ACTION REQUIRED</div>
+            <p style="color:#334155; font-size:14px; line-height:1.6; margin:0 0 16px 0;">
+              A signed-in account has requested authorization to access the Uniflow private academic platform.
+            </p>
+
+            <table class="details-table" role="presentation">
+              <tr>
+                <td class="label-col">Applicant Name</td>
+                <td><strong>{applicant_name}</strong></td>
+              </tr>
+              <tr>
+                <td class="label-col">Applicant Email</td>
+                <td>{applicant_email}</td>
+              </tr>
+              <tr>
+                <td class="label-col">Account ID</td>
+                <td><code style="font-family:monospace; background:#f1f5f9; padding:2px 6px; border-radius:4px; font-size:12px;">{applicant_id}</code></td>
+              </tr>
+              <tr>
+                <td class="label-col">Validity Window</td>
+                <td>Expires in {ttl} minutes</td>
+              </tr>
+            </table>
+
+            <div class="otp-card">
+              <div class="otp-label">One-Time Approval Code</div>
+              <div class="otp-code">{otp}</div>
+            </div>
+
+            <div class="security-notice">
+              <strong>Security Policy:</strong> Only give this code directly to the person whose identity and account details are shown above. Do not forward this message.
+            </div>
+          </div>
+          <div class="footer-bar">
+            Automated security authorization dispatch by Uniflow Access Gate.<br>
+            Confidential administrative communication.
+          </div>
+        </div>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
     try:
         delivered = send_email(
             to_email=settings.access_admin_email,
             subject=subject,
-            html_content=f"<p>{html_body}</p>",
+            html_content=html_content,
             text_content=text_body,
             from_name="Uniflow access gate",
         )

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 import json
 import re
+from html import escape
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -238,42 +239,156 @@ def get_notification_stats(db: Session = Depends(get_db), clerk_user: Optional[d
 
 
 def _build_email_content(notification: Notification) -> tuple[str, str]:
-    """Build HTML and text content from notification"""
+    """Build HTML and text content from notification with executive styling"""
     subject = notification.subject or "Uniflow Notification"
     payload = notification.payload or ""
-    notification_type = notification.notification_type or "general"
+    notification_type = (notification.notification_type or "general").upper()
+    sent_time_str = datetime.now().strftime("%B %d, %Y at %I:%M %p")
+    preheader_snippet = (payload[:140] + "...") if len(payload) > 140 else (payload or subject)
 
-    html = f"""
-    <html>
-    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
-            <h1 style="color: white; margin: 0; font-size: 24px;">Uniflow</h1>
-        </div>
-        <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #eee;">
-            <h2 style="color: #333; margin-top: 0;">{subject}</h2>
-            <div style="background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #667eea;">
-                {payload.replace(chr(10), '<br>') if payload else '<em>No content</em>'}
+    html = f"""<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>{escape(subject)}</title>
+  <style>
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background-color: #f1f5f9;
+      color: #0f172a;
+      margin: 0;
+      padding: 32px 12px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }}
+    .email-container {{
+      max-width: 600px;
+      margin: 0 auto;
+      background: #ffffff;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.08);
+    }}
+    .accent-bar {{
+      height: 4px;
+      background: linear-gradient(90deg, #4f46e5 0%, #6366f1 50%, #818cf8 100%);
+      line-height: 4px;
+      font-size: 0;
+    }}
+    .header-bar {{
+      background: #090d16;
+      padding: 26px 32px;
+      border-bottom: 1px solid #1e293b;
+    }}
+    .brand-title {{
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #94a3b8;
+      margin-bottom: 6px;
+    }}
+    .header-title {{
+      color: #ffffff;
+      font-size: 21px;
+      font-weight: 700;
+      margin: 0;
+      letter-spacing: -0.02em;
+      line-height: 1.3;
+    }}
+    .content-body {{
+      padding: 32px;
+      background: #ffffff;
+    }}
+    .status-badge {{
+      display: inline-block;
+      padding: 5px 12px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      background: #eef2ff;
+      color: #3730a3;
+      border: 1px solid #c7d2fe;
+      margin-bottom: 20px;
+    }}
+    .payload-card {{
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-left: 4px solid #6366f1;
+      border-radius: 8px;
+      padding: 20px;
+      font-size: 14px;
+      color: #1e293b;
+      line-height: 1.65;
+    }}
+    .footer-bar {{
+      background: #f8fafc;
+      padding: 22px 32px;
+      font-size: 11px;
+      color: #64748b;
+      text-align: center;
+      border-top: 1px solid #e2e8f0;
+      line-height: 1.65;
+    }}
+    @media only screen and (max-width: 620px) {{
+      .email-container {{
+        width: 100% !important;
+        border-radius: 8px !important;
+      }}
+      .content-body {{
+        padding: 20px 16px !important;
+      }}
+      .header-bar {{
+        padding: 20px 18px !important;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <div style="display:none;font-size:1px;color:#ffffff;line-height:1px;max-height:0px;max-width:0px;opacity:0;overflow:hidden;mso-hide:all;">
+    {escape(preheader_snippet)}
+    &#847; &zwnj; &nbsp; &#8199; &shy; &#847; &zwnj; &nbsp; &#8199; &shy;
+  </div>
+  <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color:#f1f5f9; padding:0; margin:0;">
+    <tr>
+      <td align="center">
+        <div class="email-container">
+          <div class="accent-bar"></div>
+          <div class="header-bar">
+            <div class="brand-title">Uniflow Academic Suite · Dispatch</div>
+            <h1 class="header-title">{escape(subject)}</h1>
+          </div>
+          <div class="content-body">
+            <div class="status-badge">NOTIFICATION · {escape(notification_type)}</div>
+            <div class="payload-card">
+              {escape(payload).replace(chr(10), '<br>') if payload else '<em style="color:#94a3b8;">No content</em>'}
             </div>
-            <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-            <p style="color: #888; font-size: 12px; margin: 0;">
-                This is an automated notification from Uniflow.<br>
-                Type: {notification_type} | Sent at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-            </p>
+          </div>
+          <div class="footer-bar">
+            This is an automated notification from Uniflow Academic Suite.<br>
+            Category: {escape(notification_type)} · Dispatched at {sent_time_str}
+          </div>
         </div>
-    </body>
-    </html>
-    """
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
 
-    text = f"""
-{subject}
+    text = f"""{subject}
 
 {payload if payload else 'No content'}
 
 ---
-This is an automated notification from Uniflow.
+This is an automated notification from Uniflow Academic Suite.
 Type: {notification_type}
 Sent at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-    """
+"""
 
     return html.strip(), text.strip()
 
@@ -463,25 +578,144 @@ def send_test_email(
 
     subject = "[Uniflow] Test Alert: Email Delivery Verified"
     html = f"""<!DOCTYPE html>
-<html>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; color: #0f172a; margin: 0; padding: 24px;">
-  <div style="max-width: 520px; margin: 0 auto; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 26px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-    <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #6366f1; margin-bottom: 6px;">Uniflow Academic Alerts · Verified</div>
-    <h2 style="color: #0f172a; font-size: 19px; margin: 0 0 14px 0;">Alert System Verification Successful</h2>
-    <p style="color: #334155; font-size: 14px; line-height: 1.5; margin: 0 0 18px 0;">
-      This email confirms that your alert settings are active and that Uniflow is delivering notifications to: <strong>{target_email}</strong>.
-    </p>
-    <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 14px; font-size: 13px; color: #166534; line-height: 1.6;">
-      ✓ <strong>Primary Delivery Channel:</strong> SendGrid Transactional API<br>
-      ✓ <strong>Configured Recipient:</strong> {target_email}<br>
-      ✓ <strong>Morning Academic Briefing:</strong> Active (Daily in morning)<br>
-      ✓ <strong>Class Timetable Reminders:</strong> Active (20m &amp; 5m advance notices)<br>
-      ✓ <strong>Google Classroom Deadlines:</strong> Active (1 notification per deadline issue)
-    </div>
-    <p style="font-size: 11px; color: #94a3b8; margin: 20px 0 0 0; text-align: center;">
-      Automated verification dispatched by Uniflow Academic Suite.
-    </p>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>Alert System Verification Successful</title>
+  <style>
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background-color: #f1f5f9;
+      color: #0f172a;
+      margin: 0;
+      padding: 32px 12px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }}
+    .email-container {{
+      max-width: 580px;
+      margin: 0 auto;
+      background: #ffffff;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.08);
+    }}
+    .accent-bar {{
+      height: 4px;
+      background: linear-gradient(90deg, #10b981 0%, #059669 50%, #047857 100%);
+      line-height: 4px;
+      font-size: 0;
+    }}
+    .header-bar {{
+      background: #090d16;
+      padding: 26px 32px;
+      border-bottom: 1px solid #1e293b;
+    }}
+    .brand-title {{
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #94a3b8;
+      margin-bottom: 6px;
+    }}
+    .header-title {{
+      color: #ffffff;
+      font-size: 21px;
+      font-weight: 700;
+      margin: 0;
+      letter-spacing: -0.02em;
+      line-height: 1.3;
+    }}
+    .content-body {{
+      padding: 32px;
+      background: #ffffff;
+    }}
+    .status-badge {{
+      display: inline-block;
+      padding: 5px 12px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      background: #ecfdf5;
+      color: #047857;
+      border: 1px solid #a7f3d0;
+      margin-bottom: 20px;
+    }}
+    .details-card {{
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-left: 4px solid #10b981;
+      border-radius: 8px;
+      padding: 18px 20px;
+      font-size: 13px;
+      color: #166534;
+      line-height: 1.8;
+      margin-top: 20px;
+    }}
+    .footer-bar {{
+      background: #f8fafc;
+      padding: 22px 32px;
+      font-size: 11px;
+      color: #64748b;
+      text-align: center;
+      border-top: 1px solid #e2e8f0;
+      line-height: 1.65;
+    }}
+    @media only screen and (max-width: 620px) {{
+      .email-container {{
+        width: 100% !important;
+        border-radius: 8px !important;
+      }}
+      .content-body {{
+        padding: 20px 16px !important;
+      }}
+      .header-bar {{
+        padding: 20px 18px !important;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <div style="display:none;font-size:1px;color:#ffffff;line-height:1px;max-height:0px;max-width:0px;opacity:0;overflow:hidden;mso-hide:all;">
+    Alert System Verification: Email delivery verified for {escape(target_email)}.
+    &#847; &zwnj; &nbsp; &#8199; &shy; &#847; &zwnj; &nbsp; &#8199; &shy;
   </div>
+  <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color:#f1f5f9; padding:0; margin:0;">
+    <tr>
+      <td align="center">
+        <div class="email-container">
+          <div class="accent-bar"></div>
+          <div class="header-bar">
+            <div class="brand-title">Uniflow Academic Alerts · Verified</div>
+            <h1 class="header-title">Alert System Verification Successful</h1>
+          </div>
+          <div class="content-body">
+            <div class="status-badge">DELIVERY CHANNEL · SENDGRID VERIFIED</div>
+            <p style="color:#334155; font-size:14px; line-height:1.6; margin:0 0 16px 0;">
+              This email confirms that your alert settings are active and that Uniflow is delivering notifications to: <strong>{escape(target_email)}</strong>.
+            </p>
+            <div class="details-card">
+              ✓ <strong>Primary Delivery Channel:</strong> SendGrid Transactional API<br>
+              ✓ <strong>Configured Recipient:</strong> {escape(target_email)}<br>
+              ✓ <strong>Morning Academic Briefing:</strong> Active (Daily morning dispatch)<br>
+              ✓ <strong>Class Timetable Reminders:</strong> Active (20m &amp; 5m advance notices)<br>
+              ✓ <strong>Google Classroom Deadlines:</strong> Active (Synchronized coursework tracking)
+            </div>
+          </div>
+          <div class="footer-bar">
+            Automated verification dispatched by Uniflow Academic Suite.<br>
+            Air University Student Intelligence &amp; Schedule Synchronization.
+          </div>
+        </div>
+      </td>
+    </tr>
+  </table>
 </body>
 </html>"""
     success = send_email(

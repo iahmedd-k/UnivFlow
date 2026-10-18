@@ -192,8 +192,8 @@ class NotificationService:
         return success
 
     def _send_email(self, notification: Notification) -> bool:
-        """Send email notification."""
-        html_content = notification.payload
+        """Send email notification with professional formatting."""
+        html_content = notification.payload or ""
         text_content = None
         
         # Convert HTML to text if needed
@@ -201,6 +201,121 @@ class NotificationService:
             import re
             text_content = re.sub(r'<[^>]+>', '', html_content)
             text_content = re.sub(r'\s+', ' ', text_content).strip()
+        else:
+            text_content = html_content
+
+        # If payload is raw text or a snippet without full HTML layout, wrap with executive styling
+        if html_content and not ("<html" in html_content.lower() or "<!doctype" in html_content.lower()):
+            from html import escape
+            subject_esc = escape(notification.subject or "Uniflow Notification")
+            type_esc = escape((notification.notification_type or "general").upper())
+            body_esc = escape(html_content).replace("\n", "<br>")
+            html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{subject_esc}</title>
+  <style>
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background-color: #f1f5f9;
+      color: #0f172a;
+      margin: 0;
+      padding: 32px 12px;
+      line-height: 1.6;
+    }}
+    .email-container {{
+      max-width: 600px;
+      margin: 0 auto;
+      background: #ffffff;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
+    }}
+    .accent-bar {{
+      height: 4px;
+      background: linear-gradient(90deg, #4f46e5 0%, #6366f1 50%, #818cf8 100%);
+    }}
+    .header-bar {{
+      background: #090d16;
+      padding: 26px 32px;
+      border-bottom: 1px solid #1e293b;
+    }}
+    .brand-title {{
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #94a3b8;
+      margin-bottom: 6px;
+    }}
+    .header-title {{
+      color: #ffffff;
+      font-size: 21px;
+      font-weight: 700;
+      margin: 0;
+      letter-spacing: -0.02em;
+    }}
+    .content-body {{
+      padding: 32px;
+      background: #ffffff;
+    }}
+    .status-badge {{
+      display: inline-block;
+      padding: 5px 12px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      background: #eef2ff;
+      color: #3730a3;
+      border: 1px solid #c7d2fe;
+      margin-bottom: 20px;
+    }}
+    .payload-card {{
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-left: 4px solid #6366f1;
+      border-radius: 8px;
+      padding: 20px;
+      font-size: 14px;
+      color: #1e293b;
+      line-height: 1.65;
+    }}
+    .footer-bar {{
+      background: #f8fafc;
+      padding: 22px 32px;
+      font-size: 11px;
+      color: #64748b;
+      text-align: center;
+      border-top: 1px solid #e2e8f0;
+      line-height: 1.65;
+    }}
+  </style>
+</head>
+<body>
+  <div class="email-container">
+    <div class="accent-bar"></div>
+    <div class="header-bar">
+      <div class="brand-title">Uniflow Academic Suite · Dispatch</div>
+      <h1 class="header-title">{subject_esc}</h1>
+    </div>
+    <div class="content-body">
+      <div class="status-badge">NOTIFICATION · {type_esc}</div>
+      <div class="payload-card">
+        {body_esc}
+      </div>
+    </div>
+    <div class="footer-bar">
+      Automated notification dispatched by Uniflow Academic Suite.<br>
+      Air University Student Intelligence Platform.
+    </div>
+  </div>
+</body>
+</html>"""
 
         return send_email(
             to_email=notification.recipient,

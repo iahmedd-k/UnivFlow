@@ -5,6 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.services.browser_host import BrowserSessionHost
+from app.services.browser_sessions import browser_profile_key
 
 
 def test_clean_stale_locks(tmp_path: Path):
@@ -56,3 +57,10 @@ def test_key_validation():
     with pytest.raises(HTTPException) as exc_info:
         BrowserSessionHost._key("invalid-key")
     assert exc_info.value.status_code == 400
+
+
+def test_classroom_and_claude_profiles_are_isolated():
+    """Each user gets distinct Claude and Classroom browser storage keys."""
+    assert browser_profile_key("student-1") != browser_profile_key("student-1", "classroom")
+    assert browser_profile_key("student-1", "classroom") != browser_profile_key("student-2", "classroom")
+    assert len(browser_profile_key("student-1", "classroom")) == 64

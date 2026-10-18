@@ -161,13 +161,13 @@ class BrowserSessionHost:
 
     def start(self, profile_key: str, start_url: str) -> dict:
         key = self._key(profile_key)
-        if not re.match(r"^https://(claude\.ai|accounts\.google\.com)(?:/|$)", start_url):
-            raise HTTPException(status_code=400, detail="Browser sign-in is restricted to Claude and Google.")
+        if not re.match(r"^https://(claude\.ai|accounts\.google\.com|classroom\.google\.com)(?:/|$)", start_url):
+            raise HTTPException(status_code=400, detail="Browser sign-in is restricted to Claude, Google Accounts, and Google Classroom.")
 
         with self.lock:
             active = self.sessions.get(key)
             if active and self._cdp_is_ready(active.cdp_port):
-                return {"cdp_port": active.cdp_port, "active": True}
+                return {"cdp_port": active.cdp_port, "active": True, "profile_exists": (PROFILE_ROOT / key).is_dir()}
             if active:
                 self._stop(active)
                 self.sessions.pop(key, None)
@@ -204,17 +204,23 @@ class BrowserSessionHost:
                 headless_mode = xvfb_path is None
                 if not headless_mode:
                     processes.append(self._start_process(
-                        ["Xvfb", f":{display}", "-screen", "0", "1280x800x24", "-nolisten", "tcp"],
+                        # 16-bit color halves the remote framebuffer size while keeping
+                        # sign-in forms and browser text clear enough to use.
+                        ["Xvfb", f":{display}", "-screen", "0", "1280x800x16", "-nolisten", "tcp"],
                         display,
                     ))
 
-                # Wait up to 3 seconds for Xvfb socket to appear
-                x11_socket = Path(f"/tmp/.X11-unix/X{display}")
-                wait_x11_deadline = time.monotonic() + 3.0
-                while time.monotonic() < wait_x11_deadline:
-                    if x11_socket.exists():
-                        break
-                    time.sleep(0.05)
+                if not headless_mode:
+                    # Poll briefly for Xvfb instead of making every browser launch pay
+                    # a fixed 3-second delay. Fail early if the display process exits.
+                    x11_socket = Path(f"/tmp/.X11-unix/X{display}")
+                    wait_x11_deadline = time.monotonic() + 1.5
+                    while not x11_socket.exists() and time.monotonic() < wait_x11_deadline:
+                        if processes[0].poll() is not None:
+                            raise RuntimeError("The virtual display exited before it was ready.")
+                        time.sleep(0.05)
+                    if not x11_socket.exists():
+                        raise RuntimeError("The virtual display did not become ready in time.")
 
                 # 2. Window manager & VNC server
                 if not headless_mode:
@@ -286,7 +292,7 @@ class BrowserSessionHost:
                     if self._cdp_is_ready(target_cdp_port) or self._cdp_is_ready(cdp_port):
                         session = BrowserSession(display, cdp_port, vnc_port, processes)
                         self.sessions[key] = session
-                        return {"cdp_port": cdp_port, "active": True}
+                        return {"cdp_port": cdp_port, "active": True, "profile_exists": profile_dir.is_dir()}
                     time.sleep(0.25)
 
                 timeout_details = []
@@ -420,8 +426,9 @@ const rfb = new RFB(document.getElementById("screen"),
   `${{scheme}}//${{location.host}}/viewer/{key}/websockify?token=${{encodeURIComponent(token)}}`);
 rfb.scaleViewport = true;
 rfb.resizeSession = false;
-rfb.qualityLevel = 6;
-rfb.compressionLevel = 2;
+// Favor responsiveness on slower connections during first-time sign-in.
+rfb.qualityLevel = 5;
+rfb.compressionLevel = 4;
 rfb.showDotCursor = true;
 rfb.addEventListener("connect", () => document.getElementById("notice").remove());
 rfb.addEventListener("disconnect", () => document.getElementById("notice").textContent = "Browser disconnected.");

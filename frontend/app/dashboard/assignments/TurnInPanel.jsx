@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 import Icon from '@/app/dashboard/Icon';
+import HostedBrowserDialog from './HostedBrowserDialog';
 
 /**
  * Turn-in tab: the student attaches the files THEY produced, picks a
@@ -22,11 +23,15 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
     assignment.submission_state === 'TURNED_IN' || assignment.submission_state === 'RETURNED'
   );
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [submitWhenReady, setSubmitWhenReady] = useState(false);
   const [scheduleMinutesBefore, setScheduleMinutesBefore] = useState(60);
   const [scheduleInfo, setScheduleInfo] = useState(null);
   const [savingSchedule, setSavingSchedule] = useState(false);
 
   const [quickSubmitting, setQuickSubmitting] = useState(false);
+  const [classroomBrowserBusy, setClassroomBrowserBusy] = useState(false);
+  const [classroomViewerUrl, setClassroomViewerUrl] = useState('');
+  const [classroomProfileExists, setClassroomProfileExists] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,6 +60,7 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
           const autoData = await api.getCourseAutoTurnIn(assignment.course_id, token);
           if (!cancelled && autoData) {
             setScheduleEnabled(Boolean(autoData.enabled));
+            setSubmitWhenReady(Boolean(autoData.submit_when_ready));
             setScheduleMinutesBefore(autoData.minutes_before || 60);
             setScheduleInfo(autoData);
           }
@@ -65,6 +71,20 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
     })();
     return () => { cancelled = true; };
   }, [assignment.course_id, getToken]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = getToken ? await getToken() : null;
+        const state = await api.getClassroomBrowserStatus(token);
+        if (!cancelled) setClassroomProfileExists(Boolean(state?.profile_exists));
+      } catch (e) {
+        console.error('Failed to load Google Classroom browser status:', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [getToken]);
 
   const handleFileChange = (e) => {
     const picked = Array.from(e.target.files || []);
@@ -88,12 +108,53 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
     try {
       const token = getToken ? await getToken() : null;
       const res = await api.quickTurnInAssignment(assignment.id, token);
-      setSubmitted(true);
+      if (res.needs_browser_login) {
+        setClassroomViewerUrl(res.viewer_url || '');
+        setNotice(res.message || 'Sign in to Google Classroom in your private browser, then retry Quick Turn In.');
+        return;
+      }
+      setSubmitted(Boolean(res.turned_in));
       setNotice(res.message || 'Successfully turned in Google Doc and ZIP deliverables to Google Classroom!');
     } catch (e) {
       setError(e.message || 'Quick turn-in failed. Please try again.');
     } finally {
       setQuickSubmitting(false);
+    }
+  };
+
+  const connectClassroomBrowser = async () => {
+    if (classroomBrowserBusy) return;
+    setClassroomBrowserBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const token = getToken ? await getToken() : null;
+      const result = await api.openClassroomBrowser(token);
+      setClassroomViewerUrl(result.viewer_url || '');
+      setClassroomProfileExists(Boolean(result.profile_exists));
+      setNotice('Your private Google Classroom browser is ready. Sign in there with the same Google account connected to Uniflow. The profile will be saved for future turn-ins.');
+    } catch (e) {
+      setError(e.message || 'Could not start your private Google Classroom browser.');
+    } finally {
+      setClassroomBrowserBusy(false);
+    }
+  };
+
+  const forgetClassroomBrowser = async () => {
+    if (!window.confirm('Delete your saved Google Classroom browser session? You will need to sign in again before browser-based turn-in.')) return;
+    setClassroomBrowserBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const token = getToken ? await getToken() : null;
+      await api.deleteClassroomBrowserProfile(token);
+      setClassroomProfileExists(false);
+      setClassroomViewerUrl('');
+      setNotice('Saved Google Classroom browser session deleted.');
+    } catch (e) {
+      setError(e.message || 'Could not delete the saved Google Classroom browser session.');
+    } finally {
+      setClassroomBrowserBusy(false);
     }
   };
 
@@ -130,7 +191,10 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
   };
 
   const saveSchedule = async () => {
-    if (scheduleEnabled && !window.confirm(`Enable automatic submission for all completed assignments in ${assignment.course_name || 'this course'}? Uniflow will attach Claude-generated deliverables and submit when they are within ${scheduleMinutesBefore} minutes of the deadline.`)) return;
+    const enabledActions = [];
+    if (submitWhenReady) enabledActions.push('submit a validated Claude report as soon as generation finishes');
+    if (scheduleEnabled) enabledActions.push(`submit eligible reports within ${scheduleMinutesBefore} minutes of the deadline`);
+    if (enabledActions.length && !window.confirm(`Enable automatic submission for ${assignment.course_name || 'this course'}? Uniflow will ${enabledActions.join(' and ')}.`)) return;
     setSavingSchedule(true);
     setError(null);
     setNotice(null);
@@ -141,6 +205,7 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
           assignment.course_id,
           {
             enabled: scheduleEnabled,
+            submit_when_ready: submitWhenReady,
             minutes_before: scheduleMinutesBefore,
             confirm_submission: scheduleEnabled,
           },
@@ -196,6 +261,21 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
             <Icon name="upload" size={16} />
             <span>{quickSubmitting ? 'Submitting Doc & ZIP to GCR…' : submitted ? 'Turned in to Google Classroom' : '⚡ Quick Turn In (Doc + ZIP)'}</span>
           </button>
+          <button
+            type="button"
+            onClick={connectClassroomBrowser}
+            disabled={classroomBrowserBusy}
+            className={`${secondaryButtonClass} mt-2 w-full`}
+          >
+            <Icon name="externalLink" size={14} />
+            <span>{classroomBrowserBusy ? 'Starting private browser…' : 'Sign in to Google Classroom'}</span>
+          </button>
+          <HostedBrowserDialog url={classroomViewerUrl} onClose={() => setClassroomViewerUrl('')} />
+          {classroomProfileExists && (
+            <button type="button" onClick={forgetClassroomBrowser} disabled={classroomBrowserBusy} className="mt-2 self-start text-xs font-medium text-rose underline disabled:opacity-50">
+              Forget saved Classroom login
+            </button>
+          )}
         </div>
 
         <div>
@@ -247,9 +327,17 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
           <p className="text-xs font-semibold uppercase tracking-wide text-muted">Course Automation</p>
           <h3 className="mt-1 text-base font-semibold text-ink">Auto turn-in for {assignment.course_name || 'this course'}</h3>
           <p className="mt-2 text-sm leading-6 text-muted">
-            Automatically submit Claude-generated drafts for <strong>{assignment.course_name || 'this course'}</strong> {scheduleMinutesBefore} minutes before the deadline on Google Classroom. Only coursework belonging strictly to this course is affected.
+            Choose when Claude-generated reports for <strong>{assignment.course_name || 'this course'}</strong> may be submitted. Only coursework in this course is affected.
           </p>
         </div>
+
+        <label className="flex cursor-pointer items-center justify-between gap-4 rounded-lg border border-line bg-paper p-4">
+          <span>
+            <strong className="block text-sm font-semibold text-ink">Submit when a validated report is ready</strong>
+            <small className="mt-1 block text-sm text-muted">Automatically attach the Google Doc and ZIP after successful generation.</small>
+          </span>
+          <input type="checkbox" checked={submitWhenReady} onChange={(e) => setSubmitWhenReady(e.target.checked)} className="size-5 shrink-0 accent-violet" />
+        </label>
 
         <label className="flex cursor-pointer items-center justify-between gap-4 rounded-lg border border-line bg-paper p-4">
           <span>

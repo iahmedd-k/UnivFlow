@@ -429,6 +429,16 @@ export const api = {
     method: 'POST',
   }),
 
+  openClassroomBrowser: async (token = null) => fetchFromApi('/classroom/gcr-browser/open', token, {
+    method: 'POST',
+  }),
+
+  getClassroomBrowserStatus: async (token = null) => fetchFromApi('/classroom/gcr-browser/status', token, { noCache: true }),
+
+  deleteClassroomBrowserProfile: async (token = null) => fetchFromApi('/classroom/gcr-browser/profile', token, {
+    method: 'DELETE',
+  }),
+
   getClaudeBrowserStatus: async (token = null) => fetchFromApi('/classroom/claude-browser/status', token, { noCache: true }),
 
   setAutomaticClaudeSolving: async (enabled, token = null) => fetchFromApi('/classroom/claude-browser/automatic-solving', token, {

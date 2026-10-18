@@ -152,8 +152,264 @@ def get_user_recipient_email(db: Session, user_id: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Clean, Executive Email Templates (No cheap emojis, institutional typography)
+# Executive Professional Email System (Institutional Design & Clean Typography)
 # ---------------------------------------------------------------------------
+
+def _render_uniflow_email_shell(
+    preheader: str,
+    brand_title: str,
+    header_title: str,
+    status_badge_html: str,
+    body_html: str,
+    footer_lines: List[str],
+    accent_gradient: str = "linear-gradient(90deg, #4f46e5 0%, #6366f1 50%, #818cf8 100%)",
+) -> str:
+    """Render a bulletproof, modern executive transactional email with high-end typography and mobile responsiveness."""
+    footer_content = "<br>".join(footer_lines)
+    return f"""<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="x-apple-disable-message-reformatting">
+  <title>{escape(header_title)}</title>
+  <style>
+    html, body {{
+      margin: 0 !important;
+      padding: 0 !important;
+      height: 100% !important;
+      width: 100% !important;
+      -webkit-text-size-adjust: 100%;
+      -ms-text-size-adjust: 100%;
+    }}
+    table, td {{
+      mso-table-lspace: 0pt !important;
+      mso-table-rspace: 0pt !important;
+      border-collapse: separate;
+    }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background-color: #f1f5f9;
+      color: #0f172a;
+      margin: 0;
+      padding: 32px 12px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      line-height: 1.6;
+    }}
+    .email-wrapper {{
+      width: 100%;
+      background-color: #f1f5f9;
+      padding: 0;
+      margin: 0;
+    }}
+    .email-container {{
+      max-width: 600px;
+      margin: 0 auto;
+      background: #ffffff;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.08);
+    }}
+    .accent-bar {{
+      height: 4px;
+      background: {accent_gradient};
+      line-height: 4px;
+      font-size: 0;
+    }}
+    .header-bar {{
+      background: #090d16;
+      padding: 26px 32px;
+      border-bottom: 1px solid #1e293b;
+    }}
+    .brand-title {{
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #94a3b8;
+      margin-bottom: 6px;
+    }}
+    .header-title {{
+      color: #ffffff;
+      font-size: 21px;
+      font-weight: 700;
+      margin: 0;
+      letter-spacing: -0.02em;
+      line-height: 1.3;
+    }}
+    .content-body {{
+      padding: 32px;
+      background: #ffffff;
+    }}
+    .status-badge {{
+      display: inline-block;
+      padding: 5px 12px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 20px;
+    }}
+    .metric-grid {{
+      display: table;
+      width: 100%;
+      margin: 22px 0;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      overflow: hidden;
+    }}
+    .metric-cell {{
+      display: table-cell;
+      width: 50%;
+      padding: 18px 16px;
+      text-align: center;
+      vertical-align: middle;
+    }}
+    .metric-cell:first-child {{
+      border-right: 1px solid #e2e8f0;
+    }}
+    .metric-value {{
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+    }}
+    .metric-label {{
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #64748b;
+      margin-top: 6px;
+    }}
+    .details-table {{
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      margin: 20px 0;
+      font-size: 13px;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      overflow: hidden;
+    }}
+    .details-table tr:last-child td {{
+      border-bottom: none;
+    }}
+    .details-table td {{
+      padding: 12px 16px;
+      border-bottom: 1px solid #f1f5f9;
+      color: #0f172a;
+      vertical-align: middle;
+    }}
+    .details-table td.label-col {{
+      width: 32%;
+      font-weight: 600;
+      color: #475569;
+      background: #f8fafc;
+      border-right: 1px solid #f1f5f9;
+    }}
+    .action-notice {{
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      border-left: 4px solid #ef4444;
+      border-radius: 8px;
+      padding: 16px 18px;
+      font-size: 13px;
+      color: #991b1b;
+      margin-top: 24px;
+      line-height: 1.6;
+    }}
+    .preparation-box {{
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-left: 4px solid #6366f1;
+      border-radius: 8px;
+      padding: 16px 18px;
+      font-size: 13px;
+      color: #334155;
+      margin-top: 22px;
+      line-height: 1.6;
+    }}
+    .btn-table {{
+      margin: 26px auto 10px auto;
+    }}
+    .btn-primary {{
+      display: inline-block;
+      background: #0f172a;
+      color: #ffffff !important;
+      text-decoration: none;
+      padding: 12px 26px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }}
+    .footer-bar {{
+      background: #f8fafc;
+      padding: 22px 32px;
+      font-size: 11px;
+      color: #64748b;
+      text-align: center;
+      border-top: 1px solid #e2e8f0;
+      line-height: 1.65;
+    }}
+    @media only screen and (max-width: 620px) {{
+      .email-container {{
+        width: 100% !important;
+        border-radius: 8px !important;
+      }}
+      .content-body {{
+        padding: 20px 16px !important;
+      }}
+      .header-bar {{
+        padding: 20px 18px !important;
+      }}
+      .metric-cell {{
+        display: block !important;
+        width: 100% !important;
+        box-sizing: border-box !important;
+        border-right: none !important;
+        border-bottom: 1px solid #e2e8f0 !important;
+      }}
+      .metric-cell:last-child {{
+        border-bottom: none !important;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <div style="display:none;font-size:1px;color:#ffffff;line-height:1px;max-height:0px;max-width:0px;opacity:0;overflow:hidden;mso-hide:all;">
+    {escape(preheader)}
+    &#847; &zwnj; &nbsp; &#8199; &shy; &#847; &zwnj; &nbsp; &#8199; &shy; &#847; &zwnj; &nbsp; &#8199; &shy; &#847; &zwnj; &nbsp; &#8199; &shy;
+  </div>
+  <table role="presentation" class="email-wrapper" width="100%" border="0" cellspacing="0" cellpadding="0">
+    <tr>
+      <td align="center">
+        <div class="email-container">
+          <div class="accent-bar"></div>
+          <div class="header-bar">
+            <div class="brand-title">{escape(brand_title)}</div>
+            <h1 class="header-title">{escape(header_title)}</h1>
+          </div>
+          <div class="content-body">
+            {status_badge_html}
+            {body_html}
+          </div>
+          <div class="footer-bar">
+            {footer_content}
+          </div>
+        </div>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
 
 def build_attendance_warning_email(
     course_name: str,
@@ -166,12 +422,10 @@ def build_attendance_warning_email(
     threshold: float = 75.0,
 ) -> Tuple[str, str]:
     """Generate institutional HTML and plain-text email for low attendance advisory on scheduled class days."""
-    subject = f"[Uniflow] Academic Advisory: Low Attendance in {course_name} ({percentage:.1f}%)"
     room_str = room if (room and room.strip() and room.lower() != "none") else "Main Campus (Consult Portal)"
     teacher_str = teacher if (teacher and teacher.strip() and teacher.lower() != "none") else "Department Faculty"
     recovery_classes = calculate_attendance_recovery(attended, total, threshold)
 
-    recovery_note = ""
     if recovery_classes > 0:
         recovery_note = (
             f"<strong>Attendance Recovery Plan:</strong> Based on current records, you must attend the next "
@@ -183,193 +437,70 @@ def build_attendance_warning_email(
             f"Attending today's scheduled session is critical to avoid slipping below the institutional threshold of {threshold:.0f}%."
         )
 
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    body {{
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      background-color: #f8fafc;
-      color: #0f172a;
-      margin: 0;
-      padding: 24px 12px;
-      line-height: 1.5;
-    }}
-    .email-container {{
-      max-width: 580px;
-      margin: 0 auto;
-      background: #ffffff;
-      border-radius: 8px;
-      overflow: hidden;
-      border: 1px solid #e2e8f0;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }}
-    .header-bar {{
-      background: #0f172a;
-      padding: 22px 28px;
-      border-bottom: 2px solid #e2e8f0;
-    }}
-    .brand-title {{
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: #94a3b8;
-      margin-bottom: 4px;
-    }}
-    .header-title {{
-      color: #ffffff;
-      font-size: 19px;
-      font-weight: 700;
-      margin: 0;
-      letter-spacing: -0.01em;
-    }}
-    .content-body {{
-      padding: 28px;
-    }}
-    .status-badge {{
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      background: #fef2f2;
-      color: #991b1b;
-      border: 1px solid #fecaca;
-      margin-bottom: 18px;
-    }}
-    .intro-paragraph {{
-      font-size: 14px;
-      color: #334155;
-      margin: 0 0 20px 0;
-    }}
-    .metric-grid {{
-      display: table;
-      width: 100%;
-      margin: 20px 0;
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 6px;
-    }}
-    .metric-cell {{
-      display: table-cell;
-      width: 50%;
-      padding: 16px;
-      text-align: center;
-      vertical-align: middle;
-    }}
-    .metric-cell:first-child {{
-      border-right: 1px solid #e2e8f0;
-    }}
-    .metric-value {{
-      font-size: 24px;
-      font-weight: 700;
-      color: #991b1b;
-    }}
-    .metric-label {{
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: #64748b;
-      margin-top: 4px;
-    }}
-    .details-table {{
-      width: 100%;
-      border-collapse: collapse;
-      margin: 20px 0;
-      font-size: 13px;
-    }}
-    .details-table td {{
-      padding: 10px 12px;
-      border-bottom: 1px solid #f1f5f9;
-      color: #1e293b;
-    }}
-    .details-table td.label-col {{
-      width: 32%;
-      font-weight: 600;
-      color: #64748b;
-      background: #fafafa;
-    }}
-    .action-notice {{
-      background: #fffbeb;
-      border: 1px solid #fef3c7;
-      border-radius: 6px;
-      padding: 14px 16px;
-      font-size: 13px;
-      color: #92400e;
-      margin-top: 22px;
-    }}
-    .footer-bar {{
-      background: #f8fafc;
-      padding: 18px 28px;
-      font-size: 11px;
-      color: #64748b;
-      text-align: center;
-      border-top: 1px solid #e2e8f0;
-      line-height: 1.6;
-    }}
-  </style>
-</head>
-<body>
-  <div class="email-container">
-    <div class="header-bar">
-      <div class="brand-title">Uniflow Academic Suite · Air University</div>
-      <h1 class="header-title">Academic Advisory: Low Attendance Warning</h1>
-    </div>
-    <div class="content-body">
-      <div class="status-badge">ATTENDANCE DEFICIT · BELOW {threshold:.0f}%</div>
-      <p class="intro-paragraph">
-        A lecture session for <strong>{course_name}</strong> is scheduled today at <strong>{class_time}</strong>. 
+    preheader = f"Academic Advisory: Your attendance in {course_name} is currently at {percentage:.1f}%, below the required {threshold:.0f}% threshold."
+    status_badge_html = f'<div class="status-badge" style="background:#fef2f2; color:#991b1b; border:1px solid #fecaca;">ATTENDANCE DEFICIT · BELOW {threshold:.0f}%</div>'
+
+    body_html = f"""
+      <p style="font-size:14px; color:#334155; margin:0 0 20px 0; line-height:1.6;">
+        A lecture session for <strong>{escape(course_name)}</strong> is scheduled today at <strong>{escape(class_time)}</strong>.
         Your current cumulative attendance is below the university's examination eligibility requirement.
       </p>
 
       <div class="metric-grid">
         <div class="metric-cell">
-          <div class="metric-value">{percentage:.1f}%</div>
+          <div class="metric-value" style="color:#dc2626;">{percentage:.1f}%</div>
           <div class="metric-label">Current Attendance</div>
         </div>
         <div class="metric-cell">
-          <div class="metric-value">{attended} / {total}</div>
+          <div class="metric-value" style="color:#0f172a;">{attended} / {total}</div>
           <div class="metric-label">Classes Attended</div>
         </div>
       </div>
 
-      <table class="details-table">
+      <table class="details-table" role="presentation">
         <tr>
           <td class="label-col">Course Name</td>
-          <td><strong>{course_name}</strong></td>
+          <td><strong>{escape(course_name)}</strong></td>
         </tr>
         <tr>
           <td class="label-col">Session Time</td>
-          <td>{class_time}</td>
+          <td><strong>{escape(class_time)}</strong></td>
         </tr>
         <tr>
           <td class="label-col">Classroom / Venue</td>
-          <td>{room_str}</td>
+          <td>{escape(room_str)}</td>
         </tr>
         <tr>
           <td class="label-col">Instructor</td>
-          <td>{teacher_str}</td>
+          <td>{escape(teacher_str)}</td>
+        </tr>
+        <tr>
+          <td class="label-col">Policy Requirement</td>
+          <td>Minimum {threshold:.0f}% cumulative attendance for final examination clearance</td>
         </tr>
       </table>
 
       <div class="action-notice">
         {recovery_note}
       </div>
-    </div>
-    <div class="footer-bar">
-      Air University Student Academic Alert Service.<br>
-      Automated notice generated based on the official University Student Portal records.
-    </div>
-  </div>
-</body>
-</html>"""
+    """
 
+    footer_lines = [
+        "Uniflow Academic Suite · Air University Student Academic Alert Service.",
+        "Automated notice generated based on the official University Student Portal records.",
+    ]
+
+    html = _render_uniflow_email_shell(
+        preheader=preheader,
+        brand_title="Uniflow Academic Suite · Air University",
+        header_title="Academic Advisory: Low Attendance Warning",
+        status_badge_html=status_badge_html,
+        body_html=body_html,
+        footer_lines=footer_lines,
+        accent_gradient="linear-gradient(90deg, #dc2626 0%, #ef4444 50%, #f87171 100%)",
+    )
+
+    clean_recovery_note = recovery_note.replace("<strong>", "").replace("</strong>", "")
     text = f"""[Uniflow Academic Advisory] LOW ATTENDANCE WARNING
 
 Course: {course_name}
@@ -382,7 +513,7 @@ Class Scheduled Today:
 - Instructor: {teacher_str}
 
 ACTION REQUIRED:
-{recovery_note.replace('<strong>', '').replace('</strong>', '')}
+{clean_recovery_note}
 
 ---
 Sent by Uniflow Academic Suite for Air University students.
@@ -400,153 +531,56 @@ def build_timetable_reminder_email(
     session_type: str = "Lecture",
 ) -> Tuple[str, str]:
     """Generate institutional HTML and plain-text email for 10-minute prior class reminder."""
-    subject = f"[Uniflow] Upcoming Class: {course_name} at {start_time}"
     room_str = room if (room and room.strip() and room.lower() != "none") else "Venue to be confirmed via Portal"
     teacher_str = teacher if (teacher and teacher.strip() and teacher.lower() != "none") else "Department Faculty"
 
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    body {{
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      background-color: #f8fafc;
-      color: #0f172a;
-      margin: 0;
-      padding: 24px 12px;
-      line-height: 1.5;
-    }}
-    .email-container {{
-      max-width: 580px;
-      margin: 0 auto;
-      background: #ffffff;
-      border-radius: 8px;
-      overflow: hidden;
-      border: 1px solid #e2e8f0;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }}
-    .header-bar {{
-      background: #0f172a;
-      padding: 22px 28px;
-      border-bottom: 2px solid #e2e8f0;
-    }}
-    .brand-title {{
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: #94a3b8;
-      margin-bottom: 4px;
-    }}
-    .header-title {{
-      color: #ffffff;
-      font-size: 19px;
-      font-weight: 700;
-      margin: 0;
-      letter-spacing: -0.01em;
-    }}
-    .content-body {{
-      padding: 28px;
-    }}
-    .status-badge {{
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      background: #eef2ff;
-      color: #3730a3;
-      border: 1px solid #c7d2fe;
-      margin-bottom: 18px;
-    }}
-    .details-table {{
-      width: 100%;
-      border-collapse: collapse;
-      margin: 16px 0;
-      font-size: 13px;
-    }}
-    .details-table td {{
-      padding: 10px 12px;
-      border-bottom: 1px solid #f1f5f9;
-      color: #1e293b;
-    }}
-    .details-table td.label-col {{
-      width: 32%;
-      font-weight: 600;
-      color: #64748b;
-      background: #fafafa;
-    }}
-    .preparation-box {{
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 6px;
-      padding: 14px 16px;
-      font-size: 13px;
-      color: #334155;
-      margin-top: 20px;
-    }}
-    .preparation-box strong {{
-      color: #0f172a;
-    }}
-    .footer-bar {{
-      background: #f8fafc;
-      padding: 18px 28px;
-      font-size: 11px;
-      color: #64748b;
-      text-align: center;
-      border-top: 1px solid #e2e8f0;
-      line-height: 1.6;
-    }}
-  </style>
-</head>
-<body>
-  <div class="email-container">
-    <div class="header-bar">
-      <div class="brand-title">Uniflow Academic Suite · Air University</div>
-      <h1 class="header-title">Upcoming Class Reminder</h1>
-    </div>
-    <div class="content-body">
-      <div class="status-badge">SCHEDULE NOTICE · STARTING IN ~{minutes_left} MINUTES</div>
+    preheader = f"Schedule Notice: {course_name} starts in ~{minutes_left} minutes ({start_time} - {end_time}) in {room_str}."
+    status_badge_html = f'<div class="status-badge" style="background:#eef2ff; color:#3730a3; border:1px solid #c7d2fe;">SCHEDULE NOTICE · STARTING IN ~{minutes_left} MINUTES</div>'
 
-      <table class="details-table">
+    body_html = f"""
+      <table class="details-table" role="presentation">
         <tr>
           <td class="label-col">Course</td>
-          <td><strong>{course_name}</strong></td>
+          <td><strong>{escape(course_name)}</strong></td>
         </tr>
         <tr>
           <td class="label-col">Time Window</td>
-          <td><strong>{start_time} - {end_time}</strong></td>
+          <td><strong>{escape(start_time)} - {escape(end_time)}</strong></td>
         </tr>
         <tr>
           <td class="label-col">Classroom / Venue</td>
-          <td>{room_str}</td>
+          <td>{escape(room_str)}</td>
         </tr>
         <tr>
           <td class="label-col">Instructor</td>
-          <td>{teacher_str}</td>
+          <td>{escape(teacher_str)}</td>
         </tr>
         <tr>
           <td class="label-col">Session Type</td>
-          <td>{session_type}</td>
+          <td>{escape(session_type)}</td>
         </tr>
       </table>
 
       <div class="preparation-box">
-        <strong>Preparation Notice:</strong> Please proceed to {room_str} now to ensure on-time arrival. 
+        <strong>Preparation Notice:</strong> Please proceed to {escape(room_str)} now to ensure on-time arrival.
         Verify that you have your course notes, student ID, and any relevant lab materials ready.
       </div>
-    </div>
-    <div class="footer-bar">
-      Air University Student Weekly Schedule Tracker.<br>
-      Automated 10-minute prior notice sent by Uniflow.
-    </div>
-  </div>
-</body>
-</html>"""
+    """
+
+    footer_lines = [
+        "Uniflow Academic Suite · Air University Student Weekly Schedule Tracker.",
+        f"Automated {minutes_left}-minute prior notice dispatched by Uniflow.",
+    ]
+
+    html = _render_uniflow_email_shell(
+        preheader=preheader,
+        brand_title="Uniflow Academic Suite · Air University",
+        header_title="Upcoming Class Reminder",
+        status_badge_html=status_badge_html,
+        body_html=body_html,
+        footer_lines=footer_lines,
+        accent_gradient="linear-gradient(90deg, #4338ca 0%, #6366f1 50%, #818cf8 100%)",
+    )
 
     text = f"""[Uniflow Schedule Notice] CLASS STARTING IN ~{minutes_left} MINUTES
 
@@ -574,154 +608,58 @@ def build_assignment_deadline_email(
 ) -> Tuple[str, str]:
     """Generate institutional HTML and plain-text email for Google Classroom coursework deadline reminders."""
     work_type_label = "Quiz / Examination" if is_quiz else "Assignment / Lab Report"
-    subject = f"[Uniflow] Deadline Notice: {assignment_title} ({course_name})"
     action_url = classroom_url or "https://classroom.google.com"
 
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    body {{
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      background-color: #f8fafc;
-      color: #0f172a;
-      margin: 0;
-      padding: 24px 12px;
-      line-height: 1.5;
-    }}
-    .email-container {{
-      max-width: 580px;
-      margin: 0 auto;
-      background: #ffffff;
-      border-radius: 8px;
-      overflow: hidden;
-      border: 1px solid #e2e8f0;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }}
-    .header-bar {{
-      background: #0f172a;
-      padding: 22px 28px;
-      border-bottom: 2px solid #e2e8f0;
-    }}
-    .brand-title {{
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: #94a3b8;
-      margin-bottom: 4px;
-    }}
-    .header-title {{
-      color: #ffffff;
-      font-size: 19px;
-      font-weight: 700;
-      margin: 0;
-      letter-spacing: -0.01em;
-    }}
-    .content-body {{
-      padding: 28px;
-    }}
-    .status-badge {{
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      background: #fffbeb;
-      color: #92400e;
-      border: 1px solid #fde68a;
-      margin-bottom: 18px;
-    }}
-    .details-table {{
-      width: 100%;
-      border-collapse: collapse;
-      margin: 16px 0;
-      font-size: 13px;
-    }}
-    .details-table td {{
-      padding: 10px 12px;
-      border-bottom: 1px solid #f1f5f9;
-      color: #1e293b;
-    }}
-    .details-table td.label-col {{
-      width: 32%;
-      font-weight: 600;
-      color: #64748b;
-      background: #fafafa;
-    }}
-    .btn-container {{
-      text-align: center;
-      margin: 24px 0 12px 0;
-    }}
-    .btn-primary {{
-      display: inline-block;
-      background: #0f172a;
-      color: #ffffff !important;
-      text-decoration: none;
-      padding: 11px 22px;
-      border-radius: 6px;
-      font-size: 13px;
-      font-weight: 600;
-      letter-spacing: 0.02em;
-    }}
-    .footer-bar {{
-      background: #f8fafc;
-      padding: 18px 28px;
-      font-size: 11px;
-      color: #64748b;
-      text-align: center;
-      border-top: 1px solid #e2e8f0;
-      line-height: 1.6;
-    }}
-  </style>
-</head>
-<body>
-  <div class="email-container">
-    <div class="header-bar">
-      <div class="brand-title">Uniflow Academic Suite · Google Classroom Sync</div>
-      <h1 class="header-title">Coursework Deadline Reminder</h1>
-    </div>
-    <div class="content-body">
-      <div class="status-badge">DEADLINE NOTICE · DUE IN {time_remaining_str.upper()}</div>
+    preheader = f"Deadline Notice: {assignment_title} for {course_name} is due in {time_remaining_str} ({due_datetime_str})."
+    status_badge_html = f'<div class="status-badge" style="background:#fffbeb; color:#92400e; border:1px solid #fde68a;">DEADLINE NOTICE · DUE IN {escape(time_remaining_str.upper())}</div>'
 
-      <table class="details-table">
+    body_html = f"""
+      <table class="details-table" role="presentation">
         <tr>
           <td class="label-col">Task Title</td>
-          <td><strong>{assignment_title}</strong></td>
+          <td><strong>{escape(assignment_title)}</strong></td>
         </tr>
         <tr>
           <td class="label-col">Course</td>
-          <td>{course_name}</td>
+          <td>{escape(course_name)}</td>
         </tr>
         <tr>
           <td class="label-col">Work Type</td>
-          <td>{work_type_label}</td>
+          <td>{escape(work_type_label)}</td>
         </tr>
         <tr>
           <td class="label-col">Submission Deadline</td>
-          <td><strong>{due_datetime_str}</strong></td>
+          <td><strong>{escape(due_datetime_str)}</strong></td>
         </tr>
         <tr>
-          <td class="label-col">Status</td>
-          <td><span style="color: #92400e; font-weight: 600;">Pending Submission</span></td>
+          <td class="label-col">Current Status</td>
+          <td><span style="display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:700; background:#fffbeb; color:#92400e; border:1px solid #fde68a;">Pending Submission</span></td>
         </tr>
       </table>
 
-      <div class="btn-container">
-        <a href="{action_url}" target="_blank" class="btn-primary">View in Google Classroom</a>
-      </div>
-    </div>
-    <div class="footer-bar">
-      Air University Student Google Classroom Integration.<br>
-      To submit, turn in your completed files via Google Classroom or the Uniflow Assignment Portal.
-    </div>
-  </div>
-</body>
-</html>"""
+      <table class="btn-table" role="presentation" border="0" cellspacing="0" cellpadding="0">
+        <tr>
+          <td align="center" style="border-radius:8px; background:#0f172a;">
+            <a href="{escape(action_url, quote=True)}" target="_blank" class="btn-primary">View in Google Classroom</a>
+          </td>
+        </tr>
+      </table>
+    """
+
+    footer_lines = [
+        "Uniflow Academic Suite · Google Classroom Integration.",
+        "To submit, turn in your completed files via Google Classroom or the Uniflow Assignment Portal.",
+    ]
+
+    html = _render_uniflow_email_shell(
+        preheader=preheader,
+        brand_title="Uniflow Academic Suite · Google Classroom Sync",
+        header_title="Coursework Deadline Reminder",
+        status_badge_html=status_badge_html,
+        body_html=body_html,
+        footer_lines=footer_lines,
+        accent_gradient="linear-gradient(90deg, #d97706 0%, #f59e0b 50%, #fbbf24 100%)",
+    )
 
     text = f"""[Uniflow Deadline Notice] COURSEWORK DUE IN {time_remaining_str.upper()}
 
@@ -752,7 +690,6 @@ def build_daily_morning_digest_email(
     Delivers today's complete schedule, attendance status for each course, safe bunk / recovery metrics,
     and approaching coursework deadlines.
     """
-    subject = f"[Uniflow] Morning Briefing: Today's Classes & Attendance ({date_str})"
     classes_count = len(classes_today)
     advisories_count = len(urgent_warnings)
     tasks_count = len(upcoming_tasks)
@@ -773,20 +710,20 @@ def build_daily_morning_digest_email(
 
             if pct is not None and total > 0:
                 if pct < 75.0:
-                    att_badge = f'<span style="display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:700; background:#fef2f2; color:#991b1b; border:1px solid #fecaca;">{pct:.1f}% ({attended}/{total}) · Need {recovery} to reach 75%</span>'
+                    att_badge = f'<span style="display:inline-block; padding:3px 9px; border-radius:4px; font-size:11px; font-weight:700; background:#fef2f2; color:#991b1b; border:1px solid #fecaca;">{pct:.1f}% ({attended}/{total}) · Need {recovery} to reach 75%</span>'
                 else:
                     bunk_text = f" · {safe_bunks} safe bunk{'s' if safe_bunks != 1 else ''}" if safe_bunks > 0 else " · On borderline"
-                    att_badge = f'<span style="display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:700; background:#f0fdf4; color:#166534; border:1px solid #bbf7d0;">{pct:.1f}% ({attended}/{total}){bunk_text}</span>'
+                    att_badge = f'<span style="display:inline-block; padding:3px 9px; border-radius:4px; font-size:11px; font-weight:700; background:#f0fdf4; color:#166534; border:1px solid #bbf7d0;">{pct:.1f}% ({attended}/{total}){bunk_text}</span>'
             else:
-                att_badge = '<span style="color:#64748b; font-size:12px;">No portal records</span>'
+                att_badge = '<span style="display:inline-block; padding:3px 8px; border-radius:4px; font-size:11px; font-weight:600; background:#f1f5f9; color:#64748b; border:1px solid #e2e8f0;">No portal records</span>'
 
             class_rows_html += f"""
             <tr>
-              <td style="padding:12px 14px; border-bottom:1px solid #f1f5f9; vertical-align:top; width:30%;">
+              <td style="padding:14px 16px; border-bottom:1px solid #f1f5f9; vertical-align:top; width:32%; background:#fafafa;">
                 <div style="font-weight:700; color:#0f172a; font-size:13px;">{time_str}</div>
-                <div style="font-size:11px; color:#64748b; margin-top:2px;">{room}</div>
+                <div style="font-size:11px; color:#64748b; margin-top:3px;">{room}</div>
               </td>
-              <td style="padding:12px 14px; border-bottom:1px solid #f1f5f9; vertical-align:top;">
+              <td style="padding:14px 16px; border-bottom:1px solid #f1f5f9; vertical-align:top;">
                 <div style="font-weight:600; color:#1e293b; font-size:13px;">{course}</div>
                 <div style="font-size:11px; color:#64748b; margin-top:2px;">{teacher}</div>
                 <div style="margin-top:6px;">{att_badge}</div>
@@ -796,8 +733,8 @@ def build_daily_morning_digest_email(
     else:
         class_rows_html = """
         <tr>
-          <td colspan="2" style="padding:24px; text-align:center; color:#64748b; font-size:13px; font-style:italic;">
-            No university classes scheduled for today. Enjoy your day!
+          <td colspan="2" style="padding:28px 20px; text-align:center; color:#64748b; font-size:13px; font-style:italic;">
+            No university classes scheduled for today. Have a productive day!
           </td>
         </tr>
         """
@@ -811,13 +748,13 @@ def build_daily_morning_digest_email(
             p = adv.get("percentage", 0.0)
             rec = adv.get("recovery_needed", 0)
             advisory_items_html += f"""
-            <li style="margin-bottom:8px; font-size:13px; color:#991b1b;">
-              <strong>{c}</strong>: Currently at <strong>{p:.1f}%</strong>. You must attend today's session and the next <strong>{rec} consecutive classes</strong> to restore examination eligibility.
+            <li style="margin-bottom:8px; font-size:13px; color:#991b1b; line-height:1.5;">
+              <strong>{c}</strong>: Cumulative attendance at <strong>{p:.1f}%</strong>. You must attend today's session and the next <strong>{rec} consecutive classes</strong> to restore examination eligibility.
             </li>
             """
         advisories_html = f"""
-        <div style="margin:20px 0; background:#fef2f2; border:1px solid #fecaca; border-radius:6px; padding:16px;">
-          <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:#991b1b; margin-bottom:8px;">
+        <div style="margin:22px 0; background:#fef2f2; border:1px solid #fecaca; border-left:4px solid #ef4444; border-radius:8px; padding:18px;">
+          <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:#991b1b; margin-bottom:10px;">
             Academic Advisory: Attendance Below Minimum Threshold (75%)
           </div>
           <ul style="margin:0; padding-left:18px;">
@@ -838,21 +775,21 @@ def build_daily_morning_digest_email(
             url = candidate_url if candidate_url.startswith("https://classroom.google.com/") else "https://classroom.google.com/"
             task_rows_html += f"""
             <tr>
-              <td style="padding:10px 14px; border-bottom:1px solid #f1f5f9; font-size:13px; color:#1e293b;">
+              <td style="padding:12px 16px; border-bottom:1px solid #f1f5f9; font-size:13px; color:#1e293b;">
                 <strong>{title}</strong>
-                <div style="font-size:11px; color:#64748b;">{cname} · Due: {due_str}</div>
+                <div style="font-size:11px; color:#64748b; margin-top:2px;">{cname} · Due: {due_str}</div>
               </td>
-              <td style="padding:10px 14px; border-bottom:1px solid #f1f5f9; text-align:right;">
-                <a href="{url}" target="_blank" style="font-size:11px; font-weight:600; color:#4f46e5; text-decoration:none;">Open</a>
+              <td style="padding:12px 16px; border-bottom:1px solid #f1f5f9; text-align:right;">
+                <a href="{escape(url, quote=True)}" target="_blank" style="font-size:12px; font-weight:700; color:#4f46e5; text-decoration:none; padding:4px 10px; background:#eef2ff; border-radius:6px;">Open &rarr;</a>
               </td>
             </tr>
             """
         tasks_html = f"""
-        <div style="margin:24px 0 16px 0;">
+        <div style="margin:26px 0 16px 0;">
           <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:#64748b; margin-bottom:10px;">
             Pending Coursework &amp; Deadlines
           </div>
-          <table style="width:100%; border-collapse:collapse; background:#ffffff; border:1px solid #e2e8f0; border-radius:6px;">
+          <table style="width:100%; border-collapse:separate; border-spacing:0; background:#ffffff; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden;" role="presentation">
             {task_rows_html}
           </table>
         </div>
@@ -862,170 +799,69 @@ def build_daily_morning_digest_email(
     sync_warnings_html = ""
     if sync_warnings:
         sync_items = "".join(f"<li style=\"margin:6px 0;\"><strong>{escape(str(item.get('service', 'Sync')))}</strong>: {escape(str(item.get('message', 'Recent sync failed.')))}</li>" for item in sync_warnings)
-        sync_warnings_html = f"<div style=\"margin:20px 0; padding:14px 16px; background:#fff7ed; border:1px solid #fed7aa; border-radius:6px; color:#9a3412; font-size:13px;\"><strong>Sync issues</strong><ul style=\"margin:8px 0 0; padding-left:18px;\">{sync_items}</ul></div>"
-    dashboard_url = escape(settings.frontend_url.rstrip("/") + "/dashboard", quote=True)
+        sync_warnings_html = f"<div style=\"margin:20px 0; padding:14px 18px; background:#fff7ed; border:1px solid #fed7aa; border-left:4px solid #f97316; border-radius:8px; color:#9a3412; font-size:13px;\"><strong>Sync issues</strong><ul style=\"margin:8px 0 0; padding-left:18px;\">{sync_items}</ul></div>"
 
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    body {{
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      background-color: #f8fafc;
-      color: #0f172a;
-      margin: 0;
-      padding: 24px 12px;
-      line-height: 1.5;
-    }}
-    .email-container {{
-      max-width: 600px;
-      margin: 0 auto;
-      background: #ffffff;
-      border-radius: 8px;
-      overflow: hidden;
-      border: 1px solid #e2e8f0;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }}
-    .header-bar {{
-      background: #0f172a;
-      padding: 24px 28px;
-      border-bottom: 2px solid #e2e8f0;
-    }}
-    .brand-title {{
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: #94a3b8;
-      margin-bottom: 4px;
-    }}
-    .header-title {{
-      color: #ffffff;
-      font-size: 20px;
-      font-weight: 700;
-      margin: 0;
-      letter-spacing: -0.01em;
-    }}
-    .content-body {{
-      padding: 28px;
-    }}
-    .status-badge {{
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      background: #eef2ff;
-      color: #3730a3;
-      border: 1px solid #c7d2fe;
-      margin-bottom: 18px;
-    }}
-    .stats-table {{
-      width: 100%;
-      border-collapse: collapse;
-      margin: 16px 0 24px 0;
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 6px;
-    }}
-    .stats-cell {{
-      width: 33.33%;
-      padding: 14px;
-      text-align: center;
-      border-right: 1px solid #e2e8f0;
-    }}
-    .stats-cell:last-child {{
-      border-right: none;
-    }}
-    .stats-val {{
-      font-size: 20px;
-      font-weight: 700;
-      color: #0f172a;
-    }}
-    .stats-label {{
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: #64748b;
-      margin-top: 2px;
-    }}
-    .schedule-table {{
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 10px;
-      border: 1px solid #e2e8f0;
-      border-radius: 6px;
-      background: #ffffff;
-    }}
-    .footer-bar {{
-      background: #f8fafc;
-      padding: 18px 28px;
-      font-size: 11px;
-      color: #64748b;
-      text-align: center;
-      border-top: 1px solid #e2e8f0;
-      line-height: 1.6;
-    }}
-  </style>
-</head>
-<body>
-  <div class="email-container">
-    <div class="header-bar">
-      <div class="brand-title">Uniflow Academic Suite · Daily Briefing</div>
-      <h1 class="header-title">Daily Schedule &amp; Attendance Digest</h1>
-    </div>
-    <div class="content-body">
-      <div class="status-badge">DAILY DIGEST · {date_str.upper()}</div>
-      
-      <p style="margin:0 0 16px 0; font-size:14px; color:#334155;">
-        Good morning! Here is your personalized daily academic overview for <strong>{date_str}</strong>.
+    dashboard_url = escape(settings.frontend_url.rstrip("/") + "/dashboard", quote=True)
+    preheader = f"Morning Academic Briefing for {date_str}: {classes_count} classes scheduled, {advisories_count} attendance warnings, {tasks_count} active tasks."
+    status_badge_html = f'<div class="status-badge" style="background:#eef2ff; color:#3730a3; border:1px solid #c7d2fe;">DAILY BRIEFING · {escape(date_str.upper())}</div>'
+
+    body_html = f"""
+      <p style="margin:0 0 18px 0; font-size:14px; color:#334155; line-height:1.6;">
+        Good morning, <strong>{escape(student_name)}</strong>! Here is your personalized daily academic overview for <strong>{escape(date_str)}</strong>.
       </p>
 
-      <table class="stats-table">
+      <table style="width:100%; border-collapse:separate; border-spacing:0; margin:18px 0 24px 0; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; overflow:hidden;" role="presentation">
         <tr>
-          <td class="stats-cell">
-            <div class="stats-val">{classes_count}</div>
-            <div class="stats-label">Classes Today</div>
+          <td style="width:33.33%; padding:16px 12px; text-align:center; border-right:1px solid #e2e8f0;">
+            <div style="font-size:22px; font-weight:800; color:#0f172a; line-height:1.1;">{classes_count}</div>
+            <div style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color:#64748b; margin-top:4px;">Classes Today</div>
           </td>
-          <td class="stats-cell">
-            <div class="stats-val" style="color: {'#dc2626' if advisories_count > 0 else '#16a34a'};">{advisories_count}</div>
-            <div class="stats-label">Advisories (&lt;75%)</div>
+          <td style="width:33.33%; padding:16px 12px; text-align:center; border-right:1px solid #e2e8f0;">
+            <div style="font-size:22px; font-weight:800; color:{'#dc2626' if advisories_count > 0 else '#16a34a'}; line-height:1.1;">{advisories_count}</div>
+            <div style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color:#64748b; margin-top:4px;">Advisories (&lt;75%)</div>
           </td>
-          <td class="stats-cell">
-            <div class="stats-val">{tasks_count}</div>
-            <div class="stats-label">Active Tasks</div>
+          <td style="width:33.33%; padding:16px 12px; text-align:center;">
+            <div style="font-size:22px; font-weight:800; color:#0f172a; line-height:1.1;">{tasks_count}</div>
+            <div style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color:#64748b; margin-top:4px;">Active Tasks</div>
           </td>
         </tr>
       </table>
 
       {advisories_html}
 
-      <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:#64748b; margin-bottom:8px;">
+      <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:#64748b; margin:24px 0 10px 0;">
         Today's Class Schedule &amp; Course Attendance
       </div>
-      <table class="schedule-table">
+      <table style="width:100%; border-collapse:separate; border-spacing:0; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden; background:#ffffff;" role="presentation">
         {class_rows_html}
       </table>
 
       {tasks_html}
       {sync_warnings_html}
 
-      <div style="margin-top:24px; text-align:center;">
-        <a href="{dashboard_url}" target="_blank" style="display:inline-block; background:#0f172a; color:#ffffff !important; text-decoration:none; padding:10px 22px; border-radius:6px; font-size:12px; font-weight:600;">Open Uniflow Dashboard</a>
-      </div>
-    </div>
-    <div class="footer-bar">
-      Daily Morning Digest dispatched strictly once per day by Uniflow Academic Suite.<br>
-      Air University Student Intelligence &amp; Schedule Synchronization.
-    </div>
-  </div>
-</body>
-</html>"""
+      <table class="btn-table" role="presentation" border="0" cellspacing="0" cellpadding="0">
+        <tr>
+          <td align="center" style="border-radius:8px; background:#0f172a;">
+            <a href="{dashboard_url}" target="_blank" class="btn-primary">Open Uniflow Dashboard</a>
+          </td>
+        </tr>
+      </table>
+    """
+
+    footer_lines = [
+        "Daily Morning Digest dispatched strictly once per day by Uniflow Academic Suite.",
+        "Air University Student Intelligence &amp; Schedule Synchronization.",
+    ]
+
+    html = _render_uniflow_email_shell(
+        preheader=preheader,
+        brand_title="Uniflow Academic Suite · Daily Briefing",
+        header_title="Daily Schedule & Attendance Digest",
+        status_badge_html=status_badge_html,
+        body_html=body_html,
+        footer_lines=footer_lines,
+        accent_gradient="linear-gradient(90deg, #2563eb 0%, #4f46e5 50%, #7c3aed 100%)",
+    )
 
     text_lines = [
         f"[Uniflow Morning Briefing] {date_str}",
@@ -1083,155 +919,59 @@ def build_new_assignment_email(
 ) -> Tuple[str, str]:
     """Generate institutional HTML and plain-text email for newly posted Google Classroom coursework."""
     work_type_label = "Quiz / Exam" if is_quiz else "Assignment"
-    subject = f"[Uniflow] New Task: {assignment_title} ({course_name})"
     action_url = classroom_url or "https://classroom.google.com"
     desc_snippet = (description[:250] + "...") if description and len(description) > 250 else (description or "No additional instructions provided.")
 
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    body {{
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      background-color: #f8fafc;
-      color: #0f172a;
-      margin: 0;
-      padding: 24px 12px;
-      line-height: 1.5;
-    }}
-    .email-container {{
-      max-width: 580px;
-      margin: 0 auto;
-      background: #ffffff;
-      border-radius: 8px;
-      overflow: hidden;
-      border: 1px solid #e2e8f0;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }}
-    .header-bar {{
-      background: #0f172a;
-      padding: 22px 28px;
-      border-bottom: 2px solid #e2e8f0;
-    }}
-    .brand-title {{
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: #94a3b8;
-      margin-bottom: 4px;
-    }}
-    .header-title {{
-      color: #ffffff;
-      font-size: 19px;
-      font-weight: 700;
-      margin: 0;
-      letter-spacing: -0.01em;
-    }}
-    .content-body {{
-      padding: 28px;
-    }}
-    .status-badge {{
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      background: #eff6ff;
-      color: #1d4ed8;
-      border: 1px solid #bfdbfe;
-      margin-bottom: 18px;
-    }}
-    .details-table {{
-      width: 100%;
-      border-collapse: collapse;
-      margin: 16px 0;
-      font-size: 13px;
-    }}
-    .details-table td {{
-      padding: 10px 12px;
-      border-bottom: 1px solid #f1f5f9;
-      color: #1e293b;
-    }}
-    .details-table td.label-col {{
-      width: 32%;
-      font-weight: 600;
-      color: #64748b;
-      background: #fafafa;
-    }}
-    .btn-container {{
-      text-align: center;
-      margin: 24px 0 12px 0;
-    }}
-    .btn-primary {{
-      display: inline-block;
-      background: #0f172a;
-      color: #ffffff !important;
-      text-decoration: none;
-      padding: 11px 22px;
-      border-radius: 6px;
-      font-size: 13px;
-      font-weight: 600;
-      letter-spacing: 0.02em;
-    }}
-    .footer-bar {{
-      background: #f8fafc;
-      padding: 18px 28px;
-      font-size: 11px;
-      color: #64748b;
-      text-align: center;
-      border-top: 1px solid #e2e8f0;
-      line-height: 1.6;
-    }}
-  </style>
-</head>
-<body>
-  <div class="email-container">
-    <div class="header-bar">
-      <div class="brand-title">Uniflow Academic Suite · Google Classroom Sync</div>
-      <h1 class="header-title">New Coursework Posted</h1>
-    </div>
-    <div class="content-body">
-      <div class="status-badge">NEW {work_type_label.upper()} · {course_name.upper()}</div>
+    preheader = f"New Coursework: {assignment_title} has been posted for {course_name}. Due: {due_datetime_str}."
+    status_badge_html = f'<div class="status-badge" style="background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe;">NEW {escape(work_type_label.upper())} · {escape(course_name.upper())}</div>'
 
-      <table class="details-table">
+    body_html = f"""
+      <table class="details-table" role="presentation">
         <tr>
           <td class="label-col">Task Title</td>
-          <td><strong>{assignment_title}</strong></td>
+          <td><strong>{escape(assignment_title)}</strong></td>
         </tr>
         <tr>
           <td class="label-col">Course</td>
-          <td>{course_name}</td>
+          <td>{escape(course_name)}</td>
         </tr>
         <tr>
           <td class="label-col">Work Type</td>
-          <td>{work_type_label}</td>
+          <td>{escape(work_type_label)}</td>
         </tr>
         <tr>
           <td class="label-col">Submission Due</td>
-          <td><strong>{due_datetime_str}</strong></td>
+          <td><strong>{escape(due_datetime_str)}</strong></td>
         </tr>
         <tr>
           <td class="label-col">Instructions</td>
-          <td style="color:#475569; font-size:12px; line-height:1.5;">{desc_snippet}</td>
+          <td style="color:#475569; font-size:13px; line-height:1.6;">{escape(desc_snippet)}</td>
         </tr>
       </table>
 
-      <div class="btn-container">
-        <a href="{action_url}" target="_blank" class="btn-primary">View in Google Classroom</a>
-      </div>
-    </div>
-    <div class="footer-bar">
-      Dispatched strictly once upon new coursework arrival by Uniflow Academic Suite.<br>
-      Air University Student Google Classroom Sync.
-    </div>
-  </div>
-</body>
-</html>"""
+      <table class="btn-table" role="presentation" border="0" cellspacing="0" cellpadding="0">
+        <tr>
+          <td align="center" style="border-radius:8px; background:#0f172a;">
+            <a href="{escape(action_url, quote=True)}" target="_blank" class="btn-primary">View in Google Classroom</a>
+          </td>
+        </tr>
+      </table>
+    """
+
+    footer_lines = [
+        "Dispatched strictly once upon new coursework arrival by Uniflow Academic Suite.",
+        "Air University Student Google Classroom Sync.",
+    ]
+
+    html = _render_uniflow_email_shell(
+        preheader=preheader,
+        brand_title="Uniflow Academic Suite · Google Classroom Sync",
+        header_title="New Coursework Posted",
+        status_badge_html=status_badge_html,
+        body_html=body_html,
+        footer_lines=footer_lines,
+        accent_gradient="linear-gradient(90deg, #0284c7 0%, #2563eb 50%, #4f46e5 100%)",
+    )
 
     text = f"""[Uniflow New Coursework] {assignment_title} ({course_name})
 
@@ -1257,28 +997,26 @@ def build_daily_class_list_email(
     classes_today: List[Dict],
 ) -> Tuple[str, str]:
     """
-    Generate a simple HTML and plain-text email for the daily class list.
-    Contains only the schedule of classes for the day.
+    Generate an executive HTML and plain-text email for the daily class schedule list.
     """
     classes_count = len(classes_today)
     day_of_week = date_str.split(",")[0] if "," in date_str else date_str
 
-    # Build classes rows
     if classes_today:
         class_rows_html = ""
         for item in classes_today:
-            course = item.get("course", "")
-            time_str = item.get("time", "")
-            room = item.get("room") or "Main Campus"
-            teacher = item.get("teacher") or "Department Faculty"
+            course = escape(str(item.get("course", "")))
+            time_str = escape(str(item.get("time", "")))
+            room = escape(str(item.get("room") or "Main Campus"))
+            teacher = escape(str(item.get("teacher") or "Department Faculty"))
 
             class_rows_html += f"""
             <tr>
-              <td style="padding:12px 14px; border-bottom:1px solid #f1f5f9; vertical-align:top; width:30%;">
+              <td style="padding:14px 16px; border-bottom:1px solid #f1f5f9; vertical-align:top; width:32%; background:#fafafa;">
                 <div style="font-weight:700; color:#0f172a; font-size:13px;">{time_str}</div>
-                <div style="font-size:11px; color:#64748b; margin-top:2px;">{room}</div>
+                <div style="font-size:11px; color:#64748b; margin-top:3px;">{room}</div>
               </td>
-              <td style="padding:12px 14px; border-bottom:1px solid #f1f5f9; vertical-align:top;">
+              <td style="padding:14px 16px; border-bottom:1px solid #f1f5f9; vertical-align:top;">
                 <div style="font-weight:600; color:#1e293b; font-size:13px;">{course}</div>
                 <div style="font-size:11px; color:#64748b; margin-top:2px;">{teacher}</div>
               </td>
@@ -1287,117 +1025,25 @@ def build_daily_class_list_email(
     else:
         class_rows_html = """
         <tr>
-          <td colspan="2" style="padding:24px; text-align:center; color:#64748b; font-size:13px; font-style:italic;">
+          <td colspan="2" style="padding:28px 20px; text-align:center; color:#64748b; font-size:13px; font-style:italic;">
             No university classes scheduled for today. Enjoy your day!
           </td>
         </tr>
         """
 
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    body {{
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      background-color: #f8fafc;
-      color: #0f172a;
-      margin: 0;
-      padding: 24px 12px;
-      line-height: 1.5;
-    }}
-    .email-container {{
-      max-width: 600px;
-      margin: 0 auto;
-      background: #ffffff;
-      border-radius: 8px;
-      overflow: hidden;
-      border: 1px solid #e2e8f0;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }}
-    .header-bar {{
-      background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
-      padding: 24px 28px;
-      border-bottom: 2px solid #e2e8f0;
-    }}
-    .brand-title {{
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: #bfdbfe;
-      margin-bottom: 4px;
-    }}
-    .header-title {{
-      color: #ffffff;
-      font-size: 20px;
-      font-weight: 700;
-      margin: 0;
-      letter-spacing: -0.01em;
-    }}
-    .content-body {{
-      padding: 28px;
-    }}
-    .status-badge {{
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      background: #eff6ff;
-      color: #1d4ed8;
-      border: 1px solid #bfdbfe;
-      margin-bottom: 18px;
-    }}
-    .schedule-table {{
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 10px;
-      border: 1px solid #e2e8f0;
-      border-radius: 6px;
-      background: #ffffff;
-    }}
-    .schedule-table th {{
-      background: #f8fafc;
-      padding: 12px 14px;
-      text-align: left;
-      font-weight: 600;
-      color: #475569;
-      font-size: 12px;
-      border-bottom: 2px solid #e2e8f0;
-    }}
-    .footer-bar {{
-      background: #f8fafc;
-      padding: 18px 28px;
-      font-size: 11px;
-      color: #64748b;
-      text-align: center;
-      border-top: 1px solid #e2e8f0;
-      line-height: 1.6;
-    }}
-  </style>
-</head>
-<body>
-  <div class="email-container">
-    <div class="header-bar">
-      <div class="brand-title">Uniflow Academic Suite · Daily Schedule</div>
-      <h1 class="header-title">Today's Class Schedule</h1>
-    </div>
-    <div class="content-body">
-      <div class="status-badge">DAILY SCHEDULE · {date_str.upper()}</div>
-      
-      <p style="margin:0 0 16px 0; font-size:14px; color:#334155;">
-        Good morning, <strong>{student_name}</strong>! Here is your class schedule for <strong>{day_of_week}</strong>, <strong>{date_str}</strong>.
+    preheader = f"Class Schedule for {day_of_week}, {date_str}: {classes_count} class{'es' if classes_count != 1 else ''} scheduled."
+    status_badge_html = f'<div class="status-badge" style="background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe;">DAILY SCHEDULE · {escape(date_str.upper())}</div>'
+
+    body_html = f"""
+      <p style="margin:0 0 18px 0; font-size:14px; color:#334155; line-height:1.6;">
+        Good morning, <strong>{escape(student_name)}</strong>! Here is your class schedule for <strong>{escape(day_of_week)}</strong>, <strong>{escape(date_str)}</strong>.
       </p>
 
-      <table class="schedule-table">
+      <table class="details-table" style="margin-top:14px;" role="presentation">
         <thead>
           <tr>
-            <th style="width:30%;">Time & Room</th>
-            <th>Course & Instructor</th>
+            <th style="width:32%; background:#f8fafc; padding:12px 16px; text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:#475569; border-bottom:1px solid #e2e8f0;">Time &amp; Room</th>
+            <th style="background:#f8fafc; padding:12px 16px; text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:#475569; border-bottom:1px solid #e2e8f0;">Course &amp; Faculty</th>
           </tr>
         </thead>
         <tbody>
@@ -1405,19 +1051,26 @@ def build_daily_class_list_email(
         </tbody>
       </table>
 
-      <div style="margin-top:20px; padding:12px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; font-size:12px; color:#166534;">
-        <strong>{classes_count} class{'es' if classes_count != 1 else ''} scheduled today.</strong>
+      <div style="margin-top:22px; padding:14px 18px; background:#f0fdf4; border:1px solid #bbf7d0; border-left:4px solid #16a34a; border-radius:8px; font-size:13px; color:#166534;">
+        <strong>Schedule Summary:</strong> {classes_count} class{'es' if classes_count != 1 else ''} scheduled today.
       </div>
-    </div>
-    <div class="footer-bar">
-      Dispatched daily at 07:00 AM by Uniflow Academic Suite.<br>
-      Air University Student Schedule Notifications.
-    </div>
-  </div>
-</body>
-</html>"""
+    """
 
-    # Plain text version
+    footer_lines = [
+        "Dispatched daily at 07:00 AM by Uniflow Academic Suite.",
+        "Air University Student Schedule Notifications.",
+    ]
+
+    html = _render_uniflow_email_shell(
+        preheader=preheader,
+        brand_title="Uniflow Academic Suite · Daily Schedule",
+        header_title="Today's Class Schedule",
+        status_badge_html=status_badge_html,
+        body_html=body_html,
+        footer_lines=footer_lines,
+        accent_gradient="linear-gradient(90deg, #0d9488 0%, #0284c7 50%, #2563eb 100%)",
+    )
+
     text_lines = [
         f"[Uniflow] Today's Class Schedule ({date_str})",
         "",

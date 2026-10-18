@@ -350,3 +350,58 @@ def test_check_and_execute_course_auto_turn_in_strictly_scopes_to_course(monkeyp
     assert len(results) == 1
     assert turn_in_calls == [101]
     assert 201 not in turn_in_calls
+
+
+def test_auto_turn_in_completed_solution_requires_opt_in_validated_content_and_open_submission(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.db.database import Base
+    from app.db.models import Course, Assignment, AssignmentSolution, Setting, Submission, SubmissionState
+    from app.classroom.router import auto_turn_in_completed_solution
+    import json
+    import sys
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    user_id = "test_user_ready_submit"
+    course = Course(id=30, external_id="course-ready", name="Ready Course", user_id=user_id)
+    assignment = Assignment(id=301, external_id="assignment-ready", course_id=30, title="Lab", user_id=user_id)
+    solution = AssignmentSolution(id=301, assignment_id=301, user_id=user_id, draft_content="Draft only")
+    setting = Setting(
+        key=f"auto_turnin_course_{user_id}_30",
+        value=json.dumps({"submit_when_ready": False}),
+    )
+    db.add_all([course, assignment, solution, setting])
+    db.commit()
+
+    calls = []
+    monkeypatch.setattr(
+        sys.modules["app.classroom.router"],
+        "execute_quick_turn_in",
+        lambda _db, assignment_id, _user_id: calls.append(assignment_id) or {"success": True},
+    )
+
+    assert auto_turn_in_completed_solution(db, assignment.id, user_id) is None
+    assert calls == []
+
+    setting.value = json.dumps({"submit_when_ready": True})
+    db.commit()
+    assert auto_turn_in_completed_solution(db, assignment.id, user_id) is None
+    assert calls == []
+
+    solution.validated_content = "Validated report"
+    db.commit()
+    assert auto_turn_in_completed_solution(db, assignment.id, user_id) == {"success": True}
+    assert calls == [assignment.id]
+
+    submission = Submission(
+        assignment_id=assignment.id,
+        user_id=user_id,
+        submission_state=SubmissionState.TURNED_IN,
+    )
+    db.add(submission)
+    db.commit()
+    assert auto_turn_in_completed_solution(db, assignment.id, user_id) is None
+    assert calls == [assignment.id]
+    db.close()

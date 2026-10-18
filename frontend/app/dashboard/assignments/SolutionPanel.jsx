@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 import Icon from '@/app/dashboard/Icon';
+import HostedBrowserDialog from './HostedBrowserDialog';
 
 export default function SolutionPanel({ assignment }) {
   const { getToken } = useAuth();
@@ -17,6 +18,8 @@ export default function SolutionPanel({ assignment }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [claudeViewerUrl, setClaudeViewerUrl] = useState('');
+  const [classroomViewerUrl, setClassroomViewerUrl] = useState('');
+  const [classroomBrowserBusy, setClassroomBrowserBusy] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [activeFileTab, setActiveFileTab] = useState(0);
   const [selectedTaskTab, setSelectedTaskTab] = useState('all');
@@ -204,6 +207,23 @@ export default function SolutionPanel({ assignment }) {
 
   const [quickSubmitting, setQuickSubmitting] = useState(false);
 
+  const connectClassroomBrowser = async () => {
+    if (classroomBrowserBusy) return;
+    setClassroomBrowserBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const token = getToken ? await getToken() : null;
+      const result = await api.openClassroomBrowser(token);
+      setClassroomViewerUrl(result.viewer_url || '');
+      setNotice('Your private Google Classroom browser is ready. Sign in there with the same Google account connected to Uniflow. The profile is saved for future turn-ins.');
+    } catch (e) {
+      setError(e.message || 'Could not start your private Google Classroom browser.');
+    } finally {
+      setClassroomBrowserBusy(false);
+    }
+  };
+
   const handleQuickTurnIn = async () => {
     if (!solution?.validated_content && !solution?.draft_content && !hasContent) {
       setError('Please generate the Claude assignment solution first. Quick Turn In will package it into a Google Doc and deliverables ZIP for Classroom.');
@@ -216,6 +236,11 @@ export default function SolutionPanel({ assignment }) {
     try {
       const token = getToken ? await getToken() : null;
       const result = await api.quickTurnInAssignment(assignment.id, token);
+      if (result.needs_browser_login) {
+        setClassroomViewerUrl(result.viewer_url || '');
+        setNotice(result.message || 'Sign in to Google Classroom in your private browser, then retry Quick Turn In.');
+        return;
+      }
       if (result.google_doc_url) {
         setSolution((current) => ({
           ...current,
@@ -461,6 +486,17 @@ export default function SolutionPanel({ assignment }) {
               <Icon name="upload" size={13} />
               <span>{quickSubmitting ? 'Submitting to GCR…' : '⚡ Quick Turn In (Doc + ZIP)'}</span>
             </button>
+            <button
+              type="button"
+              onClick={connectClassroomBrowser}
+              disabled={classroomBrowserBusy}
+              className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg border border-line bg-white px-3.5 text-xs font-semibold text-ink shadow-sm transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
+              title="Open your isolated Google Classroom sign-in browser"
+            >
+              <Icon name="externalLink" size={13} />
+              <span>{classroomBrowserBusy ? 'Starting browser…' : 'Sign in to Google Classroom'}</span>
+            </button>
+            <HostedBrowserDialog url={classroomViewerUrl} onClose={() => setClassroomViewerUrl('')} />
 
             {loading ? (
               <span className="inline-flex items-center rounded-full border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-muted">Checking status…</span>
