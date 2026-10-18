@@ -20,6 +20,8 @@ from app.core.logging import logger
 from app.core.redis import invalidate_attendance_summary_cache
 from app.db.database import get_db
 from app.db.models import TimetableEntry, Setting
+from app.auth.clerk_auth import get_current_user_optional
+from app.auth.ownership import require_user_id, user_owner_ids
 from datetime import timezone
 
 # Configure Tesseract path across common Windows locations
@@ -36,9 +38,13 @@ router = APIRouter(prefix="/timetable", tags=["Timetable"])
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
-def _get_semester_start_dt(db: Session, override: Optional[str] = None) -> Optional[datetime]:
+def _get_semester_start_dt(db: Session, override: Optional[str] = None, user_id: str = "") -> Optional[datetime]:
     """Get semester start date from database settings if configured"""
     val = override
+    if not val and user_id:
+        setting = db.query(Setting).filter(Setting.key == f"classroom:{user_id}:semester_start_date").first()
+        if setting and setting.value:
+            val = setting.value.strip().replace('"', '')
     if not val:
         setting = db.query(Setting).filter(Setting.key == "semester_start_date").first()
         if setting and setting.value:
@@ -577,8 +583,11 @@ def _entry_dict(entry: TimetableEntry) -> dict:
 async def parse_timetable_image(
     image: UploadFile = File(...),
     auto_save: bool = Query(True),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
     """
     Parse an uploaded timetable image or PDF using intelligent grid slicing + AI extraction.
     Strictly validates all candidate classes and overrides the previous timetable upon auto-save.
@@ -662,10 +671,10 @@ async def parse_timetable_image(
                     "weekdays": [weekday]
                 })
 
-    # Clean Override Reset: When saving a new timetable image, cleanly wipe previous entries
+    # Clean Override Reset: When saving a new timetable image, cleanly wipe previous entries for this user
     saved_entries = []
     if auto_save and validated_candidates:
-        db.query(TimetableEntry).delete()
+        db.query(TimetableEntry).filter(TimetableEntry.user_id.in_(owners)).delete(synchronize_session=False)
         db.flush()
 
         for item in validated_candidates:
@@ -676,6 +685,7 @@ async def parse_timetable_image(
             identity = f"{subj.lower()}|{weekday}|{st}|{et}|{(semester_detected or '').lower()}"
             external_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
             entry = TimetableEntry(
+                user_id=user_id,
                 external_id=external_id,
                 subject=subj,
                 weekday=weekday,
@@ -694,7 +704,12 @@ async def parse_timetable_image(
         for entry in saved_entries:
             db.refresh(entry)
 
-    all_current_entries = db.query(TimetableEntry).order_by(TimetableEntry.weekday, TimetableEntry.start_time).all()
+    all_current_entries = (
+        db.query(TimetableEntry)
+        .filter(TimetableEntry.user_id.in_(owners))
+        .order_by(TimetableEntry.weekday, TimetableEntry.start_time)
+        .all()
+    )
 
     return {
         "filename": image.filename,
@@ -716,10 +731,17 @@ async def parse_timetable_image(
 @router.get("/classes", response_model=List[dict])
 def get_timetable_classes(
     since: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
-    since_dt = _get_semester_start_dt(db, since)
-    query = db.query(TimetableEntry).order_by(TimetableEntry.weekday, TimetableEntry.start_time)
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
+    since_dt = _get_semester_start_dt(db, since, user_id)
+    query = (
+        db.query(TimetableEntry)
+        .filter(TimetableEntry.user_id.in_(owners))
+        .order_by(TimetableEntry.weekday, TimetableEntry.start_time)
+    )
     
     if since_dt:
         query = query.filter(
@@ -739,9 +761,15 @@ def get_timetable_classes(
 
 
 @router.get("/classes/{entry_id}", response_model=dict)
-def get_timetable_class(entry_id: int, db: Session = Depends(get_db)):
+def get_timetable_class(
+    entry_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Fetch a single timetable class entry by ID (CRUD Read)"""
-    entry = db.query(TimetableEntry).filter(TimetableEntry.id == entry_id).first()
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
+    entry = db.query(TimetableEntry).filter(TimetableEntry.id == entry_id, TimetableEntry.user_id.in_(owners)).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Timetable class not found.")
     return _entry_dict(entry)
@@ -750,12 +778,19 @@ def get_timetable_class(entry_id: int, db: Session = Depends(get_db)):
 @router.get("/today", response_model=List[dict])
 def get_todays_classes(
     since: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
     today = datetime.now(ZoneInfo(settings.timezone)).date()
-    since_dt = _get_semester_start_dt(db, since)
+    since_dt = _get_semester_start_dt(db, since, user_id)
     
-    query = db.query(TimetableEntry).filter(TimetableEntry.weekday == today.weekday()).order_by(TimetableEntry.start_time)
+    query = (
+        db.query(TimetableEntry)
+        .filter(TimetableEntry.weekday == today.weekday(), TimetableEntry.user_id.in_(owners))
+        .order_by(TimetableEntry.start_time)
+    )
     
     if since_dt:
         query = query.filter(
@@ -782,14 +817,18 @@ def get_todays_classes(
 def save_timetable_classes(
     payload: List[TimetableClassInput] = Body(max_length=100),
     override: bool = Query(True, description="Reset and override existing timetable with this new batch"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """
     Save batch timetable classes.
-    By default (override=True), cleanly resets previous timetable entries.
+    By default (override=True), cleanly resets previous timetable entries for the user.
     """
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
+
     if override:
-        db.query(TimetableEntry).delete()
+        db.query(TimetableEntry).filter(TimetableEntry.user_id.in_(owners)).delete(synchronize_session=False)
         db.flush()
 
     saved = []
@@ -801,9 +840,10 @@ def save_timetable_classes(
                 raise HTTPException(status_code=422, detail="Weekdays must be numbered from 0 (Monday) to 6 (Sunday).")
             identity = "|".join((item.subject.strip().lower(), str(weekday), item.start_time, item.end_time, (item.semester_name or "").strip().lower()))
             external_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-            entry = db.query(TimetableEntry).filter(TimetableEntry.external_id == external_id).first()
+            entry = db.query(TimetableEntry).filter(TimetableEntry.external_id == external_id, TimetableEntry.user_id.in_(owners)).first()
             if not entry:
                 entry = TimetableEntry(
+                    user_id=user_id,
                     external_id=external_id,
                     subject=item.subject.strip(),
                     weekday=weekday,
@@ -829,9 +869,13 @@ def save_timetable_classes(
 @router.post("/classes/single", response_model=dict)
 def create_single_timetable_class(
     item: TimetableClassInput = Body(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Create a single timetable class entry (CRUD Create)"""
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
+
     if item.end_time <= item.start_time:
         raise HTTPException(status_code=422, detail="End time must be after start time.")
     weekday = item.weekdays[0] if item.weekdays else 0
@@ -840,9 +884,10 @@ def create_single_timetable_class(
 
     identity = "|".join((item.subject.strip().lower(), str(weekday), item.start_time, item.end_time, (item.semester_name or "").strip().lower()))
     external_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-    entry = db.query(TimetableEntry).filter(TimetableEntry.external_id == external_id).first()
+    entry = db.query(TimetableEntry).filter(TimetableEntry.external_id == external_id, TimetableEntry.user_id.in_(owners)).first()
     if not entry:
         entry = TimetableEntry(
+            user_id=user_id,
             external_id=external_id,
             subject=item.subject.strip(),
             weekday=weekday,
@@ -865,9 +910,14 @@ def create_single_timetable_class(
 
 
 @router.delete("/classes/all", response_model=dict)
-def clear_all_timetable_classes(db: Session = Depends(get_db)):
-    """Clear all timetable class entries (CRUD Delete All / Reset)"""
-    deleted_count = db.query(TimetableEntry).delete()
+def clear_all_timetable_classes(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Clear all timetable class entries for the user (CRUD Delete All / Reset)"""
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
+    deleted_count = db.query(TimetableEntry).filter(TimetableEntry.user_id.in_(owners)).delete(synchronize_session=False)
     db.commit()
     invalidate_attendance_summary_cache()
     return {"deleted": True, "count": deleted_count}
@@ -877,10 +927,13 @@ def clear_all_timetable_classes(db: Session = Depends(get_db)):
 def update_timetable_class(
     entry_id: int,
     item: TimetableClassInput = Body(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Update a specific timetable class entry (CRUD Update)"""
-    entry = db.query(TimetableEntry).filter(TimetableEntry.id == entry_id).first()
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
+    entry = db.query(TimetableEntry).filter(TimetableEntry.id == entry_id, TimetableEntry.user_id.in_(owners)).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Timetable class not found.")
     
@@ -910,9 +963,15 @@ def update_timetable_class(
 
 
 @router.delete("/classes/{entry_id}", response_model=dict)
-def delete_timetable_class(entry_id: int, db: Session = Depends(get_db)):
+def delete_timetable_class(
+    entry_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Delete a single timetable class entry (CRUD Delete)"""
-    entry = db.query(TimetableEntry).filter(TimetableEntry.id == entry_id).first()
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
+    entry = db.query(TimetableEntry).filter(TimetableEntry.id == entry_id, TimetableEntry.user_id.in_(owners)).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Timetable class not found.")
     db.delete(entry)

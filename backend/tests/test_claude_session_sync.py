@@ -10,6 +10,7 @@ from app.classroom.router import (
     ClaudeCookieSyncRequest,
 )
 from app.db.models import Setting
+from app.core.security import decrypt_token_if_encrypted
 
 
 class MockDB:
@@ -63,7 +64,8 @@ def test_sync_claude_session_valid():
 
     key_setting = db.settings.get("classroom:user_test_123:claude_session_key")
     assert key_setting is not None
-    assert key_setting.value == "sk-ant-sid01-abcdef1234567890abcdef1234567890"
+    assert key_setting.value != "sk-ant-sid01-abcdef1234567890abcdef1234567890"
+    assert decrypt_token_if_encrypted(key_setting.value) == "sk-ant-sid01-abcdef1234567890abcdef1234567890"
 
 
 def test_sync_claude_session_strips_cookie_name():
@@ -76,7 +78,7 @@ def test_sync_claude_session_strips_cookie_name():
     res = sync_claude_session(payload, db=db, clerk_user=user)
     assert res["status"] == "connected"
     key_setting = db.settings.get("classroom:user_test_123:claude_session_key")
-    assert key_setting.value == "sk-ant-sid01-abcdef1234567890abcdef1234567890"
+    assert decrypt_token_if_encrypted(key_setting.value) == "sk-ant-sid01-abcdef1234567890abcdef1234567890"
 
 
 def test_sync_claude_session_rejects_too_short():

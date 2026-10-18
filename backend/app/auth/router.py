@@ -21,9 +21,11 @@ from app.db.repositories import GoogleCredentialRepository
 from app.db.models import Setting
 from app.core.logging import logger
 from app.auth.clerk_auth import get_current_user_optional, require_current_user
+from app.auth.access_gate import get_access_status, redeem_access_otp, request_access_otp
+from app.auth.access_gate import require_access_grant
 from app.core.redis import check_rate_limit as redis_check_rate_limit
 from app.core.security import decrypt_token_if_encrypted, get_google_credential_tokens, encrypt_token_if_needed
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 # Only allow HTTP transport in local development/test environments
 if settings.environment == "development" or settings.debug:
@@ -48,6 +50,36 @@ class NotificationEmailRequest(BaseModel):
 class NotificationEmailResponse(BaseModel):
     email: Optional[str] = None
     message: str
+
+
+class AccessOtpRequest(BaseModel):
+    code: str = Field(min_length=8, max_length=8, pattern=r"^[0-9]{8}$")
+
+
+@router.get("/access/status")
+def private_access_status(
+    user: dict = Depends(require_current_user),
+    db: Session = Depends(get_db),
+):
+    return get_access_status(user, db)
+
+
+@router.post("/access/request")
+def request_private_access(
+    request: Request,
+    user: dict = Depends(require_current_user),
+    db: Session = Depends(get_db),
+):
+    return request_access_otp(request, user, db)
+
+
+@router.post("/access/redeem")
+def redeem_private_access(
+    payload: AccessOtpRequest,
+    user: dict = Depends(require_current_user),
+    db: Session = Depends(get_db),
+):
+    return redeem_access_otp(user, payload.code, db)
 
 
 # Per-user cache for connected Google emails: {user_id: email}
@@ -100,31 +132,34 @@ def _safe_oauth_redirect_to(redirect_to: Optional[str]) -> Optional[str]:
 
 
 def _get_frontend_origin(request: Optional[Request] = None, state_origin: Optional[str] = None) -> str:
-    """Determine the valid frontend origin (Vercel) to redirect the user to."""
+    """Resolve only an explicitly configured frontend origin for OAuth redirects."""
     canonical_origin = "https://univ-flow-bt12.vercel.app"
+    configured_origins = {canonical_origin}
+    if settings.frontend_url:
+        frontend = urlsplit(settings.frontend_url)
+        browser_viewer = urlsplit(settings.browser_viewer_base_url)
+        same_as_backend_host = bool(frontend.netloc and browser_viewer.netloc and frontend.netloc == browser_viewer.netloc)
+        if frontend.scheme in {"http", "https"} and frontend.netloc and not same_as_backend_host:
+            configured_origins.add(f"{frontend.scheme}://{frontend.netloc}".rstrip("/"))
+    configured_origins.update(
+        origin.strip().rstrip("/")
+        for origin in (settings.cors_origins or "").split(",")
+        if origin.strip().startswith(("https://", "http://"))
+    )
 
-    # 1. State origin saved during auth initialization
-    if state_origin and "azure.com" not in state_origin and "localhost:8000" not in state_origin:
+    if state_origin and state_origin.rstrip("/") in configured_origins:
         return state_origin.rstrip("/")
-
-    # 2. Origin or Referer header from current request
     if request:
         origin = request.headers.get("origin")
-        if origin and "azure.com" not in origin and "localhost:8000" not in origin:
+        if origin and origin.rstrip("/") in configured_origins:
             return origin.rstrip("/")
         referer = request.headers.get("referer")
         if referer:
             parsed = urlsplit(referer)
-            if parsed.scheme and parsed.netloc and "azure.com" not in parsed.netloc and "localhost:8000" not in parsed.netloc:
-                return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
-
-    # 3. Settings frontend_url if valid and not pointing to the API VM itself
-    if settings.frontend_url:
-        parsed_fe = urlsplit(settings.frontend_url)
-        if parsed_fe.netloc and "azure.com" not in parsed_fe.netloc and "localhost:8000" not in parsed_fe.netloc:
-            return settings.frontend_url.rstrip("/")
-
-    return canonical_origin
+            candidate = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+            if candidate in configured_origins:
+                return candidate
+    return next((origin for origin in configured_origins if origin != canonical_origin), canonical_origin)
 
 
 def _oauth_frontend_redirect(
@@ -144,7 +179,7 @@ def _oauth_frontend_redirect(
     return urlunsplit((frontend.scheme, frontend.netloc, target_path, urlencode(query), ""))
 
 
-@router.get("/status", dependencies=[Depends(require_current_user)])
+@router.get("/status", dependencies=[Depends(require_current_user), Depends(require_access_grant)])
 def get_auth_status(
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
@@ -252,6 +287,7 @@ def google_auth(
     _check_rate_limit(f"google-auth:{client_ip}", limit=20, window_sec=60)
 
     user_id = _google_owner_id(clerk_user, required=True)
+    require_access_grant(user=clerk_user, db=db)
     frontend_origin = _get_frontend_origin(request)
     dest_path = _safe_oauth_redirect_to(redirect_to) or "/dashboard/classroom"
 
@@ -448,7 +484,7 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
         )
 
 
-@router.post("/google/disconnect", dependencies=[Depends(require_current_user)])
+@router.post("/google/disconnect", dependencies=[Depends(require_current_user), Depends(require_access_grant)])
 @router.post("/logout", dependencies=[Depends(require_current_user)])
 def logout(
     db: Session = Depends(get_db),
@@ -511,14 +547,14 @@ def _get_notification_email_key(user_id: str) -> str:
 @router.get(
     "/notification-email",
     response_model=NotificationEmailResponse,
-    dependencies=[Depends(require_current_user)],
+    dependencies=[Depends(require_current_user), Depends(require_access_grant)],
 )
 def get_notification_email(
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """Get the user's configured notification email"""
-    user_id = clerk_user.get("id") if clerk_user else "default"
+    user_id = require_user_id(clerk_user)
     key = _get_notification_email_key(user_id)
     setting = db.query(Setting).filter(Setting.key == key).first()
     email = setting.value if setting and setting.value else None
@@ -528,7 +564,7 @@ def get_notification_email(
 @router.put(
     "/notification-email",
     response_model=NotificationEmailResponse,
-    dependencies=[Depends(require_current_user)],
+    dependencies=[Depends(require_current_user), Depends(require_access_grant)],
 )
 def set_notification_email(
     payload: NotificationEmailRequest,
@@ -536,9 +572,7 @@ def set_notification_email(
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """Set the user's notification email for alerts and notifications"""
-    user_id = clerk_user.get("id") if clerk_user else "default"
-    if not user_id:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+    user_id = require_user_id(clerk_user)
 
     key = _get_notification_email_key(user_id)
     setting = db.query(Setting).filter(Setting.key == key).first()
@@ -555,14 +589,14 @@ def set_notification_email(
 @router.delete(
     "/notification-email",
     response_model=NotificationEmailResponse,
-    dependencies=[Depends(require_current_user)],
+    dependencies=[Depends(require_current_user), Depends(require_access_grant)],
 )
 def delete_notification_email(
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """Remove the user's notification email preference"""
-    user_id = clerk_user.get("id") if clerk_user else "default"
+    user_id = require_user_id(clerk_user)
     key = _get_notification_email_key(user_id)
     setting = db.query(Setting).filter(Setting.key == key).first()
     if setting:

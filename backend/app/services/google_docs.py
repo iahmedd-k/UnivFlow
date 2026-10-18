@@ -1067,14 +1067,20 @@ class GoogleDocsService:
             logger.error(f"Error creating folder: {e}")
             return None
 
-    def share_file(self, file_id: str, email: str, role: str = "reader") -> bool:
-        """Share file with email"""
+    def share_file(self, file_id: str, email: str = "anyone", role: str = "reader") -> bool:
+        """Share file with email or anyone with link"""
         try:
-            permission = {
-                "type": "user",
-                "role": role,
-                "emailAddress": email
-            }
+            if not email or email in ("anyone", "anyoneWithLink"):
+                permission = {"type": "anyone", "role": role}
+            elif email == "me":
+                # Current user is already the owner
+                return True
+            else:
+                permission = {
+                    "type": "user",
+                    "role": role,
+                    "emailAddress": email
+                }
             self.drive_service.permissions().create(
                 fileId=file_id,
                 body=permission,
@@ -1083,6 +1089,24 @@ class GoogleDocsService:
             return True
         except HttpError as e:
             logger.error(f"Error sharing file: {e}")
+            return False
+
+    def remove_public_sharing(self, file_id: str) -> bool:
+        """Remove any broad link-access permissions from a Drive file."""
+        try:
+            permissions = self.drive_service.permissions().list(
+                fileId=file_id,
+                fields="permissions(id,type)",
+            ).execute().get("permissions", [])
+            for permission in permissions:
+                if permission.get("type") == "anyone" and permission.get("id"):
+                    self.drive_service.permissions().delete(
+                        fileId=file_id,
+                        permissionId=permission["id"],
+                    ).execute()
+            return True
+        except HttpError as error:
+            logger.error("Could not remove public Drive sharing for %s: %s", file_id, error)
             return False
 
     def export_doc_as_pdf(self, document_id: str) -> Optional[bytes]:

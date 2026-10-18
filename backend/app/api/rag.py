@@ -9,6 +9,7 @@ from sqlalchemy import or_, and_, func
 from app.db.database import get_db
 from app.core.config import settings
 from app.auth.clerk_auth import get_current_user_optional
+from app.auth.ownership import require_user_id, user_owner_ids
 from app.services.gemini import generate_study_answer
 from app.db.models import AssignmentMaterial, Assignment, Course, ChatConversation, ChatMessage, StudyPlan, StudyPlanSession
 from app.rag.study_planning import (
@@ -116,18 +117,17 @@ def get_classroom_materials(
     db=Depends(get_db)
 ):
     user_id = _user_id(current_user)
+    owners = user_owner_ids(user_id)
     q = (
         db.query(AssignmentMaterial, Assignment, Course)
         .join(Assignment, Assignment.id == AssignmentMaterial.assignment_id)
         .join(Course, Course.id == Assignment.course_id)
-    )
-
-    if user_id and user_id != "dev_student_user":
-        q = q.filter(
-            or_(Assignment.user_id == user_id, Assignment.user_id == "legacy"),
-            or_(Course.user_id == user_id, Course.user_id == "legacy"),
-            or_(AssignmentMaterial.user_id == user_id, AssignmentMaterial.user_id == "legacy"),
+        .filter(
+            Assignment.user_id.in_(owners),
+            Course.user_id.in_(owners),
+            AssignmentMaterial.user_id.in_(owners),
         )
+    )
 
     if course_id:
         q = q.filter(Course.id == course_id)
@@ -195,11 +195,10 @@ def get_classroom_materials(
     )
     if seen_assignment_ids:
         q_asg = q_asg.filter(Assignment.id.notin_(seen_assignment_ids))
-    if user_id and user_id != "dev_student_user":
-        q_asg = q_asg.filter(
-            or_(Assignment.user_id == user_id, Assignment.user_id == "legacy"),
-            or_(Course.user_id == user_id, Course.user_id == "legacy"),
-        )
+    q_asg = q_asg.filter(
+        Assignment.user_id.in_(owners),
+        Course.user_id.in_(owners),
+    )
     if course_id:
         q_asg = q_asg.filter(Course.id == course_id)
     if query and query.strip():
@@ -355,13 +354,10 @@ async def upload_study_material(
 ):
     """Upload slides, lecture notes, handouts, or documents directly into a course for study assistance."""
     user_id = _user_id(current_user)
+    owners = user_owner_ids(user_id)
     course = db.query(Course).filter(
         Course.id == course_id,
-        or_(
-            Course.user_id == user_id,
-            Course.user_id == "legacy",
-            user_id == "dev_student_user",
-        )
+        Course.user_id.in_(owners),
     ).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
@@ -452,11 +448,12 @@ def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS,
             AssignmentMaterial.id.in_(int_ids) if int_ids else False
         )
     )
-    if user_id and user_id != "dev_student_user":
+    if user_id:
+        owners = user_owner_ids(user_id)
         rows_query = rows_query.filter(
-            or_(AssignmentMaterial.user_id == user_id, AssignmentMaterial.user_id == "legacy"),
-            or_(Assignment.user_id == user_id, Assignment.user_id == "legacy"),
-            or_(Course.user_id == user_id, Course.user_id == "legacy"),
+            AssignmentMaterial.user_id.in_(owners),
+            Assignment.user_id.in_(owners),
+            Course.user_id.in_(owners),
         )
     db_rows = rows_query.all()
 
@@ -477,10 +474,10 @@ def _read_materials(db, document_ids: list[str], max_chars: int = MAX_DOC_CHARS,
         if document_id.startswith("asg_") and document_id[4:].isdigit():
             asg_id = int(document_id[4:])
             assignment_query = db.query(Assignment).join(Course, Course.id == Assignment.course_id).filter(Assignment.id == asg_id)
-            if user_id and user_id != "dev_student_user":
+            if user_id:
                 assignment_query = assignment_query.filter(
-                    or_(Assignment.user_id == user_id, Assignment.user_id == "legacy"),
-                    or_(Course.user_id == user_id, Course.user_id == "legacy"),
+                    Assignment.user_id.in_(owners),
+                    Course.user_id.in_(owners),
                 )
             asg = assignment_query.first()
             if asg:
@@ -642,9 +639,10 @@ def list_study_plans(
 ):
     """List the current user's study plans."""
     user_id = _user_id(clerk_user)
+    owners = user_owner_ids(user_id)
     rows = (
         db.query(StudyPlan)
-        .filter(StudyPlan.user_id == user_id)
+        .filter(StudyPlan.user_id.in_(owners))
         .order_by(StudyPlan.updated_at.desc().nullslast(), StudyPlan.created_at.desc())
         .limit(limit)
         .all()
@@ -671,9 +669,10 @@ def get_study_plan(
 ):
     """Return a study plan with its day-by-day sessions."""
     user_id = _user_id(clerk_user)
+    owners = user_owner_ids(user_id)
     plan = (
         db.query(StudyPlan)
-        .filter(StudyPlan.id == plan_id, StudyPlan.user_id == user_id)
+        .filter(StudyPlan.id == plan_id, StudyPlan.user_id.in_(owners))
         .first()
     )
     if not plan:
@@ -723,9 +722,10 @@ def update_session_status(
 ):
     """Mark a study session as done / partial / missed."""
     user_id = _user_id(clerk_user)
+    owners = user_owner_ids(user_id)
     plan = (
         db.query(StudyPlan)
-        .filter(StudyPlan.id == plan_id, StudyPlan.user_id == user_id)
+        .filter(StudyPlan.id == plan_id, StudyPlan.user_id.in_(owners))
         .first()
     )
     if not plan:
@@ -778,9 +778,10 @@ def list_conversations(
 ):
     """List the current user's RAG study-assistant conversations."""
     user_id = _user_id(clerk_user)
+    owners = user_owner_ids(user_id)
     rows = (
         db.query(ChatConversation)
-        .filter(ChatConversation.user_id == user_id, ChatConversation.source == "rag")
+        .filter(ChatConversation.user_id.in_(owners), ChatConversation.source == "rag")
         .order_by(ChatConversation.updated_at.desc().nullslast(), ChatConversation.created_at.desc())
         .limit(limit)
         .all()
@@ -806,9 +807,10 @@ def get_conversation_messages(
 ):
     """Return messages for one conversation (owner only)."""
     user_id = _user_id(clerk_user)
+    owners = user_owner_ids(user_id)
     conv = (
         db.query(ChatConversation)
-        .filter(ChatConversation.id == conversation_id, ChatConversation.user_id == user_id)
+        .filter(ChatConversation.id == conversation_id, ChatConversation.user_id.in_(owners))
         .first()
     )
     if not conv:
@@ -826,10 +828,7 @@ def get_conversation_messages(
 
 
 def _user_id(clerk_user: Optional[dict]) -> str:
-    user_id = str((clerk_user or {}).get("id") or "")
-    if not user_id:
-        user_id = "dev_student_user"
-    return user_id
+    return require_user_id(clerk_user)
 
 
 @router.post("/chat")
@@ -849,12 +848,13 @@ async def rag_chat(request: ChatRequest, db=Depends(get_db), clerk_user: Optiona
         user_id = _user_id(clerk_user)
 
         # Resolve or create the conversation.
+        owners = user_owner_ids(user_id)
         if request.conversation_id:
             conv = (
                 db.query(ChatConversation)
                 .filter(
                     ChatConversation.id == request.conversation_id,
-                    ChatConversation.user_id == user_id,
+                    ChatConversation.user_id.in_(owners),
                     ChatConversation.source == "rag",
                 )
                 .first()
@@ -878,14 +878,13 @@ async def rag_chat(request: ChatRequest, db=Depends(get_db), clerk_user: Optiona
                     db.query(AssignmentMaterial)
                     .join(Assignment, Assignment.id == AssignmentMaterial.assignment_id)
                     .join(Course, Course.id == Assignment.course_id)
-                    .filter(or_(AssignmentMaterial.content.isnot(None), Assignment.description.isnot(None)))
-                )
-                if user_id != "dev_student_user":
-                    material_query = material_query.filter(
-                        or_(AssignmentMaterial.user_id == user_id, AssignmentMaterial.user_id == "legacy"),
-                        or_(Assignment.user_id == user_id, Assignment.user_id == "legacy"),
-                        or_(Course.user_id == user_id, Course.user_id == "legacy"),
+                    .filter(
+                        or_(AssignmentMaterial.content.isnot(None), Assignment.description.isnot(None)),
+                        AssignmentMaterial.user_id.in_(owners),
+                        Assignment.user_id.in_(owners),
+                        Course.user_id.in_(owners),
                     )
+                )
                 if request.course_id:
                     material_query = material_query.filter(Course.id == request.course_id)
                 user_mats = material_query.limit(1000).all()

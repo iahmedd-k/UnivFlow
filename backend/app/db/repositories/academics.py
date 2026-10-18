@@ -9,6 +9,9 @@ from app.db.models import (
     Notification, DailyReport, Setting
 )
 
+from app.auth.ownership import user_owner_ids
+
+
 class ClassScheduleRepository:
     def __init__(self, db: Session):
         self.db = db
@@ -28,21 +31,27 @@ class ClassScheduleRepository:
         self.db.refresh(schedule)
         return schedule
 
-    def get_upcoming(self, days: int = 7) -> List[ClassSchedule]:
+    def get_upcoming(self, days: int = 7, user_id: Optional[str] = None) -> List[ClassSchedule]:
         from datetime import datetime, timedelta
         now = datetime.now()
         future = now + timedelta(days=days)
-        return self.db.query(ClassSchedule).filter(
+        q = self.db.query(ClassSchedule).filter(
             ClassSchedule.date >= now,
             ClassSchedule.date <= future
-        ).order_by(ClassSchedule.date, ClassSchedule.start_time).all()
+        )
+        if user_id:
+            q = q.filter(ClassSchedule.user_id.in_(user_owner_ids(user_id)))
+        return q.order_by(ClassSchedule.date, ClassSchedule.start_time).all()
 
-    def get_today(self) -> List[ClassSchedule]:
+    def get_today(self, user_id: Optional[str] = None) -> List[ClassSchedule]:
         from datetime import datetime
         today = datetime.now().date()
-        return self.db.query(ClassSchedule).filter(
+        q = self.db.query(ClassSchedule).filter(
             func.date(ClassSchedule.date) == today
-        ).order_by(ClassSchedule.start_time).all()
+        )
+        if user_id:
+            q = q.filter(ClassSchedule.user_id.in_(user_owner_ids(user_id)))
+        return q.order_by(ClassSchedule.start_time).all()
 
 
 class AttendanceRecordRepository:
@@ -50,10 +59,10 @@ class AttendanceRecordRepository:
         self.db = db
 
     def get_by_external_id(self, external_id: str, user_id: str = "legacy") -> Optional[AttendanceRecord]:
-        rec = self.db.query(AttendanceRecord).filter(AttendanceRecord.external_id == external_id, AttendanceRecord.user_id == user_id).first()
-        if not rec and user_id != "legacy":
-            rec = self.db.query(AttendanceRecord).filter(AttendanceRecord.external_id == external_id, AttendanceRecord.user_id == "legacy").first()
-        return rec
+        return self.db.query(AttendanceRecord).filter(
+            AttendanceRecord.external_id == external_id,
+            AttendanceRecord.user_id.in_(user_owner_ids(user_id)),
+        ).first()
 
     def create_or_update(self, record_data: dict) -> AttendanceRecord:
         record = self.get_by_external_id(record_data["external_id"], record_data.get("user_id", "legacy"))
@@ -67,8 +76,11 @@ class AttendanceRecordRepository:
         self.db.refresh(record)
         return record
 
-    def get_all(self) -> List[AttendanceRecord]:
-        return self.db.query(AttendanceRecord).all()
+    def get_all(self, user_id: Optional[str] = None) -> List[AttendanceRecord]:
+        q = self.db.query(AttendanceRecord)
+        if user_id:
+            q = q.filter(AttendanceRecord.user_id.in_(user_owner_ids(user_id)))
+        return q.all()
 
     def get_by_course(self, course_id: int) -> Optional[AttendanceRecord]:
         return self.db.query(AttendanceRecord).filter(AttendanceRecord.course_id == course_id).first()
@@ -93,14 +105,17 @@ class ExamRepository:
         self.db.refresh(exam)
         return exam
 
-    def get_upcoming(self, days: int = 30) -> List[Exam]:
+    def get_upcoming(self, days: int = 30, user_id: Optional[str] = None) -> List[Exam]:
         from datetime import datetime, timedelta
         now = datetime.now()
         future = now + timedelta(days=days)
-        return self.db.query(Exam).filter(
+        q = self.db.query(Exam).filter(
             Exam.date >= now,
             Exam.date <= future
-        ).order_by(Exam.date).all()
+        )
+        if user_id:
+            q = q.filter(Exam.user_id.in_(user_owner_ids(user_id)))
+        return q.order_by(Exam.date).all()
 
 
 class QuizRepository:
@@ -122,14 +137,17 @@ class QuizRepository:
         self.db.refresh(quiz)
         return quiz
 
-    def get_upcoming(self, days: int = 30) -> List[Quiz]:
+    def get_upcoming(self, days: int = 30, user_id: Optional[str] = None) -> List[Quiz]:
         from datetime import datetime, timedelta
         now = datetime.now()
         future = now + timedelta(days=days)
-        return self.db.query(Quiz).filter(
+        q = self.db.query(Quiz).filter(
             Quiz.date >= now,
             Quiz.date <= future
-        ).order_by(Quiz.date).all()
+        )
+        if user_id:
+            q = q.filter(Quiz.user_id.in_(user_owner_ids(user_id)))
+        return q.order_by(Quiz.date).all()
 
 
 class AnnouncementRepository:

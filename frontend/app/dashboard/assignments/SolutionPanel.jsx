@@ -118,7 +118,7 @@ export default function SolutionPanel({ assignment }) {
     };
   }, [solution?.status, refresh]);
 
-  const startSolver = async (provider = 'claude_browser') => {
+  const startSolver = async () => {
     if (starting || solution?.status === 'generating') return;
     setStarting(true);
     setError('');
@@ -128,14 +128,10 @@ export default function SolutionPanel({ assignment }) {
       const token = getToken ? await getToken() : null;
       await api.generateAssignmentSolution(
         assignment.id,
-        { provider, create_google_doc: true },
+        { create_google_doc: true },
         token
       );
-      if (provider === 'claude_browser') {
-        setNotice('Claude pipeline active: preparing assignment materials and connecting to your private hosted browser. Sign in through Settings if this is your first run.');
-      } else {
-        setNotice('The autonomous multi-agent solver has started! Breaking down rubric requirements…');
-      }
+      setNotice('Claude pipeline active: preparing assignment materials and connecting to your private hosted browser. Sign in through Settings if this is your first run.');
     } catch (e) {
       setError(e.message || 'Could not start the assignment solver.');
       try {
@@ -210,9 +206,10 @@ export default function SolutionPanel({ assignment }) {
 
   const handleQuickTurnIn = async () => {
     if (!solution?.validated_content && !solution?.draft_content && !hasContent) {
-      setError('Please generate the assignment solution first (e.g. click "Solve with Claude" or "Multi-Agent" below), then Quick Turn In will automatically package and submit both the Google Doc and deliverables ZIP to Google Classroom.');
+      setError('Please generate the Claude assignment solution first. Quick Turn In will package it into a Google Doc and deliverables ZIP for Classroom.');
       return;
     }
+    if (!window.confirm(`Submit "${assignment.title}" to Google Classroom now? Uniflow will attach the Google Doc and a ZIP of deliverables, then attempt to turn it in.`)) return;
     setQuickSubmitting(true);
     setError('');
     setNotice('');
@@ -289,7 +286,6 @@ export default function SolutionPanel({ assignment }) {
   const outputs = solution?.terminal_outputs || [];
   const screenshots = solution?.terminal_screenshots || [];
   const generatedImages = solution?.generated_images || [];
-  const crewAgents = solution?.crew_progress?.agents || [];
   const hasContent = Boolean(solution?.validated_content || solution?.draft_content);
   const isGenerating = solution?.status === 'generating' || starting;
   const state = isGenerating
@@ -342,25 +338,8 @@ export default function SolutionPanel({ assignment }) {
   const stepDetail = crewProgress?.detail || (starting ? 'Initializing browser and preparing materials...' : 'Claude is generating solution code and analysis...');
 
   const getStepStyle = (stepNum) => {
-    let isDone = false;
-    let isActive = false;
-    if (state === 'completed' && !isGenerating) {
-      isDone = true;
-    } else if (isGenerating) {
-      if (stepNum === 1) {
-        isDone = activeStep > 1;
-        isActive = activeStep === 1;
-      } else if (stepNum === 2) {
-        isDone = activeStep > 3;
-        isActive = activeStep === 2 || activeStep === 3;
-      } else if (stepNum === 3) {
-        isDone = activeStep > 4;
-        isActive = activeStep === 4;
-      } else if (stepNum === 4) {
-        isDone = false;
-        isActive = activeStep >= 5;
-      }
-    }
+    const isDone = state === 'completed' || (isGenerating && activeStep > stepNum);
+    const isActive = isGenerating && activeStep === stepNum;
     return {
       bg: isDone ? '#eaf7f1' : isActive ? '#eeeafe' : '#f4f4f7',
       color: isDone ? '#438a71' : isActive ? '#6657d9' : '#9a9cab',
@@ -452,7 +431,7 @@ export default function SolutionPanel({ assignment }) {
               }}
             >
               <Icon name="sparkles" size={14} />
-              <span>{hasContent && isGenerating ? 'Re-Solving Assignment (Preserving Latest Output Below)' : 'Autonomous Solver Engine'}</span>
+              <span>{hasContent && isGenerating ? 'Re-solving with Claude (latest output preserved)' : 'Claude assignment solver'}</span>
             </div>
             <h2
               style={{
@@ -466,9 +445,7 @@ export default function SolutionPanel({ assignment }) {
               Assignment Solver & Report Generator
             </h2>
             <p style={{ margin: 0, fontSize: 13, color: '#686d80', lineHeight: 1.5 }}>
-              Runs the four configured CrewAI specialists in sequence, executes technical files when
-              a supported runner is available, and prepares reviewable Google Docs and deliverable files
-              with actual run output and terminal screenshots.
+              Claude reads this assignment and its attached materials, drafts the requested work, and prepares reviewable deliverables. Uniflow does not run or verify generated code.
             </p>
           </div>
 
@@ -504,7 +481,7 @@ export default function SolutionPanel({ assignment }) {
                 <span>Ready for Student Review</span>
               </span>
             ) : state === 'failed' ? (
-              <span className="inline-flex items-center rounded-full border border-rose-border bg-rose-bg px-3 py-1.5 text-xs font-semibold text-rose">Execution failed</span>
+              <span className="inline-flex items-center rounded-full border border-rose-border bg-rose-bg px-3 py-1.5 text-xs font-semibold text-rose">Claude solve failed</span>
             ) : (
               <span className="inline-flex items-center rounded-full border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-muted">Ready to start</span>
             )}
@@ -539,16 +516,6 @@ export default function SolutionPanel({ assignment }) {
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <button
-                type="button"
-                onClick={() => startSolver('crewai')}
-                disabled={starting}
-                className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg bg-violet px-3.5 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-dark"
-                style={{ cursor: 'pointer', background: '#6657d9' }}
-              >
-                <Icon name="code" size={13} />
-                <span>Solve with Multi-Agent (Groq/Gemini)</span>
-              </button>
             </div>
           </div>
         )}
@@ -562,15 +529,16 @@ export default function SolutionPanel({ assignment }) {
             border: '1px solid #ebebf0',
             borderRadius: 10,
             display: 'grid',
-            gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
             gap: 12,
           }}
         >
           {[
-            { num: 1, title: 'Rubric Analysis', sub: 'Decompose tasks' },
-            { num: 2, title: 'Code Synthesis', sub: 'Generate solution' },
-            { num: 3, title: 'Sandbox Run', sub: 'Terminal verification' },
-            { num: 4, title: 'Report Build', sub: 'Google Doc report' },
+            { num: 1, title: 'Load Materials', sub: 'Assignment and files' },
+            { num: 2, title: 'Connect Claude', sub: 'Private browser session' },
+            { num: 3, title: 'Draft Solution', sub: 'Claude response' },
+            { num: 4, title: 'Prepare Files', sub: 'Structure deliverables' },
+            { num: 5, title: 'Export Report', sub: 'Google Doc when enabled' },
           ].map(({ num, title, sub }) => {
             const style = getStepStyle(num);
             return (
@@ -769,7 +737,7 @@ export default function SolutionPanel({ assignment }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <button
                 type="button"
-                onClick={() => startSolver('claude_browser')}
+                onClick={startSolver}
                 disabled={starting}
                 className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50"
                 style={{
@@ -787,24 +755,6 @@ export default function SolutionPanel({ assignment }) {
                   ) : (
                     <>
                       <Icon name="sparkles" size={15} /> Solve with Claude (Browser · Free)
-                    </>
-                  )}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => startSolver('crewai')}
-                disabled={starting}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50"
-                style={{ cursor: 'pointer', padding: '10px 18px', fontSize: 13 }}
-              >
-                <span>
-                  {starting ? (
-                    'Starting Pipeline…'
-                  ) : (
-                    <>
-                      <Icon name="code" size={15} /> Multi-Agent (Groq/Gemini)
                     </>
                   )}
                 </span>
@@ -861,7 +811,7 @@ export default function SolutionPanel({ assignment }) {
             />
             <div>
               <strong style={{ display: 'block', fontSize: 14, color: '#2c2f3b' }}>
-                Autonomous Agent Synthesis in Progress…
+                Claude is solving the assignment…
               </strong>
               <p
                 style={{
@@ -871,25 +821,9 @@ export default function SolutionPanel({ assignment }) {
                   maxWidth: 480,
                 }}
               >
-                The solver is analyzing the assignment, preparing its task deliverables, and building the final report.
+                Claude is preparing assignment materials and generating a reviewable draft.
               </p>
             </div>
-          </div>
-        )}
-
-        {state === 'generating' && crewAgents.length > 0 && (
-          <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
-            {crewAgents.map((agent) => (
-              <div key={agent.id} style={{ padding: '10px 12px', border: '1px solid #e7e3fc', borderRadius: 9, background: '#fff' }}>
-                <strong style={{ display: 'block', fontSize: 11, color: '#2c2f3b' }}>
-                  {({ planner: '1 · Planner / Analyzer', theory_research: '2 · Theory / Research', coder_diagram: '3 · Coder / Diagram', reporter_fixer: '4 · Reporter / Fixer' })[agent.id] || agent.id}
-                </strong>
-                <span style={{ fontSize: 10, color: agent.status === 'completed' ? '#059669' : agent.status === 'failed' ? '#dc2626' : '#858998' }}>
-                  {agent.status === 'running' ? 'Working…' : agent.status === 'completed' ? 'Complete' : agent.status === 'not_run' ? 'Not run' : 'Waiting'}
-                </span>
-                {agent.summary && <p title={agent.summary} style={{ margin: '4px 0 0', color: '#64748b', fontSize: 10, lineHeight: 1.4 }}>{agent.summary}</p>}
-              </div>
-            ))}
           </div>
         )}
 
@@ -939,7 +873,7 @@ export default function SolutionPanel({ assignment }) {
               </button>
               <button
                 type="button"
-                onClick={() => startSolver('claude_browser')}
+                onClick={startSolver}
                 disabled={starting}
                 className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-xs font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50"
                 style={{ cursor: 'pointer' }}
@@ -986,7 +920,7 @@ export default function SolutionPanel({ assignment }) {
                 }}
               >
                 <Icon name={isGenerating ? "sparkles" : "checkCircle"} size={13} />
-                <span>{isGenerating ? "Preserved Latest Output · (Re-solving in progress)" : "Solution Ready · Verified"}</span>
+                <span>{isGenerating ? "Preserved Latest Output · (Re-solving in progress)" : "Claude Draft · Ready for Review"}</span>
               </div>
               <h2
                 style={{
@@ -1059,7 +993,7 @@ export default function SolutionPanel({ assignment }) {
 
               <button
                 type="button"
-                onClick={() => startSolver('claude_browser')}
+                onClick={startSolver}
                 disabled={starting}
                 className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-amber/40 bg-amber-50 px-3 text-xs font-semibold text-amber-800 transition hover:bg-amber-100 disabled:opacity-50"
                 style={{ cursor: 'pointer' }}
@@ -1118,7 +1052,13 @@ export default function SolutionPanel({ assignment }) {
             </div>
           )}
 
-          {/* 3. Unified Task Cards */}
+          {solution?.verification_status === 'unverified' && (
+            <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              Claude-generated solution. Uniflow does not execute or independently verify this code; review it before submitting.
+            </div>
+          )}
+
+          {/* 3. Claude-generated task deliverables */}
           {displayTasks.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
               {displayTasks
@@ -1221,7 +1161,7 @@ export default function SolutionPanel({ assignment }) {
                           >
                             <Icon name="check" size={12} />
                             <span>
-                              {isNotebook ? 'Google Colab Ready' : isDiagram ? 'Diagram Verified' : file ? 'Execution Verified' : 'Verified Solution'}
+                              {output?.verified === true ? 'Execution Verified' : 'Claude Draft · Unverified'}
                             </span>
                           </span>
 
@@ -1371,7 +1311,7 @@ export default function SolutionPanel({ assignment }) {
                                 marginBottom: 6,
                               }}
                             >
-                              {isDiagram ? 'Visual Diagram Output (.PNG)' : 'Terminal Output & Execution Screenshot'}
+                              {isDiagram ? 'Visual Diagram Output (.PNG)' : (output?.verified === false ? 'Claude-reported output (not executed)' : 'Terminal Output & Execution Screenshot')}
                             </span>
                             {screenshot?.data_uri ? (
                               <div

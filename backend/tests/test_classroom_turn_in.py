@@ -12,12 +12,17 @@ class FakeDriveDocsService:
         self.result = result
         self.error = error
         self.uploads = []
+        self.removed_public_shares = []
 
     def upload_file(self, name, content, mime_type):
         self.uploads.append((name, content, mime_type))
         if self.error:
             raise self.error
         return self.result
+
+    def remove_public_sharing(self, file_id):
+        self.removed_public_shares.append(file_id)
+        return True
 
 
 class FakeExecution:
@@ -32,15 +37,26 @@ class FakeExecution:
 
 
 class FakeStudentSubmissions:
-    def __init__(self, modify_error=None, turn_in_error=None):
+    def __init__(self, modify_error=None, turn_in_error=None, initial_state="NEW", initial_attachments=None):
         self.modify_error = modify_error
         self.turn_in_error = turn_in_error
+        self.state = initial_state
+        self.attachments = initial_attachments or []
         self.modify_arguments = None
         self.turn_in_arguments = None
+        self.reclaim_arguments = None
 
     def list(self, **kwargs):
         assert kwargs["userId"] == "me"
-        return FakeExecution({"studentSubmissions": [{"id": "submission-123"}]})
+        return FakeExecution({
+            "studentSubmissions": [{
+                "id": "submission-123",
+                "state": self.state,
+                "assignmentSubmission": {
+                    "attachments": self.attachments,
+                },
+            }]
+        })
 
     def modifyAttachments(self, **kwargs):
         self.modify_arguments = kwargs
@@ -48,15 +64,19 @@ class FakeStudentSubmissions:
 
     def turnIn(self, **kwargs):
         self.turn_in_arguments = kwargs
+        if not self.turn_in_error:
+            self.state = "TURNED_IN"
         return FakeExecution({}, self.turn_in_error)
 
     def reclaim(self, **kwargs):
-        return FakeExecution({})
+        self.reclaim_arguments = kwargs
+        self.state = "RECLAIMED_BY_STUDENT"
+        return FakeExecution({"state": "RECLAIMED_BY_STUDENT"})
 
 
 class FakeClassroomService:
-    def __init__(self, modify_error=None, turn_in_error=None):
-        self.submissions = FakeStudentSubmissions(modify_error, turn_in_error)
+    def __init__(self, modify_error=None, turn_in_error=None, initial_state="NEW", initial_attachments=None):
+        self.submissions = FakeStudentSubmissions(modify_error, turn_in_error, initial_state, initial_attachments)
         self.service = self
 
     def courses(self):
@@ -169,6 +189,7 @@ def test_execute_quick_turn_in_attaches_doc_and_zip(monkeypatch):
     assert res["google_doc_id"] == "doc-drive-id-123"
     assert res["zip_file_id"] == "zip-file-drive-id"
     assert "Deliverables.zip" in res["zip_filename"]
+    assert fake_docs.removed_public_shares == ["doc-drive-id-123", "zip-file-drive-id"]
 
     # Verify both Google Doc and ZIP were attached
     assert fake_classroom.submissions.modify_arguments["id"] == "submission-123"
@@ -177,12 +198,90 @@ def test_execute_quick_turn_in_attaches_doc_and_zip(monkeypatch):
     assert attached[0]["driveFile"]["id"] == "doc-drive-id-123"
     assert attached[1]["driveFile"]["id"] == "zip-file-drive-id"
 
-    # Verify turnIn was executed
+    # Verify turnIn was executed with required empty JSON body
     assert fake_classroom.submissions.turn_in_arguments["id"] == "submission-123"
+    assert fake_classroom.submissions.turn_in_arguments["body"] == {}
 
     # Verify assignment submission state updated
     db.refresh(assignment)
     assert assignment.submission_state == SubmissionState.TURNED_IN
+
+
+def test_attach_submission_files_reclaims_turned_in_submission_with_empty_body():
+    classroom = FakeClassroomService(initial_state="TURNED_IN")
+
+    submission_id, state = _attach_submission_files(
+        classroom, "course-1", "assignment-1", ["doc-1"], return_state=True
+    )
+
+    assert submission_id == "submission-123"
+    assert state == "RECLAIMED_BY_STUDENT"
+    assert classroom.submissions.reclaim_arguments["id"] == "submission-123"
+    assert classroom.submissions.reclaim_arguments["body"] == {}
+    assert classroom.submissions.modify_arguments["id"] == "submission-123"
+    assert classroom.submissions.modify_arguments["body"] == {
+        "addAttachments": [{"driveFile": {"id": "doc-1"}}]
+    }
+
+
+def test_attach_submission_files_skips_already_attached_files():
+    classroom = FakeClassroomService(
+        initial_attachments=[{"driveFile": {"id": "doc-1"}}]
+    )
+
+    submission_id = _attach_submission_files(
+        classroom, "course-1", "assignment-1", ["doc-1"]
+    )
+
+    assert submission_id == "submission-123"
+    # modifyAttachments was not called because doc-1 was already attached!
+    assert classroom.submissions.modify_arguments is None
+
+
+def test_execute_quick_turn_in_handles_closed_submissions_safely(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.db.database import Base
+    from app.db.models import Course, Assignment, AssignmentSolution, Submission, SubmissionState, AssignmentStatus
+    from app.classroom.router import execute_quick_turn_in
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    course = Course(id=1, external_id="course-ext-1", name="Parallel Computing", user_id="test_user")
+    assignment = Assignment(id=1, external_id="asgn-ext-1", course_id=1, title="Lab 1 - OpenMP", user_id="test_user")
+    solution = AssignmentSolution(
+        id=1,
+        assignment_id=1,
+        validated_content="```python\n# File: task_1.py\nprint('Hello OpenMP')\n```"
+    )
+    db.add_all([course, assignment, solution])
+    db.commit()
+
+    # turnIn raises error indicating submissions are closed
+    fake_classroom = FakeClassroomService(turn_in_error=RuntimeError("Submissions are closed for this coursework."))
+    fake_docs = FakeDriveDocsService(result={"id": "zip-file-drive-id"})
+
+    import sys
+    classroom_mod = sys.modules["app.classroom.router"]
+    monkeypatch.setattr(classroom_mod, "get_classroom_service", lambda _db, user_id: fake_classroom)
+    monkeypatch.setattr(classroom_mod, "get_google_docs_service", lambda _db, user_id: fake_docs)
+    monkeypatch.setattr(
+        "app.services.ai_solution.export_solution_to_google_doc",
+        lambda _db, _asgn, _content, user_id: {"google_doc_id": "doc-drive-id-123", "doc_url": "https://docs.google.com/..."}
+    )
+
+    res = execute_quick_turn_in(db, assignment.id, "test_user")
+
+    # Deliverables were safely attached to Google Classroom even though turnIn was closed
+    assert res["success"] is True
+    assert res["turned_in"] is False
+    assert "safely attached to coursework" in res["message"]
+    assert fake_classroom.submissions.modify_arguments is not None
+    attached = fake_classroom.submissions.modify_arguments["body"]["addAttachments"]
+    assert len(attached) == 2
 
 
 def test_check_and_execute_course_auto_turn_in_strictly_scopes_to_course(monkeypatch):

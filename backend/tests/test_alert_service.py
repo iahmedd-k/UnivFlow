@@ -349,17 +349,17 @@ def test_daily_morning_digest_generation_and_idempotency(mock_send, db_session):
     db_session.add(Setting(key="notification_email_default", value="ahmed9171496@gmail.com"))
 
     # Add course & timetable entry for Monday
-    course = Course(id=1, external_id="c1", name="Deep Learning")
+    course = Course(id=1, user_id="dev_student_user", external_id="c1", name="Deep Learning")
     db_session.add(course)
     db_session.commit()
 
     att = AttendanceRecord(
-        id=1, external_id="a1", course_id=1,
+            id=1, user_id="dev_student_user", external_id="a1", course_id=1,
         subject="Deep Learning",
         percentage=60.0, attended=6, total=10
     )
     tt = TimetableEntry(
-        id=1, external_id="tt1", subject="Deep Learning",
+        id=1, user_id="dev_student_user", external_id="tt1", subject="Deep Learning",
         weekday=0, start_time="09:00", end_time="10:00", room="Room 101", teacher="Dr. Imran"
     )
     db_session.add_all([att, tt])

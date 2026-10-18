@@ -23,12 +23,15 @@ from app.db.models import (
     AttendanceRecord,
     Exam,
     AssignmentStatus,
+    SubmissionState,
     AssignmentSolution,
     Submission,
+    BrowserAutomationJob,
     Setting,
     TimetableEntry,
 )
 from app.auth.clerk_auth import require_current_user
+from app.auth.ownership import user_owner_ids
 from app.core.redis import (
     attendance_summary_cache_key,
     get_attendance_cache_generation,
@@ -42,6 +45,80 @@ from app.services.alert_service import (
 )
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
+
+
+@router.get("/automation-history", response_model=List[dict])
+def get_automation_history(
+    limit: int = Query(40, ge=1, le=100),
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_current_user),
+):
+    """Return this account's Claude solve and Classroom turn-in history."""
+    user_id = str((user or {}).get("id") or "dev_student_user")
+    owners = user_owner_ids(user_id)
+    history = []
+
+    jobs = (
+        db.query(BrowserAutomationJob)
+        .join(Assignment, BrowserAutomationJob.assignment_id == Assignment.id)
+        .filter(BrowserAutomationJob.user_id.in_(owners), Assignment.user_id.in_(owners))
+        .order_by(BrowserAutomationJob.queued_at.desc())
+        .limit(limit)
+        .all()
+    )
+    for job in jobs:
+        assignment = job.assignment
+        course = assignment.course if assignment and assignment.course and assignment.course.user_id in owners else None
+        history.append({
+            "id": f"claude-{job.id}",
+            "kind": "claude_assignment",
+            "assignment_id": job.assignment_id,
+            "assignment_title": assignment.title if assignment else "Assignment",
+            "course_name": course.name if course else "Course",
+            "status": job.status,
+            "started_at": job.started_at,
+            "finished_at": job.finished_at,
+            "created_at": job.queued_at,
+            "error": job.error,
+            "retryable": job.status in {"failed", "needs_login", "cancelled"},
+        })
+
+    submissions = (
+        db.query(Submission)
+        .join(Assignment, Submission.assignment_id == Assignment.id)
+        .filter(Submission.user_id.in_(owners), Assignment.user_id.in_(owners))
+        .order_by(Submission.submitted_at.desc().nullslast(), Submission.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    for submission in submissions:
+        assignment = submission.assignment
+        course = assignment.course if assignment and assignment.course and assignment.course.user_id in owners else None
+        state = getattr(submission.submission_state, "value", submission.submission_state) or "unknown"
+        history.append({
+            "id": f"turn-in-{submission.id}",
+            "kind": "classroom_turn_in",
+            "assignment_id": submission.assignment_id,
+            "assignment_title": assignment.title if assignment else "Assignment",
+            "course_name": course.name if course else "Course",
+            "status": state,
+            "started_at": submission.submitted_at or submission.created_at,
+            "finished_at": submission.submitted_at,
+            "created_at": submission.created_at,
+            "error": None,
+            "retryable": state != SubmissionState.TURNED_IN.value and bool(submission.google_doc_id and submission.google_drive_file_id),
+        })
+
+    def _sort_timestamp(item):
+        stamp = item.get("started_at") or item.get("created_at")
+        if not stamp:
+            return 0.0
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return stamp.timestamp()
+
+    history.sort(key=_sort_timestamp, reverse=True)
+    return history[:limit]
 
 
 def _get_semester_start_dt(
@@ -114,18 +191,21 @@ def _get_user_dashboard_data(db: Session, user_id: str, since_dt: Optional[datet
     all_assignments = _filter_by_since_dt(all_assignments, since_dt, ['due_at', 'due_date', 'created_at', 'updated_at'])
 
     upcoming_schedules = [
-        schedule for schedule in schedule_repo.get_upcoming(7)
+        schedule for schedule in schedule_repo.get_upcoming(7, user_id=user_id)
         if schedule.course_id in owned_course_ids
     ]
     upcoming_schedules = _filter_by_since_dt(upcoming_schedules, since_dt, ['date'])
 
     attendance_records = [
-        record for record in attendance_repo.get_all()
+        record for record in attendance_repo.get_all(user_id=user_id)
         if record.course_id in owned_course_ids
     ]
     attendance_records = _filter_by_since_dt(attendance_records, since_dt, ['last_updated', 'created_at'])
 
-    upcoming_exams = exam_repo.get_upcoming(30)
+    upcoming_exams = [
+        exam for exam in exam_repo.get_upcoming(30, user_id=user_id)
+        if exam.course_id is None or exam.course_id in owned_course_ids
+    ]
     upcoming_exams = _filter_by_since_dt(upcoming_exams, since_dt, ['date'])
 
     return {
@@ -372,7 +452,7 @@ def get_attendance_summary(
     # 1. Retrieve all attendance records for this user (or legacy fallback)
     all_records = (
         db.query(AttendanceRecord)
-        .filter(or_(AttendanceRecord.user_id == user_id, AttendanceRecord.user_id == "legacy"))
+        .filter(AttendanceRecord.user_id.in_(user_owner_ids(user_id)))
         .order_by(AttendanceRecord.last_updated.desc().nullslast(), AttendanceRecord.id.desc())
         .all()
     )
@@ -385,15 +465,10 @@ def get_attendance_summary(
             records.append(r)
 
     # 2. Retrieve all courses owned by user, legacy, or referenced by attendance records
-    referenced_course_ids = {r.course_id for r in records if r.course_id}
     courses = (
         db.query(Course)
         .filter(
-            or_(
-                Course.user_id == user_id,
-                Course.user_id == "legacy",
-                Course.id.in_(referenced_course_ids) if referenced_course_ids else False,
-            )
+            Course.user_id.in_(user_owner_ids(user_id))
         )
         .all()
     )
@@ -404,7 +479,7 @@ def get_attendance_summary(
         if course.name
     }
     weekly_classes = {}
-    for entry in db.query(TimetableEntry).all():
+    for entry in db.query(TimetableEntry).filter(TimetableEntry.user_id.in_(user_owner_ids(user_id))).all():
         subject_key = normalize_subject_name(entry.subject)
         if subject_key and subject_key in owned_subjects:
             weekly_classes.setdefault(subject_key, set()).add(
@@ -514,10 +589,8 @@ def dismiss_active_crew_run(
     user_id = str((user or {}).get("id") or "dev_student_user")
     assignment = db.query(Assignment).filter(
         Assignment.id == assignment_id,
-        or_(Assignment.user_id == user_id, Assignment.user_id.is_(None))
+        Assignment.user_id.in_(user_owner_ids(user_id)),
     ).first()
-    if not assignment:
-        assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
@@ -545,14 +618,18 @@ def clear_dashboard_timetable(
     from app.core.redis import invalidate_attendance_summary_cache
     user_id = str((user or {}).get("id") or "dev_student_user")
 
-    tt_count = db.query(TimetableEntry).filter(
-        (TimetableEntry.user_id == user_id) | (TimetableEntry.user_id == "legacy") | (TimetableEntry.user_id.is_(None))
-    ).delete(synchronize_session=False)
+    from app.core.config import settings
+    timetable_owner_filter = TimetableEntry.user_id.in_(user_owner_ids(user_id))
+    schedule_owner_filter = ClassSchedule.user_id.in_(user_owner_ids(user_id))
+    if user_id == "dev_student_user" and not settings.is_production:
+        timetable_owner_filter = or_(timetable_owner_filter, TimetableEntry.user_id.is_(None))
+        schedule_owner_filter = or_(schedule_owner_filter, ClassSchedule.user_id.is_(None))
+    tt_count = db.query(TimetableEntry).filter(timetable_owner_filter).delete(synchronize_session=False)
 
     now_utc = datetime.now(timezone.utc)
     sch_count = db.query(ClassSchedule).filter(
         ClassSchedule.external_id.like("portal-sch:%"),
-        (ClassSchedule.user_id == user_id) | (ClassSchedule.user_id == "legacy") | (ClassSchedule.user_id.is_(None)),
+        schedule_owner_filter,
         ClassSchedule.start_time >= now_utc
     ).delete(synchronize_session=False)
 

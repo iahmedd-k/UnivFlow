@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 from app.auth.clerk_auth import require_current_user
+from app.auth.access_gate import require_access_grant
 
 from app.auth.router import router as auth_router
 from app.auth.clerk_webhook import router as clerk_router
@@ -18,7 +19,7 @@ from app.api.rag import router as rag_router
 
 
 api_router = APIRouter()
-authenticated = [Depends(require_current_user)]
+authenticated = [Depends(require_current_user), Depends(require_access_grant)]
 
 api_router.include_router(auth_router)
 api_router.include_router(clerk_router)

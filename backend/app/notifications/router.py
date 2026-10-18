@@ -1,9 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from pydantic import BaseModel
+import json
+import re
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.db.database import get_db
 from app.db.repositories import NotificationRepository
@@ -15,6 +18,78 @@ from app.auth.clerk_auth import get_current_user_optional
 from app.auth.ownership import require_user_id, user_owner_ids
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
+
+
+class DailyBriefingPreferencePayload(BaseModel):
+    enabled: bool = True
+    time: str = Field(default="07:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    timezone: str = "Asia/Karachi"
+
+
+def _daily_briefing_key(user_id: str) -> str:
+    return f"automation_daily_briefing_{user_id}"
+
+
+@router.get("/daily-briefing-preferences", response_model=dict)
+def get_daily_briefing_preferences(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    user_id = require_user_id(clerk_user)
+    row = db.query(Setting).filter(Setting.key == _daily_briefing_key(user_id)).first()
+    try:
+        saved = json.loads(row.value) if row and row.value else {}
+    except (TypeError, json.JSONDecodeError):
+        saved = {}
+    enabled = bool(saved.get("enabled", True))
+    run_time = str(saved.get("time", "07:30"))
+    if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", run_time):
+        run_time = "07:30"
+    timezone_name = str(saved.get("timezone", settings.timezone))
+    try:
+        zone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        timezone_name = settings.timezone
+        zone = ZoneInfo(timezone_name)
+    now = datetime.now(zone)
+    scheduled = datetime.combine(now.date(), datetime.strptime(run_time, "%H:%M").time(), tzinfo=zone)
+    if scheduled <= now:
+        scheduled += timedelta(days=1)
+    last = db.query(Notification).filter(
+        Notification.user_id.in_(user_owner_ids(user_id)),
+        Notification.notification_type == "daily_morning_digest",
+    ).order_by(Notification.created_at.desc()).first()
+    last_status = getattr(last.status, "value", last.status) if last else None
+    return {
+        "enabled": enabled,
+        "time": run_time,
+        "timezone": timezone_name,
+        "last_run": last.sent_at or last.created_at if last else None,
+        "last_result": {"status": last_status, "error": last.error} if last else None,
+        "next_run": scheduled if enabled else None,
+    }
+
+
+@router.put("/daily-briefing-preferences", response_model=dict)
+def update_daily_briefing_preferences(
+    payload: DailyBriefingPreferencePayload,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    user_id = require_user_id(clerk_user)
+    try:
+        ZoneInfo(payload.timezone)
+    except ZoneInfoNotFoundError as error:
+        raise HTTPException(status_code=400, detail="Choose a valid timezone.") from error
+    key = _daily_briefing_key(user_id)
+    row = db.query(Setting).filter(Setting.key == key).first()
+    value = json.dumps({"enabled": payload.enabled, "time": payload.time, "timezone": payload.timezone})
+    if row:
+        row.value = value
+    else:
+        db.add(Setting(key=key, value=value, description="Per-account daily academic briefing schedule"))
+    db.commit()
+    return get_daily_briefing_preferences(db, clerk_user)
 
 
 class CreateNotificationForMeRequest(BaseModel):

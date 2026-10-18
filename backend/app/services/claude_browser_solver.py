@@ -26,6 +26,7 @@ from app.db.models import (
 )
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.security import decrypt_token_if_encrypted, encrypt_token_if_needed
 from app.services.google_docs import get_google_docs_service
 from app.services.ai_solution import export_solution_to_google_doc
 
@@ -40,12 +41,19 @@ CLAUDE_BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 CLAUDE_MATERIALS_DIR = Path(__file__).resolve().parent.parent.parent / "tmp" / "materials"
 CLAUDE_MATERIALS_DIR.mkdir(parents=True, exist_ok=True)
 
+# NOTE ON CLAUDE ACCOUNT PREREQUISITES:
+# For Claude to draw PNG images (taskN_output.png, diagram_taskN.png) using Python/Pillow
+# and save them to /mnt/user-data/outputs/, the logged-in Claude.ai account MUST have:
+#   Settings -> Capabilities -> "Code execution and file creation"
+# enabled. If this capability is disabled on the Claude.ai account, Claude cannot run
+# image-drawing scripts and will fall back to text-only output.
+
 # Configurable ports and timeouts
 USER_CDP_PORT = 9222
 CDP_CONNECT_TIMEOUT_MS = 20000
 CDP_CONNECT_ATTEMPTS = 2
 BROWSER_LAUNCH_TIMEOUT = 30  # seconds
-CLAUDE_RESPONSE_TIMEOUT = 300  # seconds (5 minutes for complex responses)
+CLAUDE_RESPONSE_TIMEOUT = 420  # seconds (7 minutes for complex responses and image generation)
 
 def _has_display() -> bool:
     """Check if an X11, Wayland, or Windows desktop display is available and actually running."""
@@ -170,7 +178,12 @@ def _download_claude_output_files(page, start_index: int = 0) -> Dict[str, List[
                 message = messages.nth(message_index)
                 candidates = message.locator(
                     'a[download], a[href*="download" i], button[aria-label*="download" i], '
-                    'button[title*="download" i], [data-testid*="download" i]'
+                    'button[title*="download" i], [data-testid*="download" i], '
+                    'button:has-text("Download" i), [role="button"]:has-text("Download" i), '
+                    'div[data-testid*="file"] button, div[data-testid*="artifact"] button, '
+                    'div[role="button"]:has(svg[aria-label*="download" i]), '
+                    'button:has(svg[aria-label*="download" i]), '
+                    'div:has-text(".png") button, div:has-text(".png")[role="button"]'
                 ).all()
                 for candidate in candidates:
                     ordinal += 1
@@ -194,7 +207,7 @@ def _download_claude_output_files(page, start_index: int = 0) -> Dict[str, List[
                         except Exception:
                             pass
 
-                        with page.expect_download(timeout=5000) as download_info:
+                        with page.expect_download(timeout=10000) as download_info:
                             candidate.click(timeout=3000)
                         download = download_info.value
                         suggested_name = Path(download.suggested_filename or f"claude_output_{ordinal}.bin").name
@@ -620,11 +633,7 @@ def get_student_metadata(
     profile_row = None
     if user_id:
         profile_row = db.query(Setting).filter(
-            Setting.key.in_([f"student_profile_{user_id}", f"clerk_user_{user_id}", "student_profile_legacy"])
-        ).order_by(Setting.id.desc()).first()
-    else:
-        profile_row = db.query(Setting).filter(
-            (Setting.key.like("student_profile_%")) | (Setting.key.like("clerk_user_%"))
+            Setting.key.in_([f"student_profile_{user_id}", f"clerk_user_{user_id}"])
         ).order_by(Setting.id.desc()).first()
 
     profile = {}
@@ -640,9 +649,7 @@ def get_student_metadata(
             email_row = db.query(Setting).filter(
                 Setting.key.in_([
                     f"google_connected_email_{user_id}",
-                    f"university_portal_login_email_{user_id}",
-                    "google_connected_email",
-                    "university_portal_login_email"
+                    f"university_portal_login_email_{user_id}"
                 ])
             ).first()
             if email_row and hasattr(email_row, "value") and isinstance(email_row.value, str):
@@ -892,11 +899,14 @@ def prepare_assignment_materials(db: Session, assignment: Assignment, course: Op
     return unique_paths
 
 
-def _handle_google_oauth_if_needed(page, student_email: str = "232530@students.au.edu.pk") -> bool:
+def _handle_google_oauth_if_needed(page, student_email: str = "") -> bool:
     """Handle Google OAuth sign-in / account selection for Claude."""
     try:
         url = (getattr(page, "url", "") or "").lower()
         if "accounts.google.com" not in url:
+            return False
+        if not student_email:
+            logger.warning("Skipping Google account selection for Claude because no account email is configured.")
             return False
 
         # 1. Check if the student account is listed in the account chooser
@@ -938,7 +948,7 @@ def _handle_google_oauth_if_needed(page, student_email: str = "232530@students.a
     return False
 
 
-def _handle_claude_login_and_oauth(page, student_email: str = "232530@students.au.edu.pk", max_retries: int = 4) -> bool:
+def _handle_claude_login_and_oauth(page, student_email: str = "", max_retries: int = 4) -> bool:
     """
     Zero-touch Claude login automation:
     Auto-clicks 'Continue with Google', auto-selects student Google account (including in popups),
@@ -1343,6 +1353,7 @@ def solve_assignment_via_claude_browser(
     user_id: str = "legacy",
     headless: bool = None,
     force: bool = False,
+    create_google_doc: bool = True,
 ) -> Dict[str, Any]:
     """
     Autonomous pipeline that connects to the user's Chrome browser, attaches assignment PDFs/materials,
@@ -1394,7 +1405,13 @@ def solve_assignment_via_claude_browser(
     session_key_setting = db.query(Setting).filter(
         Setting.key == f"classroom:{user_id}:claude_session_key"
     ).first()
-    claude_session_key = session_key_setting.value.strip() if session_key_setting and session_key_setting.value else None
+    raw_session_key = session_key_setting.value if session_key_setting else None
+    stored_session_key = raw_session_key.strip() if isinstance(raw_session_key, str) and raw_session_key.strip() else None
+    claude_session_key = decrypt_token_if_encrypted(stored_session_key) if stored_session_key else None
+    if stored_session_key and claude_session_key == stored_session_key:
+        # Migrate legacy plaintext cookies the first time this account runs Claude.
+        session_key_setting.value = encrypt_token_if_needed(stored_session_key)
+        db.commit()
 
     user_agent_setting = db.query(Setting).filter(
         Setting.key == f"classroom:{user_id}:claude_user_agent"
@@ -1685,94 +1702,108 @@ def solve_assignment_via_claude_browser(
         )
         logger.info(f"Classified assignment {assignment_id} domain as: '{domain}'")
 
+        university_name = meta.get("university") or "Air University, Islamabad"
+        student_prompt = f"{student_user}@air-desktop:~/{terminal_dir}"
+
         if domain == DOMAIN_HEAVY_ML:
-            domain_instructions = (
-                "MACHINE LEARNING / DEEP LEARNING (GOOGLE COLAB JUPYTER NOTEBOOK):\n"
-                "This assignment involves computationally heavy machine-learning, deep-learning, or model training.\n"
-                "- You MUST provide a complete, valid Google Colab Jupyter Notebook in JSON nbformat 4 format enclosed in a ```colab-json code fence.\n"
-                "- Include all pip installs (!pip install ...), dataset preparation, GPU runtime config, model architecture, training/validation loops, evaluation metrics (loss/accuracy, confusion matrix), and sample inference outputs.\n"
+            job1_instructions = (
+                "- Provide a complete, valid Google Colab Jupyter Notebook in JSON nbformat 4 format enclosed in a ```colab-json code fence.\n"
+                "- Include all pip installs (!pip install ...), dataset preparation, GPU runtime config, model architecture,\n"
+                "  training/validation loops, evaluation metrics (loss/accuracy, confusion matrix), and sample inference outputs.\n"
                 "- Ensure every code and markdown cell is self-contained and ready for Google Colab execution.\n"
-                "- ML/Deep Learning assignments only require the Google Colab file (.ipynb); terminal screenshots are NOT required for ML/DL pipelines.\n"
+                "- Provide comprehensive, in-depth answers and explanations for all assignment tasks directly in the Markdown report."
+            )
+            image_style_instructions = (
+                "  * ML / DL tasks -> Output images/screenshots are NOT required for Machine Learning & Deep Learning tasks.\n"
+                "                     Deliver the complete Google Colab notebook (.ipynb in ```colab-json) and the required task answers in the report."
             )
             report_structure = (
-                "MANDATORY REPORT STRUCTURE (FOLLOW STRICTLY):\n"
-                "Format your entire response in polished Markdown. For every task in the lab/assignment, use this exact layout:\n\n"
+                "=====================================================================\n"
+                "MANDATORY REPORT STRUCTURE\n"
+                "=====================================================================\n"
+                "Format the entire response in polished Markdown. For every task in the lab/assignment, use this exact layout:\n\n"
                 "# Task N: [Exact Task Title from Lab Manual]\n"
                 "## 1. Problem Statement / Question\n"
                 "[Detailed problem statement, objective, and requirements as given in the manual]\n\n"
                 "## 2. Google Colab Implementation & Notebook Architecture\n"
+                "**File:** `taskN_notebook.ipynb`\n"
                 "```colab-json\n"
                 "[complete valid Jupyter notebook JSON]\n"
                 "```\n\n"
-                "## 3. Discussion & Analysis\n"
-                "[Theoretical explanation, model architecture, hyperparameter choices, training loss, and key takeaways]\n\n"
+                "## 3. Comprehensive Task Answers & Discussion\n"
+                "[In-depth theoretical explanation, answers to all questions from the manual, model architecture rationale, training parameters, and key takeaways]\n"
             )
         elif domain == DOMAIN_THEORY_ACADEMIC:
-            domain_instructions = (
-                "THEORETICAL ANALYSIS & ACADEMIC RESEARCH REPORT INSTRUCTIONS:\n"
-                "- This is an ACADEMIC THEORY & RESEARCH assignment. Do NOT include terminal execution screenshots, console outputs, or fake code implementation blocks unless the assignment explicitly requests working code.\n"
-                "- Provide an exceptionally thorough, structured academic report addressing all assignment questions, objectives, and problem statements with scholarly depth.\n"
-                "- For each question or topic, provide theoretical foundations, structured explanations, comparative analyses, real-world case studies, and practical applications.\n\n"
-                "DIAGRAM & VISUAL ARCHITECTURE SPECIFICATIONS:\n"
-                "- If the assignment mentions or requires any diagram (flowchart, architecture, process flow, UML, ERD, system schema, state machine, circuit, or block diagram):\n"
-                "  1. VISUAL VECTOR DIAGRAM: Provide the full, self-contained SVG diagram in a ```svg code fence with clean modern styling, dark/navy theme (#0f172a background), rounded boxes, clear connection labels, and high-contrast text. Our automated backend immediately compiles your SVG into high-DPI PNG images embedded directly into the student's Google Doc and assignment ZIP.\n"
-                "  2. DRAW.IO COMPANION FILE: Directly below the SVG, provide the valid Draw.io XML companion in a ```drawio code fence (<mxfile host=\"app.diagrams.net\">...</mxfile>) so the student and teacher can edit it in Draw.io.\n"
-                "  3. In the report prose, provide an in-depth pedagogical explanation of each diagram entity, connection, workflow, and theoretical significance.\n"
-                "- Conclude with academic references and bibliography formatted in standard citation style (APA/IEEE).\n"
+            job1_instructions = (
+                "- Provide an exceptionally thorough, structured academic report addressing all assignment\n"
+                "  questions, objectives, and problem statements with scholarly depth.\n"
+                "- Include theoretical foundations, structured explanations, comparative analyses, and practical applications.\n"
+                "- If diagrams are requested, provide the full SVG in a ```svg code fence and the companion Draw.io XML in a ```drawio code fence."
+            )
+            image_style_instructions = (
+                "  * Theory / Analysis tasks -> taskN_output.png : a clean rendered image of the\n"
+                "                     key summary table, conceptual diagram, or answer matrix.\n"
+                "  * Diagram tasks           -> diagram_taskN.png : the rendered vector diagram."
             )
             report_structure = (
-                "MANDATORY REPORT STRUCTURE (THEORETICAL & ACADEMIC ANALYSIS - FOLLOW STRICTLY):\n"
-                "Format your entire response in polished, professional Markdown. CRITICAL: Replace every\n"
-                "[bracketed placeholder] below with the ACTUAL content from the assignment questions and\n"
-                "reference materials. Do NOT leave any placeholder text in the final report.\n\n"
+                "=====================================================================\n"
+                "MANDATORY REPORT STRUCTURE\n"
+                "=====================================================================\n"
+                "Format your entire response in polished, professional Markdown. Replace every [bracketed placeholder] with actual content.\n\n"
                 "# Executive Summary & Overview\n"
-                "[Concise academic synthesis of the core topic, objectives, and analytical scope — written for THIS assignment]\n\n"
-                "# Question 1: [Replace with the EXACT title/question from the assignment]\n"
+                "[Concise academic synthesis of the core topic, objectives, and analytical scope]\n\n"
+                "# Question N: [Exact Title/Question from Assignment]\n"
                 "## 1. In-Depth Theoretical Analysis\n"
-                "[Detailed, rigorous conceptual analysis, problem breakdown, and critical discussion of Question 1]\n\n"
-                "## 2. Case Study & Practical Application\n"
+                "[Detailed, rigorous conceptual analysis, problem breakdown, and critical discussion]\n\n"
+                "## 2. Key Synthesis Deliverable (.png)\n"
+                "**Attached image file:** `taskN_output.png`\n"
+                "(You must actually create this file as described in the OUTPUT IMAGE REQUIREMENT section.)\n\n"
+                "## 3. Case Study & Practical Application\n"
                 "[Practical application, industry best practices, empirical evidence, or concrete scenarios]\n\n"
-                "# Question 2: [Replace with the EXACT title/question from the assignment]\n"
-                "## 1. In-Depth Theoretical Analysis\n"
-                "[... real answer for Question 2 ...]\n\n"
-                "## 2. Case Study & Practical Application\n"
-                "[... real answer for Question 2 ...]\n\n"
-                "# Diagram & Architecture Analysis (Include if diagrams are requested in the assignment)\n"
+                "--- If a Diagram is Requested ---\n"
+                "# Diagram Analysis: [Topic]\n"
                 "## 1. Visual Vector Diagram (SVG)\n"
+                "**Attached image file:** `diagram_taskN.png`\n"
                 "```svg\n"
                 "<svg viewBox=\"0 0 800 400\" xmlns=\"http://www.w3.org/2000/svg\"> ... </svg>\n"
                 "```\n\n"
                 "## 2. Pedagogical Component Breakdown & Analysis\n"
-                "[Comprehensive explanation of all entities, workflow transitions, protocol interactions, and architectural decisions]\n\n"
+                "[Explanation of entities, workflow, and architectural decisions]\n\n"
                 "## 3. Draw.io Companion File Deliverable\n"
                 "```drawio\n"
                 "<mxfile host=\"app.diagrams.net\"> ... </mxfile>\n"
                 "```\n\n"
                 "# Conclusion & Strategic Takeaways\n"
-                "[Synthesized key findings, analytical conclusions, and broader implications for THIS assignment]\n\n"
+                "[Synthesized key findings, analytical conclusions, and broader implications]\n\n"
                 "# References & Academic Citations\n"
-                "[Properly formatted academic citations in APA/IEEE style for sources actually used]\n"
+                "[Properly formatted academic citations in APA/IEEE style]\n"
             )
         elif domain == DOMAIN_DIAGRAM_DESIGN:
-            domain_instructions = (
-                "SYSTEM ARCHITECTURE & DIAGRAM SPECIFICATION (MANDATORY REQUIREMENTS):\n"
-                "- This is a SYSTEM DESIGN, SOFTWARE ARCHITECTURE, OR DIAGRAMMING assignment.\n"
-                "- ZERO TERMINAL SCREENSHOT DIRECTIVE: Do NOT generate terminal commands, terminal execution code blocks, compiler commands, or 'Not applicable' terminal placeholders. Terminal output is strictly irrelevant for architecture and design assignments.\n"
-                "- VECTOR DIAGRAM SPECIFICATION: For every diagram task, provide:\n"
-                "  1. The complete, self-contained visual vector diagram in a ```svg code fence with modern, high-contrast architecture styling.\n"
-                "  2. The valid, well-formed Draw.io XML companion block enclosed in a ```drawio code fence (<mxfile host=\"app.diagrams.net\">...</mxfile>).\n"
-                "- STRICT PROHIBITION ON MANUAL DRAW.IO INSTRUCTIONS: Under NO circumstances should you instruct the student to open draw.io, paste XML, or export PNGs manually. Our automated backend renders your diagram specifications into high-resolution PNG deliverables and embeds them in the final report and ZIP.\n"
-                "- Do NOT output ASCII art or text boxes in place of diagrams. Provide real SVG and Draw.io XML code blocks.\n"
-                "- For conceptual tasks, quality attribute analyses, trade-off matrices, and written recommendations: provide rich Markdown comparison tables, rigorous definitions, and comprehensive architectural justifications.\n"
+            job1_instructions = (
+                "- Provide the complete visual vector diagram in a ```svg code fence with clean modern styling,\n"
+                "  and provide the valid Draw.io XML companion in a ```drawio code fence (<mxfile host=\"app.diagrams.net\">...</mxfile>).\n"
+                "- STRICT PROHIBITION ON MANUAL DRAW.IO INSTRUCTIONS: Under NO circumstances should you instruct\n"
+                "  the student to open draw.io, paste XML, or export PNGs manually.\n"
+                "- Provide comprehensive architectural analysis, component breakdowns, and design decisions in the report prose."
+            )
+            image_style_instructions = (
+                "  * Diagram tasks -> diagram_taskN.png : the rendered architecture / system\n"
+                "                     diagram with clear labels and high-contrast styling.\n"
+                "  * Conceptual / Trade-off tasks -> taskN_output.png : a clean image of the\n"
+                "                     comparison table or trade-off matrix."
             )
             report_structure = (
-                "MANDATORY REPORT STRUCTURE (SYSTEM ARCHITECTURE & DIAGRAM LABS - FOLLOW STRICTLY):\n"
+                "=====================================================================\n"
+                "MANDATORY REPORT STRUCTURE\n"
+                "=====================================================================\n"
                 "Format your entire response in polished Markdown. For each task in the lab/assignment, use the layout matching its task type:\n\n"
                 "--- If the task requires a DIAGRAM or MODULAR ARCHITECTURE (e.g., Task 3) ---\n"
                 "# Task N: [Exact Task Title from Lab Manual]\n"
                 "## 1. Problem Statement & System Requirements\n"
                 "[Detailed problem statement, architectural objectives, and component requirements]\n\n"
                 "## 2. Visual Architecture Diagram\n"
+                "**Attached image file:** `diagram_taskN.png`\n"
+                "(You must actually create this file as described in the OUTPUT IMAGE REQUIREMENT section.)\n\n"
                 "```svg\n"
                 "<svg viewBox=\"0 0 800 400\" xmlns=\"http://www.w3.org/2000/svg\"> ... </svg>\n"
                 "```\n\n"
@@ -1787,21 +1818,27 @@ def solve_assignment_via_claude_browser(
                 "## 1. Problem Statement / Question\n"
                 "[Detailed problem statement as given in the manual]\n\n"
                 "## 2. Comprehensive Solution / Trade-Off Matrix / Recommendation\n"
+                "**Attached image file:** `taskN_output.png`\n"
                 "[Structured Markdown tables, quality attribute definitions with justifications, or a professional written recommendation referencing the matrix and diagrams]\n\n"
                 "## 3. In-Depth Discussion & Complexity / Trade-Off Analysis\n"
-                "[Theoretical justification, system-level trade-offs, and strategic engineering takeaways]\n\n"
+                "[Theoretical justification, system-level trade-offs, and strategic engineering takeaways]\n"
             )
-
         elif domain == DOMAIN_QUANTITATIVE_MATH:
-            domain_instructions = (
-                "QUANTITATIVE MATHEMATICS & RIGOROUS STEP-BY-STEP PROBLEM SOLVING:\n"
-                "- This is a QUANTITATIVE MATHEMATICS, PHYSICS, OR NUMERICAL CALCULATION assignment.\n"
-                "- Do NOT generate programming source code, compiler commands, or terminal output screenshots unless numerical simulation is explicitly requested.\n"
-                "- Format all mathematical formulas, equations, derivations, and matrices using professional LaTeX notation ($...$ inline and $$...$$ display blocks).\n"
-                "- For every question/problem provide complete, step-by-step mathematical working: Problem Statement, Given Data/Variables, Applicable Principles/Theorems, Algebraic Derivations, Final Answer clearly stated with units, and a Verification Sanity Check.\n"
+            job1_instructions = (
+                "- Format all mathematical formulas, equations, derivations, and matrices using professional\n"
+                "  LaTeX notation ($...$ inline and $$...$$ display blocks).\n"
+                "- For every question/problem provide complete, step-by-step mathematical working: Problem Statement,\n"
+                "  Given Data/Variables, Applicable Principles/Theorems, Algebraic Derivations, Final Answer clearly\n"
+                "  stated with units, and a Verification Sanity Check."
+            )
+            image_style_instructions = (
+                "  * Math / Physics tasks -> taskN_output.png : a clean rendered image showing the\n"
+                "                     key step-by-step mathematical working, key formulas, or final solution summary table."
             )
             report_structure = (
-                "MANDATORY REPORT STRUCTURE (QUANTITATIVE MATHEMATICAL SOLUTIONS - FOLLOW STRICTLY):\n"
+                "=====================================================================\n"
+                "MANDATORY REPORT STRUCTURE\n"
+                "=====================================================================\n"
                 "Format your entire response in polished, professional Markdown with LaTeX math notation.\n\n"
                 "# Problem N: [Exact Title or Problem from Assignment]\n"
                 "## 1. Problem Statement & Given Parameters\n"
@@ -1810,53 +1847,66 @@ def solve_assignment_via_claude_browser(
                 "[Identify all theorems, definitions, and equations in LaTeX notation]\n\n"
                 "## 3. Step-by-Step Mathematical Derivation & Solution\n"
                 "[Complete step-by-step algebraic steps, substitution, and arithmetic calculations formatted in LaTeX]\n\n"
-                "## 4. Final Answer & Sanity Check\n"
-                "[Clearly stated final result with units and quick dimensional/physical sanity check]\n\n"
+                "## 4. Key Results Deliverable (.png)\n"
+                "**Attached image file:** `taskN_output.png`\n"
+                "(You must actually create this file as described in the OUTPUT IMAGE REQUIREMENT section.)\n\n"
+                "## 5. Final Answer & Sanity Check\n"
+                "[Clearly stated final result with units and quick dimensional/physical sanity check]\n"
             )
         else:
-            domain_instructions = (
-                "CODE IMPLEMENTATION & DIRECT OUTPUT DELIVERABLES:\n"
-                "- RUNNABLE SOURCE CODE: For every programming task, provide complete, bug-free, and production-ready source code in a language-tagged code fence (e.g. ```assembly, ```python, ```cpp, ```java, ```sql) with filename label: `**File:** task<N>_<short_name>.<ext>`.\n"
-                "- DIRECT OUTPUT SYNTHESIS (NO LOCAL TERMINAL RUNNING REQUIRED):\n"
-                "  * Do NOT attempt to execute code via a local OS shell or compiler, and do not try to capture physical external screenshots (e.g. for Assembly, MASM/NASM, or heavy ML models).\n"
-                "  * Instead, directly create the visual output image and/or realistic terminal execution block showing the 100% correct data (accurate register values, arithmetic outputs, test cases, and verification results) exactly as they appear when executed.\n"
-                f"  * Inside the companion ```terminal code fence, format the initial command line with this exact prompt: `{shell_prompt} <run-command>`, followed by realistic interactive inputs, complete outputs, and exit code 0.\n"
-                "- VISUAL DIAGRAMS (.PNG): If any task requests an architectural or UML diagram, attach a real downloadable PNG image named `diagram_task<N>.png` and provide the Draw.io XML companion in a ```drawio fence. Do not print Base64 or a Markdown image placeholder.\n"
-                "- NON-CODING TASKS: Theoretical analysis, trade-off matrices, or recommendations must use structured Markdown tables and detailed analytical answers. Completely omit terminal output from non-coding tasks.\n"
+            # DOMAIN_CODING_LAB (Default)
+            job1_instructions = (
+                "- Write the full solution in the task's own language (Assembly, C++, Python,\n"
+                "  Java, SQL, etc.) inside a code fence in the report.\n"
+                "- NEVER assemble, compile, run or emulate the student's code. Do not open\n"
+                "  emu8086, a compiler, an interpreter or any terminal for the student's code.\n"
+                "- Work out the correct output yourself by carefully reasoning through the code\n"
+                "  (register values, flags, memory contents, printed text, test cases)."
+            )
+            image_style_instructions = (
+                f"  * Code tasks    -> taskN_output.png : dark terminal-style window showing\n"
+                f"                     `{student_prompt}$ <command>` followed by the complete\n"
+                "                     correct output and exit code 0.\n"
+                f"                     (Prompt format: {student_prompt}$ )\n"
+                "  * Diagram tasks -> diagram_taskN.png : the rendered diagram.\n"
+                "  * Theory tasks  -> taskN_output.png : a clean image of the key table or the\n"
+                "                     answer summary."
             )
             report_structure = (
-                "MANDATORY REPORT STRUCTURE (CODING LABS - FOLLOW STRICTLY):\n"
-                "Format your entire response in polished Markdown. For each task in the lab/assignment, use the appropriate layout:\n\n"
-                "--- For EXECUTABLE PROGRAMMING TASKS ---\n"
-                "# Task N: [Exact Task Title from Lab Manual]\n"
+                "=====================================================================\n"
+                "MANDATORY REPORT STRUCTURE\n"
+                "=====================================================================\n"
+                "Format the entire response in polished Markdown. Use the layout that matches each task.\n\n"
+                "--- EXECUTABLE PROGRAMMING TASKS ---\n"
+                "# Task N: [Exact Task Title from the Manual]\n"
                 "## 1. Problem Statement / Question\n"
-                "[Detailed problem statement, objective, and requirements as given in the manual]\n\n"
+                "[Detailed problem statement, objective and requirements as given in the manual]\n\n"
                 "## 2. Source Code Implementation\n"
                 "**File:** `taskN_[short_name].[ext]`\n"
                 "```[language]\n"
                 "[complete runnable source code]\n"
                 "```\n\n"
                 "## 3. Terminal Output Image (.png)\n"
-                "**Attached image file:** `taskN_output.png` (real downloadable PNG attachment; the platform embeds it in the report)\n\n"
+                "**Attached image file:** `taskN_output.png`\n"
+                "(You must actually create this file as described in the OUTPUT IMAGE REQUIREMENT section.)\n\n"
                 "```terminal\n"
-                f"{shell_prompt} [command]\n"
-                "[realistic terminal execution output with exact correct data, registers, and test cases]\n"
+                f"{student_prompt}$ [command]\n"
+                "[correct output with exact registers, flags, printed text and test cases]\n"
                 "```\n\n"
                 "## 4. Discussion & Complexity Analysis\n"
-                "[Theoretical explanation, algorithm complexity (Time & Space), design decisions, and key takeaways]\n\n"
-                "--- For CONCEPTUAL / TRADE-OFF MATRIX / RECOMMENDATION TASKS ---\n"
-                "# Task N: [Exact Task Title from Lab Manual]\n"
+                "[Explanation, algorithm complexity (time and space), design decisions, key takeaways]\n\n"
+                "--- CONCEPTUAL / TRADE-OFF / RECOMMENDATION TASKS ---\n"
+                "# Task N: [Exact Task Title from the Manual]\n"
                 "## 1. Problem Statement / Question\n"
-                "[Detailed problem statement as given in the manual]\n\n"
                 "## 2. Comprehensive Solution / Trade-Off Matrix / Recommendation\n"
-                "[Structured Markdown tables, quality attribute definitions with justifications, or a professional written recommendation. OMIT all terminal screenshot headings.]\n\n"
-                "## 3. Discussion & Architectural Analysis\n"
-                "[Theoretical explanation, architectural decisions, and key takeaways]\n\n"
-                "--- For DIAGRAM TASKS ---\n"
-                "# Task N: [Exact Task Title from Lab Manual]\n"
+                "**Attached image file:** `taskN_output.png`\n"
+                "[Structured Markdown tables, justified answers. No terminal section.]\n\n"
+                "## 3. Discussion & Architectural Analysis\n\n"
+                "--- DIAGRAM TASKS ---\n"
+                "# Task N: [Exact Task Title from the Manual]\n"
                 "## 1. Problem Statement / Specification\n"
-                "[System requirements and architectural constraints]\n\n"
                 "## 2. Visual Architecture Diagram\n"
+                "**Attached image file:** `diagram_taskN.png`\n"
                 "```svg\n"
                 "<svg viewBox=\"0 0 800 400\" xmlns=\"http://www.w3.org/2000/svg\"> ... </svg>\n"
                 "```\n\n"
@@ -1865,46 +1915,83 @@ def solve_assignment_via_claude_browser(
                 "<mxfile host=\"app.diagrams.net\">...</mxfile>\n"
                 "```\n\n"
                 "## 4. Structural Analysis & Component Breakdown\n"
-                "[Component breakdown, coupling/cohesion analysis, and design decisions]\n"
-                "--- For CODING TASKS ---\n"
-                "# Task N: [Exact Task Title from Lab Manual]\n"
-                "## 1. Problem Statement / Question\n"
-                "[Detailed problem statement as given in the manual]\n\n"
-                "## 2. Source Code Implementation\n"
-                "```[language]\n"
-                "[complete runnable source code]\n"
-                "```\n\n"
-                "## 3. Terminal Execution Output\n"
-                "```terminal\n"
-                f"{shell_prompt} [command]\n"
-                "[realistic terminal execution output with exact correct data, registers, and test cases]\n"
-                "```\n\n"
-                "## 4. Discussion & Analysis\n"
-                "[Detailed explanation of algorithm, data structures, and performance]\n"
+                "[Components, coupling/cohesion, design decisions]\n\n"
+                "Also answer any viva questions, written questions or flag tables in the manual, using tables where suitable.\n"
             )
 
-        prompt_text = (
-            f"You are an expert academic specialist and curriculum evaluator for {meta['course_name']} at Air University, Islamabad.\n\n"
-            f"ASSIGNMENT METADATA:\n"
+        prompt_metadata = (
+            f"You are an expert academic specialist and curriculum evaluator for {meta['course_name']} at {university_name}.\n\n"
+            "ASSIGNMENT METADATA\n"
             f"- Assignment Title: {assignment.title}\n"
             f"- Course: {meta['course_name']}\n"
             f"- Instructor: {meta['instructor']}\n"
             f"- Student: {meta['student_name']} ({meta['roll_no']}, Section {meta['section']})\n"
             f"- Attached Reference Documents: {file_names_str or 'Attached above'}\n"
-            f"- Assignment Classification: {domain.upper()}\n\n"
-            f"{questions_block}\n\n"
-            "EXPERT PLANNING & EXECUTION INSTRUCTIONS:\n"
-            "1. COMPLETE SOLUTION: Solve every task and question from the attached manual in the report response. The platform compiles your written response into the official Google Doc and PDF.\n"
-            "2. DIRECT OUTPUT & VISUAL DELIVERABLES (NO MANUAL LOCAL OS EXECUTION NEEDED):\n"
-            "   - In this interface, you do NOT need to launch an external OS terminal or run compilers manually.\n"
-            f"   - For programming tasks, output the full runnable code in language fences, followed by a ```terminal code fence containing realistic execution output with prompt: `{shell_prompt} <command>` and all accurate outputs, registers, and test results.\n"
-            "   - For diagram / architecture tasks, output the visual vector diagram in a ```svg code fence and the companion Draw.io XML in a ```drawio code fence (<mxfile host=\"app.diagrams.net\">...</mxfile>).\n"
-            "   - For theoretical and analytical questions, provide comprehensive Markdown text, comparison tables, and scholarly analysis.\n"
-            "   - Our automated backend engine directly extracts, renders, and compiles all your code, diagrams, and terminal outputs into high-DPI image deliverables embedded into the final Google Doc and packaged in the ZIP file.\n"
-            "3. CODE DELIVERABLES: For programming tasks, provide complete, bug-free, production-ready code in language-tagged code fences (e.g. ```assembly, ```python, ```cpp) and label each file clearly: `**File:** task<N>_<short_name>.<ext>`.\n"
-            "4. NON-CODING & DIAGRAM TASKS: Theoretical questions must use Markdown tables and detailed explanations. Diagram tasks must provide SVG in ```svg with Draw.io XML companion in ```drawio.\n\n"
-            f"{domain_instructions}\n\n"
-            f"{report_structure}\n"
+            f"- Assignment Classification: {domain.upper()}   (e.g. CODING_LAB, DIAGRAM, THEORY)\n\n"
+            "The original assignment / lab manual is attached. Read it carefully and solve\n"
+            "every task, question and requirement from start to finish.\n\n"
+            f"{questions_block}\n"
+        )
+
+        output_image_requirement = (
+            "=====================================================================\n"
+            "OUTPUT AND VERIFICATION REQUIREMENTS\n"
+            "=====================================================================\n"
+            "Write the requested solution and distinguish source code from observed results.\n\n"
+            "JOB 1: WRITE THE SOLUTION\n"
+            f"{job1_instructions}\n\n"
+            "- Never claim that code was compiled, executed, or tested unless a real tool in this workflow did so.\n"
+            "- Do not invent terminal output, exit codes, screenshots, or test results. If output is requested but not executed, label it clearly as expected/example output.\n"
+            "- Do not fabricate emulator or application screenshots. A rendered diagram is an illustration, not proof that the program ran.\n"
+            "- Return source files and a complete Markdown explanation. A missing optional image is not a reason to invent one.\n\n"
+        )
+
+        code_requirements = (
+            "=====================================================================\n"
+            "CODE REQUIREMENTS\n"
+            "=====================================================================\n"
+            "- For every programming task, provide complete, bug-free, runnable source code\n"
+            "  in a language-tagged code fence (```assembly, ```python, ```cpp, ```java,\n"
+            "  ```sql, ...).\n"
+            "- Label every file clearly:  **File:** `task<N>_<short_name>.<ext>`\n"
+            "- Comment every block of code so a student can follow it.\n"
+            "- Use only syntax that works in the tool named by the manual (for example\n"
+            "  emu8086 for 8086 assembly). Respect its rules (data segment set-up, jump\n"
+            "  range limits, label names that do not clash with instructions).\n"
+            "- If you include sample terminal output, label it **Expected output (not executed)** and do not include a claimed exit code.\n"
+            "- State assumptions and any values/results that need verification in the target environment.\n\n"
+        )
+
+        non_coding_requirements = (
+            "=====================================================================\n"
+            "NON-CODING AND DIAGRAM TASKS\n"
+            "=====================================================================\n"
+            "- Theory / analysis / trade-off questions: use structured Markdown tables and\n"
+            "  detailed explanations. Do not include terminal output for these tasks.\n"
+            "- Diagram tasks: provide the vector diagram in a ```svg fence, the Draw.io XML\n"
+            "  in a ```drawio fence (<mxfile host=\"app.diagrams.net\">...</mxfile>), and a\n"
+            "  rendered PNG named diagram_taskN.png. Do not print Base64 or a Markdown image\n"
+            "  placeholder.\n\n"
+        )
+
+        final_checklist = (
+            "=====================================================================\n"
+            "FINAL CHECKLIST (verify before you finish)\n"
+            "=====================================================================\n"
+            "[ ] Every task in the manual is solved, with code, output and discussion.\n"
+            "[ ] Every code file is complete, commented and labelled with its file name.\n"
+            "[ ] Do not say code was run or verified unless it actually was.\n"
+            "[ ] Label any hand-derived output as expected output, not a captured run.\n"
+            "[ ] Keep the response limited to the requested deliverables and explanation.\n"
+        )
+
+        prompt_text = (
+            prompt_metadata +
+            output_image_requirement +
+            code_requirements +
+            non_coding_requirements +
+            report_structure + "\n\n" +
+            final_checklist
         )
 
         # 6. Fill prompt and send with active overlay dismissal and forced click
@@ -1949,7 +2036,8 @@ def solve_assignment_via_claude_browser(
             page.keyboard.press("Enter")
 
         logger.info(f"Prompt sent to Claude for assignment {assignment_id}. Waiting for completion...")
-        _update_solver_progress(
+        if create_google_doc:
+            _update_solver_progress(
             db,
             assignment_id,
             3,
@@ -2020,7 +2108,7 @@ def solve_assignment_via_claude_browser(
 
                         return {
                             "status": "rate_limited",
-                            "error": f"Claude Free Tier limit reached: {user_friendly_error}. You can wait for reset or switch to Multi-Agent (Groq/Gemini).",
+                            "error": f"Claude Free Tier limit reached: {user_friendly_error}. Wait for the limit to reset, then retry with Claude.",
                             "reset_message": user_friendly_error,
                         }
                 except Exception:
@@ -2220,6 +2308,29 @@ def solve_assignment_via_claude_browser(
                 "error": "Claude generation was submitted, but response text could not be extracted from the page."
             }
 
+        # Do not treat a still-streaming response as a completed solution. Preserve
+        # the partial text for recovery, but leave it in draft/review state.
+        try:
+            response_still_generating = page.locator(stop_selector).first.is_visible()
+        except Exception:
+            response_still_generating = False
+        if response_still_generating:
+            partial_content = build_academic_cover_markdown(meta, assignment.title or "Assignment Solution") + raw_solution_text.strip()
+            partial_error = f"Claude did not finish within {max_wait_seconds} seconds. This is a partial draft; review it and retry before using it."
+            partial_solution = db.query(AssignmentSolution).filter(
+                AssignmentSolution.assignment_id == assignment_id,
+            ).first()
+            if not partial_solution:
+                partial_solution = AssignmentSolution(assignment_id=assignment_id, user_id=user_id)
+                db.add(partial_solution)
+            partial_solution.draft_content = partial_content
+            partial_solution.ai_provider = "claude_browser"
+            partial_solution.validation_errors = partial_error
+            partial_solution.generated_at = datetime.now(timezone.utc)
+            assignment.status = AssignmentStatus.DRAFT
+            db.commit()
+            return {"status": "draft", "error": partial_error, "assignment_id": assignment_id}
+
         # Clear any active rate limit setting on successful solve
         try:
             rate_row = db.query(Setting).filter(Setting.key == f"classroom:{user_id}:claude_rate_limit").first()
@@ -2238,21 +2349,35 @@ def solve_assignment_via_claude_browser(
             "Extracting generated files and rendering terminal outputs...",
         )
 
+        # Remove UI instructions accidentally emitted by the model. The platform adds
+        # its own verification notice to every generated report below.
+        if "---CHAT-NOTE---" in raw_solution_text:
+            raw_solution_text = raw_solution_text.split("---CHAT-NOTE---", 1)[0].rstrip()
+        else:
+            raw_solution_text = re.split(r"(?im)^\s*---*\s*CHAT[-_ ]*NOTE\s*---*", raw_solution_text)[0].rstrip()
+
         # 9. Format deliverable with Air University cover page
         cover_md = build_academic_cover_markdown(meta, assignment.title or "Assignment Solution")
-        final_solution_content = cover_md + raw_solution_text.strip()
+        verification_notice = (
+            "\n\n> **Verification status:** AI-generated draft. Uniflow did not execute the source code "
+            "or independently verify the reported results. Check the work and run required code "
+            "in the prescribed environment before submission.\n\n"
+        )
+        final_solution_content = cover_md + verification_notice + raw_solution_text.strip()
 
         # Immediately preserve latest generated response in database so student never loses it
-        solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+        solution = db.query(AssignmentSolution).filter(
+            AssignmentSolution.assignment_id == assignment_id,
+        ).first()
         if not solution:
             solution = AssignmentSolution(assignment_id=assignment_id, user_id=user_id)
             db.add(solution)
         solution.draft_content = final_solution_content
         solution.validated_content = final_solution_content
         solution.ai_provider = "claude_browser"
-        solution.validation_errors = None
+        solution.validation_errors = "AI-generated draft; code was not executed or independently verified by Uniflow."
         solution.generated_at = datetime.now(timezone.utc)
-        solution.validated_at = datetime.now(timezone.utc)
+        solution.validated_at = None
         assignment.status = AssignmentStatus.READY_FOR_REVIEW
         db.commit()
 
@@ -2303,13 +2428,8 @@ def solve_assignment_via_claude_browser(
                     d_name = diag.get("name") or f"diagram_task_{d_task}.drawio.xml"
                     is_drawio = d_lang in ("drawio", "drawio.xml", "mxfile", "xml") or "<mxfile" in d_content
 
-                    # Retrieve visual diagram image generated by Claude or render on the fly
+                    # Use only a visual artifact returned by Claude; do not generate one locally.
                     diag_png_uri = claude_direct_images.get(d_task) or claude_direct_images.get(f"diagram_{d_idx}") or claude_direct_images.get(str(d_idx))
-                    if not diag_png_uri and d_content:
-                        from app.services.diagram_renderer import render_diagram_to_png
-                        diag_png_bytes = render_diagram_to_png(d_content, language=d_lang, page=page)
-                        if diag_png_bytes:
-                            diag_png_uri = f"data:image/png;base64,{base64.b64encode(diag_png_bytes).decode('ascii')}"
 
                     has_claude_image = bool(diag_png_uri)
                     img_filename = f"diagram_task_{d_task}.png"
@@ -2334,16 +2454,21 @@ def solve_assignment_via_claude_browser(
                         "task": d_task,
                         "filename": d_name,
                         "language": "drawio" if is_drawio else d_lang,
-                        "command": "diagram-visual-engine --format png",
-                        "exit_code": 0 if has_claude_image else 1,
-                        "success": has_claude_image,
-                        "status": "passed" if has_claude_image else "needs_input",
-                        "terminal_output": f"Rendered high-DPI architecture diagram for {d_name}." if has_claude_image else f"No diagram specification was available for {d_name}.",
+                        "command": None,
+                        "exit_code": None,
+                        "success": False,
+                        "verified": False,
+                        "status": "unverified",
+                        "terminal_output": (
+                            f"Claude-generated diagram artifact; Uniflow did not render or verify {d_name}."
+                            if has_claude_image
+                            else f"Claude-generated diagram source has no accompanying image; Uniflow did not render or verify {d_name}."
+                        ),
                         "screenshot_data_uri": diag_png_uri,
                         "screenshot_data_uris": [diag_png_uri] if diag_png_uri else [],
                         "diagram_image_filename": img_filename if has_claude_image else None,
                         "downloaded_assets": claude_downloaded_assets.get(d_task, []),
-                        "tool": "UnivFlow High-DPI Diagram Engine"
+                        "tool": "Claude-generated diagram artifact (not rendered or verified by Uniflow)"
                     })
 
                 # In theory assignments: strip raw Draw.io XML code blocks from the report markdown text!
@@ -2397,11 +2522,11 @@ def solve_assignment_via_claude_browser(
 
                     if is_diagram:
                         diag_img = claude_direct_images.get(task_key) or claude_direct_images.get(str(source_file.get("task"))) or claude_direct_images.get(f"diagram_{source_file.get('task')}")
-                        if not diag_img and source_file.get("content"):
-                            from app.services.diagram_renderer import render_diagram_to_png
-                            d_bytes = render_diagram_to_png(source_file["content"], language=lang, page=page)
-                            if d_bytes:
-                                diag_img = f"data:image/png;base64,{base64.b64encode(d_bytes).decode('ascii')}"
+                        if not diag_img:
+                            task_assets = claude_downloaded_assets.get(task_key) or []
+                            downloaded_img = next((a for a in task_assets if a.get("is_image") and a.get("data_uri")), None)
+                            if downloaded_img:
+                                diag_img = downloaded_img["data_uri"]
 
                         has_claude_image = bool(diag_img)
                         img_filename = f"diagram_task_{task_key}.png"
@@ -2426,16 +2551,21 @@ def solve_assignment_via_claude_browser(
                             "task": source_file["task"],
                             "filename": source_file["name"],
                             "language": lang,
-                            "command": "diagram-visual-engine --format png",
-                            "exit_code": 0 if has_claude_image else 1,
-                            "success": has_claude_image,
-                            "status": "passed" if has_claude_image else "needs_input",
-                            "terminal_output": f"Rendered visual architecture diagram for {source_file['name']}." if has_claude_image else f"No diagram image available for {source_file['name']}.",
+                            "command": None,
+                            "exit_code": None,
+                            "success": False,
+                            "status": "unverified",
+                            "verified": False,
+                            "terminal_output": (
+                                f"Claude-generated diagram artifact; Uniflow did not render or verify {source_file['name']}."
+                                if has_claude_image
+                                else f"Claude-generated diagram source has no accompanying image; Uniflow did not render or verify {source_file['name']}."
+                            ),
                             "screenshot_data_uri": diag_img,
                             "screenshot_data_uris": [diag_img] if diag_img else [],
                             "diagram_image_filename": img_filename if has_claude_image else None,
                             "downloaded_assets": claude_downloaded_assets.get(task_key, []),
-                            "tool": "UnivFlow High-DPI Diagram Engine"
+                            "tool": "Claude-generated diagram artifact (not rendered or verified by Uniflow)"
                         })
                     else:
                         # Use Claude's authentic terminal execution output with authentic prompt
@@ -2454,27 +2584,24 @@ def solve_assignment_via_claude_browser(
                             else:
                                 terminal_out = claude_term
                         else:
-                            terminal_out = f"Compiled and executed {source_file['name']} successfully.\nAll test suites passed with exit code 0."
+                            terminal_out = "No program output was executed or captured by Uniflow."
+                        if claude_term:
+                            terminal_out = "Claude-reported sample output; Uniflow did not execute this code.\n" + terminal_out
 
                         screenshot_uris = []
                         direct_img = claude_direct_images.get(task_key) or claude_direct_images.get(str(source_file.get("task")))
+                        if not direct_img:
+                            task_assets = claude_downloaded_assets.get(task_key) or []
+                            downloaded_img = next((a for a in task_assets if a.get("is_image") and a.get("data_uri")), None)
+                            if downloaded_img:
+                                direct_img = downloaded_img["data_uri"]
+
                         if direct_img:
                             screenshot_uris.append(direct_img)
-                        elif terminal_out and terminal_out.strip() and terminal_out != "No terminal output was produced.":
-                            from app.services.terminal_renderer import TerminalCardRenderer
-                            try:
-                                png_list = TerminalCardRenderer.generate_terminal_pngs(
-                                    cmd_str,
-                                    terminal_out,
-                                    title=f"Terminal Output — {source_file['name']}",
-                                    prompt_prefix=shell_prompt,
-                                )
-                                for p_bytes in png_list:
-                                    screenshot_uris.append(f"data:image/png;base64,{base64.b64encode(p_bytes).decode('ascii')}")
-                            except Exception as term_err:
-                                logger.warning(f"Terminal screenshot failed for {source_file['name']}: {term_err}")
+                        # Model-provided output and rendered text cards are not evidence
+                        # that the source file ran. Never package them as terminal screenshots.
 
-                        term_img_filename = f"task{task_key}_output.png"
+                        term_img_filename = f"task{task_key}_claude_image.png"
                         if screenshot_uris:
                             assets = claude_downloaded_assets.setdefault(task_key, [])
                             if not any(a.get("filename") == term_img_filename for a in assets):
@@ -2488,18 +2615,19 @@ def solve_assignment_via_claude_browser(
                         execution_results.append({
                             "task": source_file["task"],
                             "filename": source_file["name"],
-                            "screenshot_filename": term_img_filename if screenshot_uris else None,
-                            "diagram_image_filename": term_img_filename if screenshot_uris else None,
+                            "screenshot_filename": None,
+                            "diagram_image_filename": None,
                             "language": lang,
                             "command": cmd_str,
-                            "exit_code": 0 if screenshot_uris else 0,
-                            "success": bool(screenshot_uris or terminal_out),
-                            "status": "passed",
+                            "exit_code": None,
+                            "success": False,
+                            "verified": False,
+                            "status": "unverified",
                             "terminal_output": terminal_out,
-                            "screenshot_data_uri": screenshot_uris[0] if screenshot_uris else None,
-                            "screenshot_data_uris": screenshot_uris,
+                            "screenshot_data_uri": None,
+                            "screenshot_data_uris": [],
                             "downloaded_assets": claude_downloaded_assets.get(task_key, []),
-                            "tool": "Terminal Output Sandbox (.PNG)" if screenshot_uris else "Claude Text Output"
+                            "tool": "Claude-reported content (not executed by Uniflow)"
                         })
 
                 # Ensure all structured tasks (including conceptual / trade-off / non-code tasks) are recorded
@@ -2509,6 +2637,11 @@ def solve_assignment_via_claude_browser(
                     if t_id not in processed_task_keys:
                         processed_task_keys.add(t_id)
                         shot_uri = task_obj.get("screenshot_data_uri")
+                        if not shot_uri:
+                            task_assets = claude_downloaded_assets.get(t_id) or []
+                            downloaded_img = next((a for a in task_assets if a.get("is_image") and a.get("data_uri")), None)
+                            if downloaded_img:
+                                shot_uri = downloaded_img["data_uri"]
                         execution_results.append({
                             "task": t_id,
                             "filename": f"task_{t_id}_solution.md",
@@ -2517,13 +2650,13 @@ def solve_assignment_via_claude_browser(
                             "command": "academic-analysis",
                             "exit_code": 0,
                             "success": True,
-                            "status": "passed",
-                            "terminal_output": "Theoretical / Conceptual deliverable verified. No terminal output required.",
+                            "status": "not_applicable",
+                            "verified": False,
+                            "terminal_output": "Theory deliverable; no program execution performed.",
                             "screenshot_data_uri": shot_uri,
                             "screenshot_data_uris": [shot_uri] if shot_uri else [],
-                            "tool": "Academic Analysis",
+                            "tool": "Academic Analysis (not execution-validated)",
                         })
-
 
             # Attach every Claude download to its task result, or preserve it as a standalone file result.
             for task_id, assets in claude_downloaded_assets.items():
@@ -2531,18 +2664,24 @@ def solve_assignment_via_claude_browser(
                 if task_result:
                     task_result["downloaded_assets"] = assets
                     image_asset = next((asset for asset in assets if asset.get("is_image")), None)
-                    if image_asset and task_result.get("language") in _DIAGRAM_FENCE_TAGS:
-                        task_result["screenshot_data_uri"] = image_asset["data_uri"]
-                        task_result["diagram_image_filename"] = image_asset["filename"]
+                    if image_asset:
+                        task_result["generated_image_uri"] = image_asset["data_uri"]
+                        task_result["generated_image_filename"] = image_asset["filename"]
                 else:
+                    image_asset = next((asset for asset in assets if asset.get("is_image")), None)
                     execution_results.append({
                         "task": str(task_id),
                         "filename": assets[0].get("filename") or f"claude_output_task_{task_id}",
+                        "screenshot_filename": image_asset.get("filename") if image_asset else None,
+                        "diagram_image_filename": image_asset.get("filename") if image_asset else None,
+                        "screenshot_data_uri": image_asset.get("data_uri") if image_asset else None,
+                        "screenshot_data_uris": [image_asset["data_uri"]] if image_asset and image_asset.get("data_uri") else [],
                         "language": "artifact",
                         "command": "Claude downloadable output",
-                        "exit_code": 0,
-                        "success": True,
-                        "status": "passed",
+                        "exit_code": None,
+                        "success": False,
+                        "status": "unverified",
+                        "verified": False,
                         "terminal_output": "Downloaded Claude-generated output file(s).",
                         "downloaded_assets": assets,
                         "tool": "Claude Output Attachment",
@@ -2564,27 +2703,29 @@ def solve_assignment_via_claude_browser(
             db.add(solution)
 
         doc_result = None
-        _update_solver_progress(
-            db,
-            assignment_id,
-            5,
-            5,
-            "Compiling Google Docs",
-            "Formatting academic submission report with cover page and terminal images...",
-        )
-        try:
-            doc_result = export_solution_to_google_doc(
+        if create_google_doc:
+            _update_solver_progress(
                 db,
-                assignment,
-                final_solution_content,
-                execution_results=execution_results,
-                notebook_deliverables=notebook_deliverables,
-                user_id=user_id,
+                assignment_id,
+                5,
+                5,
+                "Compiling Google Docs",
+                "Formatting academic submission report with cover page and terminal images...",
             )
+        try:
+            if create_google_doc:
+                doc_result = export_solution_to_google_doc(
+                    db,
+                    assignment,
+                    final_solution_content,
+                    execution_results=execution_results,
+                    notebook_deliverables=notebook_deliverables,
+                    user_id=user_id,
+                )
         except Exception as doc_err:
             logger.error("Google Docs report export failed for assignment %s: %s", assignment_id, doc_err)
 
-        if not doc_result:
+        if create_google_doc and not doc_result:
             error_message = (
                 "The solution was generated successfully, but Google Docs export failed. "
                 "Check that Google Drive and Docs are connected, then use 'Export to Doc' from the solution panel."
@@ -2595,7 +2736,8 @@ def solve_assignment_via_claude_browser(
             solution.ai_provider = "claude_browser"
             solution.validation_errors = error_message
             solution.generated_at = datetime.now(timezone.utc)
-            solution.validated_at = datetime.now(timezone.utc)
+            solution.validated_at = None
+            solution.validation_errors = "AI-generated draft; code was not executed or independently verified by Uniflow. " + error_message
             assignment.status = AssignmentStatus.READY_FOR_REVIEW
             db.commit()
             return {
@@ -2614,9 +2756,9 @@ def solve_assignment_via_claude_browser(
         solution.draft_content = final_solution_content
         solution.validated_content = final_solution_content
         solution.ai_provider = "claude_browser"
-        solution.validation_errors = None
+        solution.validation_errors = "AI-generated draft; code was not executed or independently verified by Uniflow."
         solution.generated_at = datetime.now(timezone.utc)
-        solution.validated_at = datetime.now(timezone.utc)
+        solution.validated_at = None
         assignment.status = AssignmentStatus.READY_FOR_REVIEW
         db.commit()
 
@@ -2626,7 +2768,7 @@ def solve_assignment_via_claude_browser(
             5,
             5,
             "Completed",
-            "Assignment solution and Google Doc ready for review.",
+            "Claude draft ready for review." + (" Google Doc report exported." if doc_result else ""),
         )
 
         return {
@@ -2637,5 +2779,6 @@ def solve_assignment_via_claude_browser(
             "attachments_used": attachment_paths,
             "google_doc_url": doc_result.get("doc_url") if doc_result else None,
             "google_doc_id": doc_result.get("doc_id") if doc_result else None,
-            "message": f"Assignment solution successfully generated by Claude via browser automation with {len(attachment_paths)} attached file(s)!"
+            "verification_status": "unverified",
+            "message": f"Assignment solution generated by Claude via browser automation with {len(attachment_paths)} attached file(s). Code was not executed or verified by Uniflow."
         }

@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 
 from app.db.database import get_db
 from app.db.repositories import DailyReportRepository, AnnouncementRepository
 from app.db.models import DailyReport, Announcement
+from app.auth.clerk_auth import get_current_user_optional
+from app.auth.ownership import require_user_id, user_owner_ids
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -13,10 +15,18 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 @router.get("/daily-reports", response_model=List[dict])
 def get_daily_reports(
     limit: int = 30,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
-    repo = DailyReportRepository(db)
-    reports = repo.get_recent(limit)
+    user_id = require_user_id(clerk_user)
+    owners = user_owner_ids(user_id)
+    reports = (
+        db.query(DailyReport)
+        .filter(DailyReport.user_id.in_(owners))
+        .order_by(DailyReport.report_date.desc())
+        .limit(limit)
+        .all()
+    )
     return [
         {
             "id": r.id,
@@ -32,8 +42,17 @@ def get_daily_reports(
 
 
 @router.get("/daily-reports/{report_id}", response_model=dict)
-def get_daily_report(report_id: int, db: Session = Depends(get_db)):
-    report = db.query(DailyReport).filter(DailyReport.id == report_id).first()
+def get_daily_report(
+    report_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    user_id = require_user_id(clerk_user)
+    report = (
+        db.query(DailyReport)
+        .filter(DailyReport.id == report_id, DailyReport.user_id.in_(user_owner_ids(user_id)))
+        .first()
+    )
     if not report:
         raise HTTPException(status_code=404, detail="Daily report not found")
     return {
@@ -50,10 +69,15 @@ def get_daily_report(report_id: int, db: Session = Depends(get_db)):
 @router.get("/daily-reports/by-date", response_model=dict)
 def get_daily_report_by_date(
     date: datetime,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
-    repo = DailyReportRepository(db)
-    report = repo.get_by_date(date)
+    user_id = require_user_id(clerk_user)
+    report = (
+        db.query(DailyReport)
+        .filter(DailyReport.report_date == date, DailyReport.user_id.in_(user_owner_ids(user_id)))
+        .first()
+    )
     if not report:
         raise HTTPException(status_code=404, detail="Daily report not found for this date")
     return {
@@ -70,9 +94,17 @@ def get_daily_report_by_date(
 @router.get("/announcements", response_model=List[dict])
 def get_announcements(
     limit: int = 50,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
-    announcements = db.query(Announcement).order_by(Announcement.published_at.desc().nullslast()).limit(limit).all()
+    user_id = require_user_id(clerk_user)
+    announcements = (
+        db.query(Announcement)
+        .filter(Announcement.user_id.in_(user_owner_ids(user_id)))
+        .order_by(Announcement.published_at.desc().nullslast())
+        .limit(limit)
+        .all()
+    )
     return [
         {
             "id": a.id,
@@ -89,8 +121,17 @@ def get_announcements(
 
 
 @router.get("/announcements/{announcement_id}", response_model=dict)
-def get_announcement(announcement_id: int, db: Session = Depends(get_db)):
-    announcement = db.query(Announcement).filter(Announcement.id == announcement_id).first()
+def get_announcement(
+    announcement_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    user_id = require_user_id(clerk_user)
+    announcement = (
+        db.query(Announcement)
+        .filter(Announcement.id == announcement_id, Announcement.user_id.in_(user_owner_ids(user_id)))
+        .first()
+    )
     if not announcement:
         raise HTTPException(status_code=404, detail="Announcement not found")
     return {

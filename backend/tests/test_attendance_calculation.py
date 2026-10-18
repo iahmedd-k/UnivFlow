@@ -45,12 +45,14 @@ def test_percentage_only_attendance_does_not_invent_class_counts():
 def test_attendance_summary_uses_cumulative_counts_and_weekly_schedule(db_session):
     course = Course(
         id=1,
+        user_id="test-user",
         external_id="attendance-course",
         name="F-26-Computer Organization and Assembly Language-1971",
     )
     db_session.add(course)
     db_session.add(
         AttendanceRecord(
+            user_id="test-user",
             external_id="attendance-record",
             course_id=course.id,
             subject=course.name,
@@ -61,6 +63,7 @@ def test_attendance_summary_uses_cumulative_counts_and_weekly_schedule(db_sessio
     )
     db_session.add_all([
         TimetableEntry(
+            user_id="test-user",
             external_id="timetable-monday",
             subject="Computer Organization and Assembly Language",
             weekday=0,
@@ -68,6 +71,7 @@ def test_attendance_summary_uses_cumulative_counts_and_weekly_schedule(db_sessio
             end_time="10:00",
         ),
         TimetableEntry(
+            user_id="test-user",
             external_id="timetable-wednesday",
             subject="Computer Organization and Assembly Language",
             weekday=2,
@@ -127,10 +131,11 @@ def test_attendance_summary_matches_full_portal_attendance_table(db_session):
 
     for index, parsed in enumerate(parsed_rows, start=1):
         subject = parsed["subject"]
-        course = Course(id=index, external_id=f"portal-course-{index}", name=subject)
+        course = Course(id=index, user_id="test-user", external_id=f"portal-course-{index}", name=subject)
         db_session.add(course)
         db_session.add(
             AttendanceRecord(
+                user_id="test-user",
                 external_id=f"portal-attendance-{index}",
                 course_id=index,
                 subject=subject,
@@ -156,10 +161,11 @@ def test_attendance_summary_matches_full_portal_attendance_table(db_session):
 
 
 def test_percentage_only_record_is_not_counted_as_a_class_total(db_session):
-    course = Course(id=1, external_id="percentage-course", name="Course D")
+    course = Course(id=1, user_id="test-user", external_id="percentage-course", name="Course D")
     db_session.add(course)
     db_session.add(
         AttendanceRecord(
+            user_id="test-user",
             external_id="percentage-record",
             course_id=course.id,
             subject=course.name,
@@ -182,10 +188,11 @@ def test_percentage_only_record_is_not_counted_as_a_class_total(db_session):
 
 
 def test_legacy_portal_placeholder_total_is_not_reported_as_verified_counts(db_session):
-    course = Course(id=1, external_id="portal-attendance-course", name="Course E")
+    course = Course(id=1, user_id="test-user", external_id="portal-attendance-course", name="Course E")
     db_session.add(course)
     db_session.add(
         AttendanceRecord(
+            user_id="test-user",
             external_id="portal-attendance:legacy-course",
             course_id=course.id,
             subject=course.name,

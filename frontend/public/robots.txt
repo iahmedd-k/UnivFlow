@@ -1,6 +1,2 @@
 User-agent: *
-Allow: /
-Disallow: /api/
-Disallow: /dashboard/settings/
-
-Sitemap: https://univ-flow-bt12.vercel.app/sitemap.xml
+Disallow: /

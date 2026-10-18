@@ -18,10 +18,11 @@ from typing import Optional, Dict, Any, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import text, func
+from sqlalchemy import text, func, or_
 from sqlalchemy.orm import Session
 
 from app.auth.clerk_auth import require_current_user
+from app.auth.ownership import require_user_id, user_owner_ids
 from app.core.redis import (
     UpstashRedisError,
     acquire_lock as acquire_redis_lock,
@@ -30,6 +31,7 @@ from app.core.redis import (
     release_lock as release_redis_lock,
 )
 from app.core.logging import logger
+from app.core.config import settings
 from app.db.database import get_db, SessionLocal
 from app.db.models import Course, Setting, TimetableEntry, ClassSchedule, PortalSyncJob
 from app.db.repositories import AttendanceRecordRepository, CourseRepository, ClassScheduleRepository
@@ -120,7 +122,7 @@ def _set_setting(db: Session, key: str, value: str, description: str = ""):
 
 
 def _user_id(user: dict | None) -> str:
-    return str((user or {}).get("id") or "dev_student_user")
+    return require_user_id(user)
 
 
 def _user_setting_key(user_id: str, key: str) -> str:
@@ -130,16 +132,16 @@ def _user_setting_key(user_id: str, key: str) -> str:
 
 def _portal_setting(db: Session, user_id: str, key: str):
     item = _setting(db, _user_setting_key(user_id, key))
-    if not item and user_id != "dev_student_user":
+    if not item and not settings.is_production and user_id != "dev_student_user":
         item = _setting(db, _user_setting_key("dev_student_user", key))
-    if not item:
+    if not item and not settings.is_production:
         item = _setting(db, key)
     return item
 
 
 def _set_portal_setting(db: Session, user_id: str, key: str, value: str, description: str = ""):
     item = _set_setting(db, _user_setting_key(user_id, key), value, description)
-    if user_id != "dev_student_user":
+    if not settings.is_production and user_id != "dev_student_user":
         _set_setting(db, _user_setting_key("dev_student_user", key), value, description)
     return item
 
@@ -683,11 +685,11 @@ def _get_student_portal_email(db: Session, uid: str) -> str:
     if email_setting and email_setting.value and "@" in email_setting.value:
         return email_setting.value.strip()
 
-    g_setting = _setting(db, "google_connected_email")
+    g_setting = _setting(db, f"google_connected_email_{uid}")
     if g_setting and g_setting.value and "@" in g_setting.value:
         return g_setting.value.strip()
 
-    profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).order_by(Setting.updated_at.desc()).first()
+    profile_row = db.query(Setting).filter(Setting.key == f"clerk_user_{uid}").first()
     if profile_row and profile_row.value:
         try:
             prof = json.loads(profile_row.value)
@@ -697,7 +699,7 @@ def _get_student_portal_email(db: Session, uid: str) -> str:
         except Exception:
             pass
 
-    return "232530@students.au.edu.pk"
+    return ""
 
 
 def _handle_portal_login_page(page, portal_host: str) -> bool:
@@ -753,19 +755,16 @@ def _handle_google_oauth_if_needed(page, user_id: Optional[str] = None, student_
         except Exception:
             student_email = ""
 
+    if not student_email:
+        logger.warning("Skipping Google account selection because no account email is configured for this user.")
+        return False
+
     try:
         # A. Account Chooser is shown
         selectors = [
             f"li:has-text('{student_email}')",
             f"div[data-identifier*='{student_email}']",
             f"[data-email*='{student_email}']",
-            "li:has-text('@students.au.edu.pk')",
-            "div[data-identifier*='@students.au.edu.pk']",
-            "[data-email*='@students.au.edu.pk']",
-            "li:has-text('@au.edu.pk')",
-            "div[data-identifier*='@au.edu.pk']",
-            "li:has-text('232530')",
-            "div[data-identifier*='232530']",
         ]
         if student_email and "@" in student_email:
             roll_part = student_email.split("@")[0]
@@ -1769,17 +1768,16 @@ def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_
             })
 
     if validated_items:
-        # Clean Override Reset: Wipe previous portal timetable entries and future schedules
+        # Clean Override Reset: Wipe previous portal timetable entries and future schedules only for this user
+        owners = user_owner_ids(user_id)
         db.query(TimetableEntry).filter(
-            (TimetableEntry.user_id == user_id) |
-            (TimetableEntry.user_id == "legacy") |
-            (TimetableEntry.user_id.is_(None)) |
-            (TimetableEntry.external_id.like("portal-tt:%"))
+            TimetableEntry.user_id.in_(owners),
+            TimetableEntry.external_id.like("portal-tt:%")
         ).delete(synchronize_session=False)
 
         db.query(ClassSchedule).filter(
+            ClassSchedule.user_id.in_(owners),
             ClassSchedule.external_id.like("portal-sch:%"),
-            (ClassSchedule.user_id == user_id) | (ClassSchedule.user_id == "legacy") | (ClassSchedule.user_id.is_(None)),
             ClassSchedule.date >= datetime.combine(today, dtime.min).replace(tzinfo=timezone.utc)
         ).delete(synchronize_session=False)
         db.flush()
@@ -1796,14 +1794,14 @@ def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_
         identity = f"{subj.lower()}|{weekday}|{st}|{et}"
         tt_ext_id = "portal-tt:" + sha256(identity.encode("utf-8")).hexdigest()[:32]
         tt_entry = db.query(TimetableEntry).filter(
-            (TimetableEntry.external_id == tt_ext_id) |
-            (
+            TimetableEntry.user_id.in_(user_owner_ids(user_id)),
+            or_(
+                TimetableEntry.external_id == tt_ext_id,
                 (func.lower(TimetableEntry.subject) == subj.lower()) &
                 (TimetableEntry.weekday == weekday) &
                 (TimetableEntry.start_time == st) &
-                (TimetableEntry.end_time == et) &
-                ((TimetableEntry.user_id == user_id) | (TimetableEntry.user_id == "legacy"))
-            )
+                (TimetableEntry.end_time == et),
+            ),
         ).first()
         if not tt_entry:
             tt_entry = TimetableEntry(
@@ -1852,7 +1850,7 @@ def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_
 
                     existing_sch = db.query(ClassSchedule).filter(
                         ClassSchedule.external_id == sch_ext_id,
-                        (ClassSchedule.user_id == user_id) | (ClassSchedule.user_id == "legacy")
+                        ClassSchedule.user_id.in_(user_owner_ids(user_id))
                     ).first()
                     if not existing_sch:
                         new_sch = ClassSchedule(
@@ -2549,10 +2547,11 @@ def queue_portal_sync(background_tasks: BackgroundTasks, db: Session = Depends(g
 
 @router.get("/sync/{job_id}", response_model=dict)
 def get_portal_sync_status(job_id: str, db: Session = Depends(get_db), user: dict = Depends(require_current_user)):
+    uid = _user_id(user)
     repo = PortalSyncJobRepository(db)
     job = repo.get_by_job_id(job_id)
 
-    if not job:
+    if not job or job.user_id not in user_owner_ids(uid):
         raise HTTPException(status_code=404, detail="Sync job was not found or has expired.")
 
     job_result = json.loads(job.result) if job.result else None

@@ -61,7 +61,7 @@ export default function StudyAssistantPage() {
   const [error, setError] = useState('');
   const [reconnectUrl, setReconnectUrl] = useState('');
   const [notice, setNotice] = useState('');
-  const [showSources, setShowSources] = useState(true);   // left panel (UI only)
+  const [showSources, setShowSources] = useState(() => (typeof window !== 'undefined' ? window.innerWidth >= 1024 : true));
   const [showRecent, setShowRecent] = useState(false);    // right panel (UI only)
   const listRef = useRef(null);
   const textareaRef = useRef(null);
@@ -94,8 +94,6 @@ export default function StudyAssistantPage() {
     return () => { active = false; };
   }, [loadWorkspace]);
 
-  // On small screens the side panels overlay the chat, so start with them closed.
-  useEffect(() => { if (window.innerWidth < 1024) setShowSources(false); }, []);
 
   // Scroll only the message list (never the page).
   useEffect(() => {

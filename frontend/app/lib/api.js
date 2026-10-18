@@ -126,6 +126,12 @@ export const api = {
     return fetchFromApi('/auth/status', token);
   },
 
+  getPrivateAccessStatus: async (token = null) => fetchFromApi('/auth/access/status', token, { noCache: true }),
+  requestPrivateAccess: async (token = null) => fetchFromApi('/auth/access/request', token, { method: 'POST', body: JSON.stringify({}) }),
+  redeemPrivateAccess: async (code, token = null) => fetchFromApi('/auth/access/redeem', token, {
+    method: 'POST', body: JSON.stringify({ code }),
+  }),
+
   getGoogleAuthUrl: async (token = null, redirectTo = null) => {
     const query = redirectTo ? `?redirect_to=${encodeURIComponent(redirectTo)}` : '';
     return fetchFromApi(`/auth/google${query}`, token);
@@ -163,6 +169,14 @@ export const api = {
     });
   },
 
+  // Onboarding Setup Flow
+  getOnboardingStatus: async (token = null) => fetchFromApi('/classroom/onboarding-status', token, { noCache: true }),
+  dismissOnboarding: async (token = null) => fetchFromApi('/classroom/onboarding-dismiss', token, { method: 'POST' }),
+  saveOnboarding: async (data, token = null) => fetchFromApi('/classroom/onboarding-save', token, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+
   // Dashboard
   getOverview: async (token = null, noCache = false) => {
     return fetchFromApi('/dashboard/overview', token, noCache ? { noCache: true } : {});
@@ -171,6 +185,7 @@ export const api = {
   getUpcoming: async (days = 7, token = null) => {
     return fetchFromApi(`/dashboard/upcoming?days=${days}`, token);
   },
+  getAutomationHistory: async (limit = 40, token = null) => fetchFromApi(`/dashboard/automation-history?limit=${limit}`, token),
 
   getAttendanceSummary: async (token = null) => {
     return fetchFromApi('/dashboard/attendance-summary', token);
@@ -360,13 +375,13 @@ export const api = {
   },
 
   unsubmitAssignment: async (assignmentId, token = null) => fetchFromApi(`/classroom/assignments/${assignmentId}/unsubmit`, token, { method: 'POST' }),
-  quickTurnInAssignment: async (assignmentId, token = null) => fetchFromApi(`/classroom/assignments/${assignmentId}/quick-turn-in`, token, { method: 'POST' }),
+  quickTurnInAssignment: async (assignmentId, token = null) => fetchFromApi(`/classroom/assignments/${assignmentId}/quick-turn-in`, token, { method: 'POST', body: JSON.stringify({ confirm_submission: true }) }),
   getCourseAutoTurnIn: async (courseId, token = null) => fetchFromApi(`/classroom/courses/${courseId}/auto-turn-in`, token),
   updateCourseAutoTurnIn: async (courseId, data, token = null) => fetchFromApi(`/classroom/courses/${courseId}/auto-turn-in`, token, {
     method: 'PUT',
     body: JSON.stringify(data),
   }),
-  checkCourseAutoTurnIn: async (courseId, token = null) => fetchFromApi(`/classroom/courses/${courseId}/check-auto-turn-in`, token, { method: 'POST' }),
+  checkCourseAutoTurnIn: async (courseId, token = null) => fetchFromApi(`/classroom/courses/${courseId}/check-auto-turn-in`, token, { method: 'POST', body: JSON.stringify({ confirm_submission: true }) }),
 
   // AI Tutor & Review Panels
   getAssignmentBreakdown: async (assignmentId, token = null) => fetchFromApi(`/assignments/${assignmentId}/breakdown`, token),
@@ -458,32 +473,11 @@ export const api = {
     return fetchFromApi(`/notifications/test-email${params}`, token, { method: 'POST' });
   },
   triggerDailyDigest: async (token = null) => fetchFromApi('/notifications/daily-digest', token, { method: 'POST' }),
+  getDailyBriefingPreferences: async (token = null) => fetchFromApi('/notifications/daily-briefing-preferences', token, { noCache: true }),
+  saveDailyBriefingPreferences: async (data, token = null) => fetchFromApi('/notifications/daily-briefing-preferences', token, { method: 'PUT', body: JSON.stringify(data) }),
   previewAlerts: async (targetDate = null, token = null) => {
     const params = targetDate ? `?target_date=${encodeURIComponent(targetDate)}` : '';
     return fetchFromApi(`/notifications/preview-alerts${params}`, token);
   },
 
-  // Code Execution
-  executeCode: async (data, token = null) => fetchFromApi('/execution/execute', token, {
-    method: 'POST',
-    body: JSON.stringify(data),
-  }),
-
-  getExecutionLanguages: async (token = null) => fetchFromApi('/execution/languages', token),
-
-  getExecutionHealth: async (token = null) => fetchFromApi('/execution/health', token),
-
-  // Diagram Generation
-  generateDiagram: async (data, token = null) => fetchFromApi('/diagram/generate', token, {
-    method: 'POST',
-    body: JSON.stringify(data),
-  }),
-
-  getDiagramTypes: async (token = null) => fetchFromApi('/diagram/types', token),
-
-  getDiagramKinds: async (diagramType = 'mermaid', token = null) => fetchFromApi(`/diagram/kinds?diagram_type=${diagramType}`, token),
-
-  getDiagramFormats: async (token = null) => fetchFromApi('/diagram/formats', token),
-
-  getDiagramHealth: async (token = null) => fetchFromApi('/diagram/health', token),
 };

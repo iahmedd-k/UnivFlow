@@ -108,6 +108,8 @@ export default function DashboardOverview() {
 
   const handleDashboardQuickTurnIn = async (assignmentId) => {
     if (turningInId) return;
+    const assignment = (upcoming?.assignments || []).find((item) => item.id === assignmentId);
+    if (!window.confirm(`Submit "${assignment?.title || 'this assignment'}" to Google Classroom now? Uniflow will attach the Google Doc and a ZIP of deliverables.`)) return;
     setTurningInId(assignmentId);
     setError('');
     setTurnInNotice('');

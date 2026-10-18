@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
 
+from app.auth.ownership import user_owner_ids
 from app.db.models import Assignment, AssignmentSolution, AssignmentMaterial, Course, Submission, SubmissionState, AssignmentStatus, AssignmentTemplate, Setting
 from app.core.config import settings
 from app.core.logging import logger
@@ -640,55 +641,6 @@ def append_downloaded_assets_to_zip(
             or lang in ("drawio", "drawio.xml", "xml", "mxfile", "svg", "mermaid", "plantuml")
             or str(result.get("filename", "")).endswith((".drawio.xml", ".xml", ".svg", ".mmd", ".puml"))
         )
-
-        # On-the-fly rendering fallback for diagrams
-        if is_diag and not any(a.get("is_image") for a in assets) and not result.get("screenshot_data_uri"):
-            content = result.get("content") or ""
-            if not content and solution_markdown:
-                diags = extract_diagram_deliverables(solution_markdown)
-                matched_diag = next((d for d in diags if str(d.get("task")) == task_str or d.get("name") == result.get("filename")), None)
-                if matched_diag:
-                    content = matched_diag.get("content", "")
-
-            if content:
-                from app.services.diagram_renderer import render_diagrams_to_png_list
-                png_pairs = render_diagrams_to_png_list(content, language=lang)
-                for diag_title, png_bytes in png_pairs:
-                    clean_diag_name = f"diagram_task_{task_str}_{diag_title}"
-                    assets.append({
-                        "filename": clean_diag_name,
-                        "content": png_bytes,
-                        "is_image": True,
-                    })
-                c_name = result.get("filename") or f"diagram_task_{task_str}.drawio.xml"
-                if not any(a.get("filename") == c_name for a in assets):
-                    assets.append({
-                        "filename": c_name,
-                        "content": content,
-                        "is_image": False,
-                    })
-
-        # On-the-fly rendering fallback for terminal outputs
-        term_out = result.get("terminal_output") or ""
-        if not is_diag and term_out and term_out.strip() and term_out != "No terminal output was produced.":
-            if not any(a.get("is_image") for a in assets) and not result.get("screenshot_data_uri"):
-                from app.services.terminal_renderer import TerminalCardRenderer
-                try:
-                    cmd_str = result.get("command") or f"run {result.get('filename', 'task')}"
-                    term_pngs = TerminalCardRenderer.generate_terminal_pngs(
-                        cmd_str,
-                        term_out,
-                        title=f"Terminal Output — {result.get('filename', 'task')}",
-                    )
-                    for p_idx, p_bytes in enumerate(term_pngs):
-                        suffix = f"_part{p_idx + 1}" if len(term_pngs) > 1 else ""
-                        assets.append({
-                            "filename": f"task{task_str}_output{suffix}.png",
-                            "content": p_bytes,
-                            "is_image": True,
-                        })
-                except Exception as t_err:
-                    logger.debug(f"Terminal rendering in zip failed: {t_err}")
 
         # Check diagram_image_filename or screenshot_filename with data URI
         img_name = result.get("diagram_image_filename") or result.get("screenshot_filename")
@@ -1408,6 +1360,11 @@ def export_solution_to_google_doc(
         "",
         solution_content or "",
     )
+    if "---CHAT-NOTE---" in report_content:
+        report_content = report_content.split("---CHAT-NOTE---", 1)[0].rstrip()
+    else:
+        report_content = re.split(r"(?im)^\s*---*\s*CHAT[-_ ]*NOTE\s*---*", report_content)[0].rstrip()
+
     report_content = re.sub(
         r"(?ims)^#\s*AIR UNIVERSITY[^\n]*\n.*?^\s*---\s*$\n*",
         "",
@@ -1429,7 +1386,10 @@ def export_solution_to_google_doc(
         return None
 
     try:
-        course = db.query(Course).filter(Course.id == assignment.course_id).first()
+        course = db.query(Course).filter(
+            Course.id == assignment.course_id,
+            Course.user_id.in_(user_owner_ids(owner_id)),
+        ).first()
         course_name = course.name if course else "Course"
 
         owner_id = user_id or assignment.user_id
@@ -1438,9 +1398,7 @@ def export_solution_to_google_doc(
             profile_row = db.query(Setting).filter(Setting.key == f"student_profile_{owner_id}").first()
             if not profile_row:
                 profile_row = db.query(Setting).filter(Setting.key == f"clerk_user_{owner_id}").first()
-            if not profile_row:
-                profile_row = db.query(Setting).filter(Setting.key == "student_profile_legacy").first()
-        if not profile_row:
+        if not owner_id:
             profile_row = db.query(Setting).filter(Setting.key.like("student_profile_%")).first()
             if not profile_row:
                 profile_row = db.query(Setting).filter(Setting.key.like("clerk_user_%")).first()
@@ -1458,9 +1416,7 @@ def export_solution_to_google_doc(
                 email_row = db.query(Setting).filter(
                     Setting.key.in_([
                         f"google_connected_email_{owner_id}",
-                        f"university_portal_login_email_{owner_id}",
-                        "google_connected_email",
-                        "university_portal_login_email"
+                        f"university_portal_login_email_{owner_id}"
                     ])
                 ).first()
                 if email_row and hasattr(email_row, "value") and isinstance(email_row.value, str):
@@ -1470,7 +1426,7 @@ def export_solution_to_google_doc(
 
         student_name = profile.get("student_name") or " ".join(
             part for part in (profile.get("first_name"), profile.get("last_name")) if isinstance(part, str) and part.strip() and part.strip() != "."
-        ).strip() or (profile.get("name") if isinstance(profile.get("name"), str) else None) or "Ahmed Khan"
+        ).strip() or (profile.get("name") if isinstance(profile.get("name"), str) else None) or "Student"
 
         roll_no = profile.get("roll_no") or profile.get("student_id") or profile.get("rollNumber") or ""
         if not isinstance(roll_no, str):
@@ -1547,9 +1503,18 @@ def export_solution_to_google_doc(
                 if not result:
                     result = next((item for item in execution_results if str(item.get("task")) == str(task) and (not is_diagram or item.get("language") in (lang, "drawio", "drawio.xml", "xml", "mxfile"))), {})
                 claude_term = claude_terminals.get(str(task))
-                terminal_output = claude_term or result.get("terminal_output") or ("No Claude-generated diagram image was available." if is_diagram else "No terminal output was produced.")
-                run_summary = result.get("status", "passed" if claude_term else "not_run").replace("_", " ").title()
-                exit_code = result.get("exit_code", 0)
+                independently_verified = result.get("verified") is True
+                terminal_output = (
+                    (claude_term or result.get("terminal_output") or "No output was captured.")
+                    if independently_verified
+                    else ("Claude-generated visual artifact; it is not an execution or verification result." if is_diagram else "Uniflow did not execute this code. Any example output from Claude is unverified.")
+                )
+                run_summary = (
+                    result.get("status", "verified").replace("_", " ").title()
+                    if independently_verified
+                    else ("Claude-generated visual artifact" if is_diagram else "Not executed by Uniflow")
+                )
+                exit_code = result.get("exit_code") if independently_verified else "not run"
                 question_text = extract_task_question_from_markdown(
                     solution_content,
                     task,
@@ -1578,23 +1543,18 @@ def export_solution_to_google_doc(
                 # 3. Execution / Visual Diagram Output (Heading 2 + Status Badge + Image + Output)
                 docs_service.append_styled_block(
                     doc_id,
-                    "2. Terminal Output & Execution Screenshot\n" if not is_diagram else "2. Visual Architecture Diagram & Verification\n",
+                    "2. Claude-reported output (not executed)\n" if not is_diagram else "2. Claude-generated visual artifact\n",
                     style_type="HEADING_2"
                 )
                 docs_service.append_styled_block(
                     doc_id,
-                    f"Status: {run_summary} (Exit Code: {exit_code}) | Engine: {result.get('tool') or ('Claude Visual Engine' if is_diagram else 'Terminal Sandbox')}\n\n",
+                    f"Status: {run_summary} | Exit Code: {exit_code} | Engine: {result.get('tool') or 'Claude'}\n\n",
                     style_type="BOLD_LABEL"
                 )
 
                 # Embed all screenshot image parts (with on-the-fly rendering fallback if needed)
                 all_screenshot_uris = result.get("screenshot_data_uris") or ([result.get("screenshot_data_uri")] if result.get("screenshot_data_uri") else [])
-                if is_diagram and not all_screenshot_uris and source_file.get("content"):
-                    from app.services.diagram_renderer import render_diagram_to_png
-                    d_bytes = render_diagram_to_png(source_file["content"], language=lang)
-                    if d_bytes:
-                        all_screenshot_uris.append(f"data:image/png;base64,{base64.b64encode(d_bytes).decode('ascii')}")
-                elif not is_diagram and not all_screenshot_uris and terminal_output and terminal_output.strip() and terminal_output != "No terminal output was produced.":
+                if not is_diagram and independently_verified and not all_screenshot_uris and terminal_output and terminal_output.strip():
                     from app.services.terminal_renderer import TerminalCardRenderer
                     try:
                         cmd = result.get("command")
@@ -1635,7 +1595,7 @@ def export_solution_to_google_doc(
                 if images_inserted == 0 and not is_diagram:
                     docs_service.append_styled_block(
                         doc_id,
-                        f"\nOutput Summary:\n{terminal_output}\n\n" if is_diagram else f"\nConsole Output:\n{terminal_output}\n\n",
+                    f"\nClaude visual note:\n{terminal_output}\n\n" if is_diagram else f"\nClaude-reported output (unverified):\n{terminal_output}\n\n",
                         style_type="CODE"
                     )
                 elif images_inserted == 0 and is_diagram:
@@ -1746,7 +1706,6 @@ def export_solution_to_google_doc(
                         is_drawio = fence_lang in ("drawio", "drawio.xml", "xml", "mxfile", "mxgraph") or ("<mxfile" in code_content or "<mxGraphModel" in code_content)
                         is_diagram = fence_lang in ("mermaid", "plantuml", "graphviz", "dot", "mmd", "puml", "svg") or is_drawio
                         if is_diagram:
-                            from app.services.diagram_renderer import render_diagrams_to_png_list
                             diag_lang = "drawio" if is_drawio else fence_lang
                             diag_filename = f"diagram_architecture.{'drawio.xml' if is_drawio else _CODE_EXTENSIONS.get(fence_lang, 'svg')}"
 
@@ -1760,9 +1719,6 @@ def export_solution_to_google_doc(
                                     png_pairs.append((f"diagram_{diag_lang}.png", m_bytes))
                                 except Exception:
                                     pass
-
-                            if not png_pairs and code_content:
-                                png_pairs = render_diagrams_to_png_list(code_content, language=diag_lang)
 
                             if png_pairs:
                                 for diag_title, png_bytes in png_pairs:

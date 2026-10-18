@@ -72,6 +72,15 @@ def process_browser_automation_jobs(db: Session, batch_size: int = 2) -> int:
         processed += 1
         user_id = job.user_id
 
+        from app.auth.access_gate import get_access_status
+        from app.core.config import settings
+        if settings.is_production and not get_access_status({"id": user_id}, db)["granted"]:
+            job.status = "cancelled"
+            job.finished_at = datetime.now(timezone.utc)
+            job.error = "Private workspace access was revoked before this job started."
+            db.commit()
+            continue
+
         enabled = db.query(Setting).filter(
             Setting.key == f"classroom:{user_id}:auto_solve_enabled"
         ).first()

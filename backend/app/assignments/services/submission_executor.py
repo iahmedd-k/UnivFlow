@@ -134,7 +134,8 @@ class GCRSubmissionExecutor(BaseSubmissionExecutor):
         turn_in_result = service.courses().courseWork().studentSubmissions().turnIn(
             courseId=course_id,
             courseWorkId=assignment_id,
-            id=submission_id
+            id=submission_id,
+            body={},
         ).execute()
         
         return SubmissionReceipt(

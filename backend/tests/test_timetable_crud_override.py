@@ -3,6 +3,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import pytest
+from unittest.mock import patch
 from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -11,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.main import app
 from app.db.database import get_db, Base
-from app.auth.clerk_auth import require_current_user
+from app.auth.clerk_auth import get_current_user_optional, require_current_user
 from app.db.models import TimetableEntry, ClassSchedule, Course, Setting
 from app.timetable.router import _validate_timetable_candidate
 
@@ -47,8 +48,10 @@ def client(test_db):
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[require_current_user] = fake_user
-    with TestClient(app) as c:
-        yield c
+    app.dependency_overrides[get_current_user_optional] = fake_user
+    with patch("app.main.start_scheduler"):
+        with TestClient(app) as c:
+            yield c
     app.dependency_overrides.clear()
 
 
@@ -233,12 +236,14 @@ def test_dashboard_clear_timetable(client, test_db):
 # =========================================================================
 
 def test_attendance_crud(client, test_db):
-    # Ensure course exists
-    course = test_db.query(Course).first()
-    if not course:
-        course = Course(external_id="test-course-att", name="Software Engineering", course_state="ACTIVE", user_id="legacy")
-        test_db.add(course)
-        test_db.commit()
+    course = Course(
+        external_id="test-course-attendance-crud",
+        name="Software Engineering",
+        course_state="ACTIVE",
+        user_id="test_student_user",
+    )
+    test_db.add(course)
+    test_db.commit()
 
     # Create attendance record
     att_payload = {

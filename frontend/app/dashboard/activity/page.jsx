@@ -11,12 +11,14 @@ const runTone = (status) =>
 export default function ActivityPage() {
   const { getToken } = useAuth();
   const [runs, setRuns] = useState([]);
+  const [automationHistory, setAutomationHistory] = useState([]);
   const [stats, setStats] = useState(null);
   const [sync, setSync] = useState(null);
   const [expandedRun, setExpandedRun] = useState(null);
   const [runEvents, setRunEvents] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [actionMessage, setActionMessage] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -25,16 +27,36 @@ export default function ActivityPage() {
         api.getAgentRuns(20, token),
         api.getAgentRunStats(token),
         api.getSyncStatus(token),
+        api.getAutomationHistory(40, token),
       ]);
       setRuns(results[0].status === 'fulfilled' ? results[0].value || [] : []);
       setStats(results[1].status === 'fulfilled' ? results[1].value : null);
       setSync(results[2].status === 'fulfilled' ? results[2].value : null);
+      setAutomationHistory(results[3].status === 'fulfilled' ? results[3].value || [] : []);
       const failed = results.find((result) => result.status === 'rejected');
       if (failed) setError(failed.reason?.message || 'Some sync activity could not be loaded.');
     } catch (err) {
       setError(err.message || 'Could not load sync activity.');
     }
   }, [getToken]);
+
+  const retryAutomation = async (item) => {
+    setActionMessage('');
+    try {
+      const token = await getToken();
+      if (item.kind === 'classroom_turn_in') {
+        if (!window.confirm(`Retry submission of "${item.assignment_title}" to Google Classroom now?`)) return;
+        const result = await api.quickTurnInAssignment(item.assignment_id, token);
+        setActionMessage(result.message || 'Classroom submission retry finished.');
+      } else {
+        await api.generateAssignmentSolution(item.assignment_id, { create_google_doc: true }, token);
+        setActionMessage(`Claude started a new draft for "${item.assignment_title}".`);
+      }
+      await load();
+    } catch (err) {
+      setError(err.message || 'Could not retry this automation.');
+    }
+  };
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -82,6 +104,33 @@ export default function ActivityPage() {
       </header>
 
       {error && <div className="rounded-lg border border-[#f1dede] bg-[#fff8f8] px-3 py-2.5 text-xs text-[#a04a4a]">{error}</div>}
+      {actionMessage && <div role="status" className="rounded-lg border border-[#d8eee4] bg-[#f1fbf6] px-3 py-2.5 text-xs text-[#287457]">{actionMessage}</div>}
+
+      <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm">
+        <header className="flex items-center justify-between gap-3.5 border-b border-[#f0f0f3] px-5 py-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">AUTOMATION HISTORY</p>
+            <h2 className="text-[13px] font-semibold text-[#343746]">Claude drafts and Classroom submissions</h2>
+          </div>
+          <span className="inline-flex items-center rounded-full bg-[#f1f1f6] px-2 py-1 text-xs font-semibold text-[#6e7281]">{automationHistory.length}</span>
+        </header>
+        {loading ? <p className="px-5 py-7 text-center text-xs text-[#9396a3]">Loading automation history…</p> : automationHistory.length ? (
+          <div className="divide-y divide-[#f1f1f4]">
+            {automationHistory.map((item) => (
+              <article key={item.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#f0edff] text-[#6657d9]"><Icon name={item.kind === 'claude_assignment' ? 'sparkles' : 'upload'} size={15} /></span>
+                <div className="min-w-0 flex-1">
+                  <strong className="block truncate text-xs font-semibold text-[#414553]">{item.assignment_title}</strong>
+                  <span className="block text-xs text-[#858998]">{item.course_name} · {item.kind === 'claude_assignment' ? 'Claude draft' : 'Classroom turn-in'} · {item.started_at ? new Date(item.started_at).toLocaleString() : 'Time unavailable'}</span>
+                  {item.error && <span className="mt-1 block text-xs text-[#b34f4f]">{item.error}</span>}
+                </div>
+                <span className={`rounded-full px-2 py-1 text-xs font-semibold ${['completed', 'TURNED_IN'].includes(item.status) ? 'bg-[#eaf7f1] text-[#438a71]' : ['failed', 'FAILED'].includes(item.status) ? 'bg-[#fff0f0] text-[#b15252]' : 'bg-[#fff4e4] text-[#a87936]'}`}>{item.status?.replaceAll('_', ' ')}</span>
+                {item.retryable && <button type="button" onClick={() => retryAutomation(item)} className="min-h-9 rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb]">{item.kind === 'claude_assignment' ? 'Retry with Claude' : 'Retry turn-in'}</button>}
+              </article>
+            ))}
+          </div>
+        ) : <p className="px-5 py-7 text-center text-xs text-[#9396a3]">No assignment automation or Classroom submission history yet.</p>}
+      </section>
 
       <section className="grid grid-cols-1 gap-3.5 md:grid-cols-3">
         <article className="rounded-xl border border-[#ededf2] bg-white p-4">

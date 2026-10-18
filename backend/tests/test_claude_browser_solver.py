@@ -90,7 +90,7 @@ def test_get_student_metadata_with_clerk_profile():
         section="BSCS-5A"
     )
 
-    meta = get_student_metadata(mock_db, mock_course)
+    meta = get_student_metadata(mock_db, mock_course, user_id="user_123")
     assert meta["student_name"] == "Ahmed Khan"
     assert meta["roll_no"] == "232530"
     assert meta["course_name"] == "Computer Networks"

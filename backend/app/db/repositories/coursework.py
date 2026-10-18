@@ -8,16 +8,14 @@ from app.db.models import (
     AttendanceRecord, Exam, Quiz, Announcement, ChangeEvent,
     Notification, DailyReport, Setting
 )
+from app.auth.ownership import user_owner_ids
 
 class CourseRepository:
     def __init__(self, db: Session):
         self.db = db
 
     def get_by_external_id(self, external_id: str, user_id: str = "legacy") -> Optional[Course]:
-        course = self.db.query(Course).filter(Course.external_id == external_id, Course.user_id == user_id).first()
-        if not course and user_id != "legacy":
-            course = self.db.query(Course).filter(Course.external_id == external_id, Course.user_id == "legacy").first()
-        return course
+        return self.db.query(Course).filter(Course.external_id == external_id, Course.user_id.in_(user_owner_ids(user_id))).first()
 
     def create_or_update(self, course_data: dict) -> Course:
         course = self.get_by_external_id(course_data["external_id"], course_data.get("user_id", "legacy"))
@@ -39,10 +37,7 @@ class CourseRepository:
         return course
 
     def get_all(self, user_id: str = "legacy") -> List[Course]:
-        courses = self.db.query(Course).filter(Course.user_id == user_id).all()
-        if not courses and user_id != "legacy":
-            courses = self.db.query(Course).filter(Course.user_id == "legacy").all()
-        return courses
+        return self.db.query(Course).filter(Course.user_id.in_(user_owner_ids(user_id))).all()
 
 
 class AssignmentRepository:
@@ -74,11 +69,17 @@ class AssignmentRepository:
         self.db.refresh(assignment)
         return assignment
 
-    def get_pending_review(self) -> List[Assignment]:
-        return self.db.query(Assignment).filter(Assignment.status == "ready_for_review").all()
+    def get_pending_review(self, user_id: str = "legacy") -> List[Assignment]:
+        return self.db.query(Assignment).filter(
+            Assignment.user_id.in_(user_owner_ids(user_id)),
+            Assignment.status == "ready_for_review",
+        ).all()
 
-    def get_by_status(self, status: str) -> List[Assignment]:
-        return self.db.query(Assignment).filter(Assignment.status == status).all()
+    def get_by_status(self, status: str, user_id: str = "legacy") -> List[Assignment]:
+        return self.db.query(Assignment).filter(
+            Assignment.user_id.in_(user_owner_ids(user_id)),
+            Assignment.status == status,
+        ).all()
 
     def get_all(self, user_id: str = "legacy") -> List[Assignment]:
         return self.db.query(Assignment).filter(Assignment.user_id == user_id).order_by(Assignment.due_at.asc().nullslast()).all()

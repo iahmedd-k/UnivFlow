@@ -5,6 +5,7 @@ from hashlib import sha256
 import time
 import threading
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.core.config import settings
 from app.core.logging import logger
@@ -13,6 +14,13 @@ from app.db.models import GoogleCredential, Setting
 from app.db.repositories.portal import PortalSyncJobRepository
 
 scheduler = AsyncIOScheduler(timezone=settings.timezone)
+
+
+def _has_private_access(db, user_id: str) -> bool:
+    if not settings.is_production:
+        return True
+    from app.auth.access_gate import get_access_status
+    return get_access_status({"id": user_id}, db)["granted"]
 
 
 def _run_portal_auto_sync():
@@ -30,7 +38,7 @@ def _run_portal_auto_sync():
             key_parts = setting.key.split(":")
             if len(key_parts) >= 2:
                 user_id = key_parts[1]
-                if user_id and user_id != "dev_student_user":
+                if user_id and user_id != "dev_student_user" and _has_private_access(db, user_id):
                     try:
                         repo = PortalSyncJobRepository(db)
                         active_job = repo.get_active_job(user_id)
@@ -105,7 +113,7 @@ def _run_gcr_sync_job():
         from app.services.classroom_sync import ClassroomSyncService
         user_ids = [
             user_id for (user_id,) in db.query(GoogleCredential.user_id).all()
-            if user_id and user_id != "legacy"
+            if user_id and user_id != "legacy" and _has_private_access(db, user_id)
         ]
         for user_id in user_ids:
             try:
@@ -146,13 +154,41 @@ def _run_browser_automation_job():
 
 
 def _run_daily_morning_digest_job():
-    """Deliver the daily morning schedule & attendance briefing strictly once per day."""
+    """Deliver each account's enabled daily briefing at its local scheduled time."""
     db = SessionLocal()
     try:
+        import json
         from app.services.alert_service import AlertService
         service = AlertService(db)
         for user_id in _alert_user_ids(db):
-            digest = service.generate_daily_morning_digest(user_id=user_id, send_immediately=True)
+            preference = db.query(Setting).filter(Setting.key == f"automation_daily_briefing_{user_id}").first()
+            try:
+                saved = json.loads(preference.value) if preference and preference.value else {}
+            except (TypeError, json.JSONDecodeError):
+                saved = {}
+            if not bool(saved.get("enabled", True)):
+                continue
+            timezone_name = str(saved.get("timezone", settings.timezone))
+            try:
+                user_zone = ZoneInfo(timezone_name)
+            except ZoneInfoNotFoundError:
+                user_zone = ZoneInfo(settings.timezone)
+            run_time = str(saved.get("time", "07:30"))
+            try:
+                from datetime import time as datetime_time
+                hour, minute = map(int, run_time.split(":"))
+                scheduled_time = datetime_time(hour, minute)
+            except (ValueError, TypeError):
+                scheduled_time = datetime_time(7, 30)
+            user_now = datetime.now(user_zone)
+            if user_now.time().replace(tzinfo=None) < scheduled_time:
+                continue
+            digest = service.generate_daily_morning_digest(
+                user_id=user_id,
+                target_date=user_now.date(),
+                send_immediately=True,
+                timezone_name=str(saved.get("timezone", settings.timezone)),
+            )
             if digest:
                 logger.info(
                     "[Scheduler] Daily digest dispatched for %s: %s classes, %s advisories, %s tasks.",
@@ -205,6 +241,37 @@ def _run_assignment_deadline_job():
             logger.info(f"[Scheduler] Generated and dispatched {len(deadline_alerts)} assignment deadline alert(s).")
     except Exception as e:
         logger.warning(f"[Scheduler] Assignment deadline check error: {e}")
+    finally:
+        db.close()
+
+
+def _run_course_auto_turn_in_job():
+    """Check explicitly enabled, course-scoped auto-submit preferences every five minutes."""
+    db = SessionLocal()
+    try:
+        import json
+        from app.classroom.router import check_and_execute_course_auto_turn_in
+        from app.auth.access_gate import get_access_status
+
+        rows = db.query(Setting).filter(Setting.key.like("auto_turnin_course_%")).all()
+        for row in rows:
+            try:
+                preferences = json.loads(row.value or "{}")
+                if not preferences.get("enabled"):
+                    continue
+                setting_suffix = row.key.removeprefix("auto_turnin_course_")
+                user_id, course_id = setting_suffix.rsplit("_", 1)
+                if not user_id or not course_id.isdigit():
+                    continue
+                if settings.is_production and not get_access_status({"id": user_id}, db)["granted"]:
+                    continue
+                check_and_execute_course_auto_turn_in(db, int(course_id), user_id)
+            except Exception:
+                logger.exception("[Scheduler] Course auto turn-in check failed for setting %s", row.key)
+                db.rollback()
+    except Exception:
+        db.rollback()
+        logger.exception("[Scheduler] Course auto turn-in scan failed")
     finally:
         db.close()
 
@@ -277,7 +344,10 @@ def _alert_user_ids(db):
             parts = key.split(":", 2)
             if len(parts) == 3:
                 user_ids.add(parts[1])
-    return sorted(user_id for user_id in user_ids if user_id and user_id != "dev_student_user")
+    return sorted(
+        user_id for user_id in user_ids
+        if user_id and user_id != "dev_student_user" and _has_private_access(db, user_id)
+    )
 
 
 def start_scheduler():
@@ -307,25 +377,15 @@ def start_scheduler():
             coalesce=True,
         )
 
-        # 3. Daily Morning Digest: Every morning at 07:30 AM (strictly once per day)
+        # 3. Per-account Daily Briefing: poll enabled user schedules every five minutes.
         scheduler.add_job(
             _run_daily_morning_digest_job,
-            CronTrigger(hour=7, minute=30, timezone=settings.timezone),
+            IntervalTrigger(minutes=5),
             id="daily_morning_digest",
-            name="Daily Morning Schedule & Attendance Digest (07:30 AM)",
-            replace_existing=True,
-            misfire_grace_time=3600,
-            coalesce=True,
-        )
-
-        # Catchup check every 60 minutes for daily digest (idempotency key prevents duplicate sends)
-        scheduler.add_job(
-            _run_daily_morning_digest_job,
-            IntervalTrigger(hours=1),
-            id="daily_morning_digest_catchup",
-            name="Daily Morning Digest Catchup Check (Hourly)",
+            name="Per-account Daily Academic Briefing",
             replace_existing=True,
             misfire_grace_time=300,
+            max_instances=1,
             coalesce=True,
         )
 
@@ -361,6 +421,17 @@ def start_scheduler():
             name="GCR Assignment Deadline Alerts (Every 30m)",
             replace_existing=True,
             misfire_grace_time=300,
+            coalesce=True,
+        )
+
+        scheduler.add_job(
+            _run_course_auto_turn_in_job,
+            IntervalTrigger(minutes=1),
+            id="course_auto_turn_in",
+            name="Explicitly enabled course auto turn-in (Every minute)",
+            replace_existing=True,
+            misfire_grace_time=60,
+            max_instances=1,
             coalesce=True,
         )
 

@@ -23,6 +23,7 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
   );
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleMinutesBefore, setScheduleMinutesBefore] = useState(60);
+  const [scheduleInfo, setScheduleInfo] = useState(null);
   const [savingSchedule, setSavingSchedule] = useState(false);
 
   const [quickSubmitting, setQuickSubmitting] = useState(false);
@@ -55,6 +56,7 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
           if (!cancelled && autoData) {
             setScheduleEnabled(Boolean(autoData.enabled));
             setScheduleMinutesBefore(autoData.minutes_before || 60);
+            setScheduleInfo(autoData);
           }
         }
       } catch (e) {
@@ -79,6 +81,7 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
   const removeFile = (idx) => setFiles((prev) => prev.filter((_, i) => i !== idx));
 
   const handleQuickTurnIn = async () => {
+    if (!window.confirm(`Submit "${assignment.title}" to Google Classroom now? Uniflow will attach the Google Doc and a ZIP of deliverables.`)) return;
     setQuickSubmitting(true);
     setError(null);
     setNotice(null);
@@ -127,6 +130,7 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
   };
 
   const saveSchedule = async () => {
+    if (scheduleEnabled && !window.confirm(`Enable automatic submission for all completed assignments in ${assignment.course_name || 'this course'}? Uniflow will attach Claude-generated deliverables and submit when they are within ${scheduleMinutesBefore} minutes of the deadline.`)) return;
     setSavingSchedule(true);
     setError(null);
     setNotice(null);
@@ -138,9 +142,11 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
           {
             enabled: scheduleEnabled,
             minutes_before: scheduleMinutesBefore,
+            confirm_submission: scheduleEnabled,
           },
           token
         );
+        setScheduleInfo(res);
         setNotice(res.message || `Auto turn-in for ${assignment.course_name || 'this course'} saved successfully.`);
       } else {
         await api.scheduleTurnIn(
@@ -241,14 +247,14 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
           <p className="text-xs font-semibold uppercase tracking-wide text-muted">Course Automation</p>
           <h3 className="mt-1 text-base font-semibold text-ink">Auto turn-in for {assignment.course_name || 'this course'}</h3>
           <p className="mt-2 text-sm leading-6 text-muted">
-            Automatically turn in completed assignments or labs for <strong>{assignment.course_name || 'this course'}</strong> 60 minutes before the deadline on Google Classroom. Only coursework belonging strictly to this course is affected.
+            Automatically submit Claude-generated drafts for <strong>{assignment.course_name || 'this course'}</strong> {scheduleMinutesBefore} minutes before the deadline on Google Classroom. Only coursework belonging strictly to this course is affected.
           </p>
         </div>
 
         <label className="flex cursor-pointer items-center justify-between gap-4 rounded-lg border border-line bg-paper p-4">
           <span>
             <strong className="block text-sm font-semibold text-ink">Allow auto turn-in for this course</strong>
-            <small className="mt-1 block text-sm text-muted">Submits Google Doc + ZIP deliverables 60 minutes before deadline on GCR</small>
+            <small className="mt-1 block text-sm text-muted">Submits Google Doc + ZIP deliverables {scheduleMinutesBefore} minutes before deadline on GCR</small>
           </span>
           <input type="checkbox" checked={scheduleEnabled} onChange={(e) => setScheduleEnabled(e.target.checked)} className="size-5 shrink-0 accent-violet" />
         </label>
@@ -264,6 +270,7 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
         <button type="button" onClick={saveSchedule} disabled={savingSchedule} className={secondaryButtonClass}>
           {savingSchedule ? 'Saving schedule…' : <><Icon name="save" size={16}/> Save course auto turn-in setting</>}
         </button>
+        {scheduleInfo && <p className="text-xs text-muted">Last result: {scheduleInfo.last_result?.status || 'No automatic submissions yet'}{scheduleInfo.last_run ? ` · ${new Date(scheduleInfo.last_run).toLocaleString()}` : ''} · Next scheduler check: {scheduleEnabled && scheduleInfo.next_run ? new Date(scheduleInfo.next_run).toLocaleString() : 'Disabled'}</p>}
       </section>
     </div>
   );

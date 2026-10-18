@@ -1,6 +1,8 @@
 import math
 import re
-from datetime import date, datetime, timedelta
+import json
+from html import escape
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
@@ -17,6 +19,7 @@ from app.db.models import (
     NotificationStatus,
     Setting,
     TimetableEntry,
+    PortalSyncJob,
 )
 from app.db.models.assignments import Assignment, Submission
 from app.db.models.enums import CourseworkState, SubmissionState
@@ -742,6 +745,7 @@ def build_daily_morning_digest_email(
     classes_today: List[Dict],
     urgent_warnings: List[Dict],
     upcoming_tasks: List[Dict],
+    sync_warnings: Optional[List[Dict]] = None,
 ) -> Tuple[str, str]:
     """
     Generate an executive HTML and plain-text email for the daily morning academic briefing.
@@ -757,10 +761,10 @@ def build_daily_morning_digest_email(
     if classes_today:
         class_rows_html = ""
         for item in classes_today:
-            course = item.get("course", "")
-            time_str = item.get("time", "")
-            room = item.get("room") or "Main Campus"
-            teacher = item.get("teacher") or "Department Faculty"
+            course = escape(str(item.get("course", "")))
+            time_str = escape(str(item.get("time", "")))
+            room = escape(str(item.get("room") or "Main Campus"))
+            teacher = escape(str(item.get("teacher") or "Department Faculty"))
             pct = item.get("percentage")
             attended = item.get("attended", 0)
             total = item.get("total", 0)
@@ -803,7 +807,7 @@ def build_daily_morning_digest_email(
     if urgent_warnings:
         advisory_items_html = ""
         for adv in urgent_warnings:
-            c = adv.get("course", "")
+            c = escape(str(adv.get("course", "")))
             p = adv.get("percentage", 0.0)
             rec = adv.get("recovery_needed", 0)
             advisory_items_html += f"""
@@ -827,10 +831,11 @@ def build_daily_morning_digest_email(
     if upcoming_tasks:
         task_rows_html = ""
         for t in upcoming_tasks:
-            title = t.get("title", "")
-            cname = t.get("course", "")
-            due_str = t.get("due", "")
-            url = t.get("url") or "https://classroom.google.com"
+            title = escape(str(t.get("title", "")))
+            cname = escape(str(t.get("course", "")))
+            due_str = escape(str(t.get("due", "")))
+            candidate_url = str(t.get("url") or "")
+            url = candidate_url if candidate_url.startswith("https://classroom.google.com/") else "https://classroom.google.com/"
             task_rows_html += f"""
             <tr>
               <td style="padding:10px 14px; border-bottom:1px solid #f1f5f9; font-size:13px; color:#1e293b;">
@@ -852,6 +857,13 @@ def build_daily_morning_digest_email(
           </table>
         </div>
         """
+
+    sync_warnings = sync_warnings or []
+    sync_warnings_html = ""
+    if sync_warnings:
+        sync_items = "".join(f"<li style=\"margin:6px 0;\"><strong>{escape(str(item.get('service', 'Sync')))}</strong>: {escape(str(item.get('message', 'Recent sync failed.')))}</li>" for item in sync_warnings)
+        sync_warnings_html = f"<div style=\"margin:20px 0; padding:14px 16px; background:#fff7ed; border:1px solid #fed7aa; border-radius:6px; color:#9a3412; font-size:13px;\"><strong>Sync issues</strong><ul style=\"margin:8px 0 0; padding-left:18px;\">{sync_items}</ul></div>"
+    dashboard_url = escape(settings.frontend_url.rstrip("/") + "/dashboard", quote=True)
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -1001,9 +1013,10 @@ def build_daily_morning_digest_email(
       </table>
 
       {tasks_html}
+      {sync_warnings_html}
 
       <div style="margin-top:24px; text-align:center;">
-        <a href="http://localhost:3000/dashboard" target="_blank" style="display:inline-block; background:#0f172a; color:#ffffff !important; text-decoration:none; padding:10px 22px; border-radius:6px; font-size:12px; font-weight:600;">Open Uniflow Dashboard</a>
+        <a href="{dashboard_url}" target="_blank" style="display:inline-block; background:#0f172a; color:#ffffff !important; text-decoration:none; padding:10px 22px; border-radius:6px; font-size:12px; font-weight:600;">Open Uniflow Dashboard</a>
       </div>
     </div>
     <div class="footer-bar">
@@ -1049,6 +1062,10 @@ def build_daily_morning_digest_email(
         text_lines.extend(["", "--- UPCOMING DEADLINES ---"])
         for t in upcoming_tasks:
             text_lines.append(f"• {t.get('title')} ({t.get('course')}) - Due: {t.get('due')}")
+
+    if sync_warnings:
+        text_lines.extend(["", "--- RECENT SYNC ISSUES ---"])
+        text_lines.extend(f"• {item.get('service', 'Sync')}: {item.get('message', 'Recent sync failed.')[:240]}" for item in sync_warnings)
 
     text_lines.extend(["", "---", "Sent by Uniflow Academic Suite for Air University students."])
     text = "\n".join(text_lines)
@@ -1454,6 +1471,7 @@ class AlertService:
         target_date: Optional[date] = None,
         threshold: float = 75.0,
         send_immediately: bool = True,
+        timezone_name: Optional[str] = None,
     ) -> List[Dict]:
         """
         Check all classes scheduled today; if attendance in any class is below threshold, 
@@ -1602,6 +1620,7 @@ class AlertService:
         target_date: Optional[date] = None,
         threshold: float = 75.0,
         send_immediately: bool = True,
+        timezone_name: Optional[str] = None,
     ) -> Optional[Dict]:
         """
         Deliver a comprehensive Morning Academic Briefing strictly ONCE per day in the morning.
@@ -1613,7 +1632,7 @@ class AlertService:
         
         Enforces idempotency: key 'daily-morning-digest:{user_id}:{today.isoformat()}'
         """
-        tz = ZoneInfo(settings.timezone)
+        tz = ZoneInfo(timezone_name or settings.timezone)
         if not target_date:
             target_date = datetime.now(tz).date()
 
@@ -1711,6 +1730,40 @@ class AlertService:
                     "url": a.url or "https://classroom.google.com",
                 })
 
+        # Recent failures are actionable: include only this account's sync state.
+        sync_warnings = []
+        gcr_status_row = self.db.query(Setting).filter(Setting.key == f"classroom:{user_id}:sync_status").first()
+        if gcr_status_row and gcr_status_row.value:
+            try:
+                gcr_status = json.loads(gcr_status_row.value)
+                finished_at = datetime.fromisoformat(str(gcr_status.get("finished_at", "")).replace("Z", "+00:00"))
+                if finished_at.tzinfo is None:
+                    finished_at = finished_at.replace(tzinfo=timezone.utc)
+                if gcr_status.get("status") in {"partial", "failed", "error"} and finished_at >= datetime.now(timezone.utc) - timedelta(hours=24):
+                    errors = gcr_status.get("errors") or []
+                    sync_warnings.append({
+                        "service": "Google Classroom",
+                        "message": "; ".join(str(error) for error in errors[:2])[:240] or "The latest sync was incomplete.",
+                    })
+            except (TypeError, ValueError, json.JSONDecodeError):
+                sync_warnings.append({"service": "Google Classroom", "message": "The latest sync status could not be read."})
+
+        recent_portal_failure = (
+            self.db.query(PortalSyncJob)
+            .filter(
+                PortalSyncJob.user_id == user_id,
+                PortalSyncJob.status == "failed",
+                PortalSyncJob.created_at >= datetime.now(timezone.utc) - timedelta(days=1),
+            )
+            .order_by(PortalSyncJob.created_at.desc())
+            .first()
+        )
+        if recent_portal_failure:
+            sync_warnings.append({
+                "service": "University portal",
+                "message": (recent_portal_failure.error or "A recent portal sync failed.")[:240],
+            })
+
         date_formatted = target_date.strftime("%A, %d %B %Y")
         html_content, text_content = build_daily_morning_digest_email(
             student_name="Student",
@@ -1718,6 +1771,7 @@ class AlertService:
             classes_today=classes_data,
             urgent_warnings=urgent_warnings,
             upcoming_tasks=upcoming_tasks,
+            sync_warnings=sync_warnings,
         )
 
         subject = f"[Uniflow] Morning Briefing: Today's Classes & Attendance ({date_formatted})"

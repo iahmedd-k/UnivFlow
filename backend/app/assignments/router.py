@@ -21,6 +21,7 @@ from app.assignments.schemas.assignment import (
 )
 from app.assignments.services.assignment_service import AssignmentService
 from app.auth.clerk_auth import get_current_user_optional
+from app.auth.ownership import require_user_id, user_owner_ids
 from app.core.config import settings
 
 router = APIRouter(prefix="/assignments", tags=["assignments"])
@@ -30,12 +31,7 @@ assignment_service: AssignmentService = None
 
 
 def _authenticated_user_id(user: Optional[dict]) -> str:
-    user_id = str((user or {}).get("id") or "")
-    if user_id:
-        return user_id
-    if settings.environment == "development":
-        return "dev_student_user"
-    raise HTTPException(status_code=401, detail="Sign in to access assignments.")
+    return require_user_id(user)
 
 
 def get_assignment_service(db: Session = Depends(get_db)) -> AssignmentService:
@@ -258,28 +254,14 @@ def get_assignment_by_id(
 async def ingest_assignment(
     request: dict,
     background_tasks: BackgroundTasks,
-    service: AssignmentService = Depends(get_assignment_service)
+    service: AssignmentService = Depends(get_assignment_service),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """
     Ingest new assignment from portal detection.
-    
-    Expected request:
-    {
-        "user_id": "uuid",
-        "portal_id": "uuid", 
-        "external_id": "portal_assignment_id",
-        "title": "Assignment Title",
-        "course_code": "CS101",
-        "course_name": "Introduction to CS",
-        "due_date": "2026-01-30T23:59:00Z",
-        "description": "...",
-        "source_document_urls": ["https://..."],
-        "source_google_doc_ids": ["doc_id_1"],
-        "instructor": "Prof. Smith",
-        "semester": "Spring 2026",
-        "section": "001"
-    }
     """
+    user_id = _authenticated_user_id(clerk_user)
+    request["user_id"] = user_id
     try:
         assignment = await service.ingest_assignment(**request)
         return assignment
@@ -288,11 +270,12 @@ async def ingest_assignment(
 
 
 def _find_assignment(db: Session, assignment_id: str | int, user_id: str) -> Optional[Assignment]:
+    owners = user_owner_ids(user_id)
     try:
         aid = int(assignment_id)
         res = db.query(Assignment).filter(
             Assignment.id == aid,
-            Assignment.user_id == user_id,
+            Assignment.user_id.in_(owners),
         ).first()
         if res:
             return res
@@ -300,7 +283,7 @@ def _find_assignment(db: Session, assignment_id: str | int, user_id: str) -> Opt
         pass
     return db.query(Assignment).filter(
         Assignment.external_id == str(assignment_id),
-        Assignment.user_id == user_id,
+        Assignment.user_id.in_(owners),
     ).first()
 
 
@@ -739,9 +722,13 @@ async def update_google_doc(
 @router.get("/auto-approval/config", response_model=AutoApprovalConfig)
 async def get_auto_approval_config(
     user_id: UUID = Query(...),
-    service: AssignmentService = Depends(get_assignment_service)
+    service: AssignmentService = Depends(get_assignment_service),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Get user's auto-approval configuration."""
+    auth_user_id = _authenticated_user_id(clerk_user)
+    if str(user_id) != auth_user_id and auth_user_id != "dev_student_user":
+        raise HTTPException(status_code=403, detail="Not authorized to access configuration for this user.")
     config = await service.get_auto_approval_config(user_id)
     return config or AutoApprovalConfig()
 
@@ -750,9 +737,13 @@ async def get_auto_approval_config(
 async def update_auto_approval_config(
     user_id: UUID,
     config: AutoApprovalConfigRequest,
-    service: AssignmentService = Depends(get_assignment_service)
+    service: AssignmentService = Depends(get_assignment_service),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Update user's auto-approval configuration."""
+    auth_user_id = _authenticated_user_id(clerk_user)
+    if str(user_id) != auth_user_id and auth_user_id != "dev_student_user":
+        raise HTTPException(status_code=403, detail="Not authorized to update configuration for this user.")
     return await service.update_auto_approval_config(user_id, config)
 
 

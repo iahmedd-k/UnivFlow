@@ -120,6 +120,11 @@ def test_oauth_redirect_defaults_to_vercel_when_frontend_url_is_azure_vm(monkeyp
         "frontend_url",
         "https://univlfow.koreacentral.cloudapp.azure.com",
     )
+    monkeypatch.setattr(
+        router.settings,
+        "browser_viewer_base_url",
+        "https://univlfow.koreacentral.cloudapp.azure.com",
+    )
 
     redirect_url = router._oauth_frontend_redirect(
         "/dashboard/classroom",

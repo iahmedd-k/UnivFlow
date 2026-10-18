@@ -7,6 +7,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { api } from '@/app/lib/api';
 import Icon from '@/app/dashboard/Icon';
 import FirebaseAlertsBanner from '@/app/dashboard/FirebaseAlertsBanner';
+import OnboardingModal from '@/app/dashboard/OnboardingModal';
 
 const groups = [
   { label: 'Home', items: [
@@ -26,6 +27,7 @@ const groups = [
     { href: '/dashboard/mail-drive', label: 'Mail & Drive', icon: 'folder' },
   ] },
   { label: 'Activity & updates', items: [
+    { href: '/dashboard/activity', label: 'Automation history', icon: 'history' },
     { href: '/dashboard/announcements', label: 'Announcements', icon: 'bell' },
     { href: '/dashboard/notifications', label: 'Alerts & notices', icon: 'alert' },
   ] },
@@ -49,7 +51,7 @@ export default function DashboardLayout({ children }) {
   const { user } = useUser();
   const pathname = usePathname();
   const router = useRouter();
-  const removedFeatureRoute = pathname === '/dashboard/study-planner' || pathname === '/dashboard/exams' || pathname.startsWith('/dashboard/exams/') || pathname === '/dashboard/quizzes' || pathname.startsWith('/dashboard/quizzes/') || pathname === '/dashboard/activity';
+  const removedFeatureRoute = pathname === '/dashboard/study-planner' || pathname === '/dashboard/exams' || pathname.startsWith('/dashboard/exams/') || pathname === '/dashboard/quizzes' || pathname.startsWith('/dashboard/quizzes/');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [syncMenuPath, setSyncMenuPath] = useState(null);
   const [syncBusy, setSyncBusy] = useState(false);
@@ -58,6 +60,10 @@ export default function DashboardLayout({ children }) {
   const [googleConnected, setGoogleConnected] = useState(false);
   const [googleEmail, setGoogleEmail] = useState('');
   const [classroomSync, setClassroomSync] = useState(null);
+  const [privateAccess, setPrivateAccess] = useState(null);
+  const [accessCode, setAccessCode] = useState('');
+  const [accessBusy, setAccessBusy] = useState(false);
+  const [accessNotice, setAccessNotice] = useState('');
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -93,6 +99,44 @@ export default function DashboardLayout({ children }) {
     refreshInitialConnections();
     return () => { cancelled = true; };
   }, [loadConnections]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = getToken ? await getToken() : null;
+        const status = await api.getPrivateAccessStatus(token);
+        if (!cancelled) setPrivateAccess(status);
+      } catch (error) {
+        if (!cancelled) setPrivateAccess({ granted: false, error: error.message || 'Could not check access.' });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [getToken, userId]);
+
+  const requestAccessCode = async () => {
+    setAccessBusy(true); setAccessNotice('');
+    try {
+      const token = getToken ? await getToken() : null;
+      const result = await api.requestPrivateAccess(token);
+      setAccessNotice(result.message || 'Request sent to the administrator.');
+    } catch (error) {
+      setAccessNotice(error.message || 'Could not request access.');
+    } finally { setAccessBusy(false); }
+  };
+
+  const redeemAccessCode = async (event) => {
+    event.preventDefault();
+    setAccessBusy(true); setAccessNotice('');
+    try {
+      const token = getToken ? await getToken() : null;
+      await api.redeemPrivateAccess(accessCode, token);
+      setPrivateAccess({ granted: true });
+      setAccessNotice('Access approved for this account.');
+    } catch (error) {
+      setAccessNotice(error.message || 'Could not verify that code.');
+    } finally { setAccessBusy(false); }
+  };
 
   const refreshConnections = useCallback(async () => {
     try {
@@ -158,8 +202,32 @@ export default function DashboardLayout({ children }) {
 
   if (removedFeatureRoute) return null;
 
+  if (!privateAccess) return <main className="grid min-h-screen place-items-center bg-paper p-6" aria-live="polite"><p className="text-sm text-muted">Checking workspace access…</p></main>;
+  if (!privateAccess.granted) return (
+    <main className="grid min-h-screen place-items-center bg-paper p-6">
+      <section className="w-full max-w-md rounded-2xl border border-line bg-surface p-7 shadow-sm">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-violet">Private workspace</p>
+        <h1 className="text-2xl font-semibold text-ink">Access needs approval</h1>
+        <p className="mt-3 text-sm leading-6 text-muted">This workspace is limited to approved university fellows. Request a one-time code, then ask the administrator to share it with you. The code only works for the signed-in account below.</p>
+        <p className="mt-4 rounded-lg bg-surface-secondary p-3 text-sm text-body">{user?.primaryEmailAddress?.emailAddress || 'Signed-in account'}</p>
+        {privateAccess.error && <p className="mt-3 text-sm text-rose" role="alert">{privateAccess.error}</p>}
+        <button type="button" disabled={accessBusy} onClick={requestAccessCode} className="mt-5 w-full rounded-lg bg-violet px-4 py-3 font-semibold text-white disabled:opacity-60">{accessBusy ? 'Please wait…' : 'Send approval request'}</button>
+        <form onSubmit={redeemAccessCode} className="mt-5 border-t border-line pt-5">
+          <label htmlFor="private-access-code" className="block text-sm font-medium text-body">Administrator code</label>
+          <div className="mt-2 flex gap-2">
+          <input id="private-access-code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{8}" maxLength={8} value={accessCode} onChange={(event) => setAccessCode(event.target.value.replace(/\D/g, ''))} className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 py-2 text-center tracking-[0.35em]" placeholder="8-digit code" required />
+            <button type="submit" disabled={accessBusy || accessCode.length !== 8} className="rounded-lg border border-line px-4 py-2 font-semibold text-body disabled:opacity-50">Unlock</button>
+          </div>
+        </form>
+        {accessNotice && <p className="mt-4 text-sm text-muted" role="status">{accessNotice}</p>}
+        <button type="button" onClick={() => signOut({ redirectUrl: '/sign-in' })} className="mt-5 text-sm font-medium text-muted underline">Sign out</button>
+      </section>
+    </main>
+  );
+
   return (
     <div className="min-h-screen bg-paper">
+      <OnboardingModal />
       {sidebarOpen && <button aria-label="Close navigation" className="fixed inset-0 z-40 bg-black/40 lg:hidden" onClick={() => setSidebarOpen(false)} />}
       <aside className={`fixed inset-y-0 left-0 z-50 w-64 flex flex-col bg-surface border-r border-line lg:translate-x-0 transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         <Link href="/dashboard" className="flex items-center gap-2.5 px-3 pb-6 text-ink text-xl font-bold tracking-tight hover:opacity-80" onClick={() => setSidebarOpen(false)}>

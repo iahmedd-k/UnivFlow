@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body, Request, File, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any, Tuple, Union
 from datetime import datetime, timezone, timedelta
+from hashlib import sha256
 import json
 import html
 import base64
@@ -21,9 +23,11 @@ from app.db.models import (
 )
 from app.core.logging import logger
 from app.core.config import settings
+from app.core.security import encrypt_token_if_needed
 from app.services.classroom_sync import get_classroom_service
 from app.services.google_docs import get_google_docs_service
 from app.auth.clerk_auth import get_current_user_optional
+from app.auth.ownership import require_user_id, user_owner_ids
 from app.services.browser_sessions import BrowserSessionClient
 import time
 import threading
@@ -45,18 +49,14 @@ _students_cache: Dict[str, Tuple[float, list]] = {}  # key -> (timestamp, data)
 
 
 def _classroom_user_id(clerk_user: Optional[dict]) -> str:
-    user_id = str((clerk_user or {}).get("id") or "")
-    if user_id:
-        return user_id
-    if settings.environment == "development":
-        return "dev_student_user"
-    raise HTTPException(status_code=401, detail="Sign in to access your Google Classroom data.")
+    return require_user_id(clerk_user)
 
 
 def _get_owned_assignment(db: Session, assignment_id: int, user_id: str) -> Assignment:
+    owners = user_owner_ids(user_id)
     assignment = db.query(Assignment).filter(
         Assignment.id == assignment_id,
-        Assignment.user_id == user_id,
+        Assignment.user_id.in_(owners),
     ).first()
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
@@ -191,6 +191,223 @@ def update_student_profile(
     setting.value = json.dumps(data)
     db.commit()
     return {"message": "Student profile updated successfully", "profile": data}
+
+
+class OnboardingSavePayload(BaseModel):
+    student_name: Optional[str] = None
+    roll_no: Optional[str] = None
+    semester_start_date: Optional[str] = None
+    claude_session_key: Optional[str] = None
+    portal_cookies: Optional[str] = None
+    dismiss: Optional[bool] = True
+
+
+@router.get("/onboarding-status", response_model=dict)
+def get_onboarding_status(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Aggregated status of student setup to determine if onboarding modal should be shown."""
+    from app.services.claude_browser_solver import get_student_metadata
+    from app.db.repositories import GoogleCredentialRepository
+    from app.auth.router import _cached_google_emails
+
+    user_id = _classroom_user_id(clerk_user)
+
+    # 1. Dismissed check
+    dismissed_setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:onboarding_dismissed"
+    ).first()
+    is_dismissed = bool(dismissed_setting and dismissed_setting.value == "true")
+
+    # 2. Student Profile (Name & Roll No)
+    meta = get_student_metadata(db, course=None, user_id=user_id)
+    raw_name = (meta.get("student_name") or "").strip()
+    raw_roll = (meta.get("roll_no") or "").strip()
+    profile_configured = bool(raw_name and raw_name.lower() not in ["student", "default student"] and raw_roll)
+
+    # 3. Semester Start Date
+    sem_setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:semester_start_date"
+    ).first()
+    semester_configured = bool(sem_setting and sem_setting.value and sem_setting.value.strip())
+    semester_start_date = sem_setting.value.strip().replace('"', '') if semester_configured else None
+
+    # Default fallback semester date if unconfigured
+    if not semester_start_date:
+        now = datetime.now(timezone.utc)
+        if now.month >= 8:
+            semester_start_date = f"{now.year}-09-01"
+        else:
+            semester_start_date = f"{now.year}-02-01"
+
+    # 4. Google Classroom OAuth Connection
+    repo = GoogleCredentialRepository(db)
+    cred = repo.get(user_id) if user_id else None
+    google_connected = cred is not None and bool(cred.access_token)
+    google_email = _cached_google_emails.get(user_id) if user_id else None
+    if not google_email and google_connected:
+        email_setting = db.query(Setting).filter(
+            Setting.key == f"google_connected_email_{user_id}"
+        ).first()
+        if email_setting and email_setting.value:
+            google_email = email_setting.value
+
+    # 5. Claude AI session cookie
+    claude_setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:claude_session_key"
+    ).first()
+    claude_connected = bool(claude_setting and claude_setting.value and claude_setting.value.strip())
+
+    # 6. University Portal session cookie
+    portal_cookie_setting = db.query(Setting).filter(
+        Setting.key.in_([
+            f"portal:{user_id}:portal_session_cookies",
+            f"portal:{user_id}:session_cookies"
+        ])
+    ).first()
+    portal_connected = bool(portal_cookie_setting and portal_cookie_setting.value and portal_cookie_setting.value.strip())
+
+    # Check which items are missing
+    missing_items = []
+    if not profile_configured:
+        missing_items.append("profile")
+    if not semester_configured:
+        missing_items.append("semester_date")
+    if not google_connected:
+        missing_items.append("google_classroom")
+    if not claude_connected:
+        missing_items.append("claude_cookie")
+    if not portal_connected:
+        missing_items.append("portal_cookie")
+
+    needs_onboarding = len(missing_items) > 0
+    should_show = (not is_dismissed) and needs_onboarding
+
+    return {
+        "is_dismissed": is_dismissed,
+        "needs_onboarding": needs_onboarding,
+        "should_show": should_show,
+        "missing_items": missing_items,
+        "profile": {
+            "configured": profile_configured,
+            "student_name": raw_name if raw_name.lower() not in ["student", "default student"] else "",
+            "roll_no": raw_roll,
+        },
+        "semester": {
+            "configured": semester_configured,
+            "semester_start_date": semester_start_date,
+        },
+        "google": {
+            "connected": google_connected,
+            "email": google_email,
+        },
+        "claude": {
+            "connected": claude_connected,
+        },
+        "portal": {
+            "connected": portal_connected,
+        },
+    }
+
+
+@router.post("/onboarding-dismiss", response_model=dict)
+def dismiss_onboarding(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Mark onboarding flow as dismissed so it is not shown again."""
+    user_id = _classroom_user_id(clerk_user)
+    setting_key = f"classroom:{user_id}:onboarding_dismissed"
+    setting = db.query(Setting).filter(Setting.key == setting_key).first()
+    if not setting:
+        setting = Setting(key=setting_key, description=f"Onboarding dismissed flag for {user_id}")
+        db.add(setting)
+    setting.value = "true"
+    db.commit()
+    return {"status": "dismissed", "message": "Onboarding modal dismissed."}
+
+
+@router.post("/onboarding-save", response_model=dict)
+def save_onboarding_data(
+    payload: OnboardingSavePayload,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Bulk save configured onboarding settings and dismiss."""
+    user_id = _classroom_user_id(clerk_user)
+
+    # 1. Profile
+    if payload.student_name or payload.roll_no:
+        profile_key = f"student_profile_{user_id}"
+        p_setting = db.query(Setting).filter(Setting.key == profile_key).first()
+        if not p_setting:
+            p_setting = Setting(key=profile_key, description=f"Student academic profile for {user_id}")
+            db.add(p_setting)
+        current_data = {}
+        if p_setting.value:
+            try:
+                current_data = json.loads(p_setting.value)
+            except Exception:
+                current_data = {}
+        if payload.student_name:
+            current_data["student_name"] = payload.student_name.strip()
+        if payload.roll_no:
+            current_data["roll_no"] = payload.roll_no.strip()
+        if "university" not in current_data:
+            current_data["university"] = "AIR UNIVERSITY, ISLAMABAD"
+        if "department" not in current_data:
+            current_data["department"] = "Department of Computer Science & Information Technology"
+        p_setting.value = json.dumps(current_data)
+
+    # 2. Semester date
+    if payload.semester_start_date:
+        sem_key = f"classroom:{user_id}:semester_start_date"
+        s_setting = db.query(Setting).filter(Setting.key == sem_key).first()
+        if not s_setting:
+            s_setting = Setting(key=sem_key, description=f"Semester start date filter for user {user_id}")
+            db.add(s_setting)
+        s_setting.value = payload.semester_start_date.strip().replace('"', '')
+
+    # 3. Claude session key
+    if payload.claude_session_key and len(payload.claude_session_key.strip()) >= 15:
+        c_key = payload.claude_session_key.strip()
+        if "sessionKey=" in c_key:
+            c_key = c_key.split("sessionKey=")[-1].split(";")[0].strip()
+        c_key = c_key.strip('"\'')
+        c_setting = db.query(Setting).filter(Setting.key == f"classroom:{user_id}:claude_session_key").first()
+        if not c_setting:
+            c_setting = Setting(key=f"classroom:{user_id}:claude_session_key", description="Claude session cookie")
+            db.add(c_setting)
+        c_setting.value = encrypt_token_if_needed(c_key)
+
+    # 4. Portal cookies
+    if payload.portal_cookies and payload.portal_cookies.strip():
+        portal_key = f"portal:{user_id}:portal_session_cookies"
+        row = db.query(Setting).filter(Setting.key == portal_key).first()
+        if not row:
+            row = Setting(key=portal_key, description="Student portal session cookies")
+            db.add(row)
+        row.value = payload.portal_cookies.strip()
+
+        status_key = f"portal:{user_id}:portal_session_status"
+        s_row = db.query(Setting).filter(Setting.key == status_key).first()
+        if not s_row:
+            s_row = Setting(key=status_key, description="Portal session status")
+            db.add(s_row)
+        s_row.value = "ACTIVE"
+
+    # 5. Dismiss flag
+    if payload.dismiss:
+        d_key = f"classroom:{user_id}:onboarding_dismissed"
+        d_setting = db.query(Setting).filter(Setting.key == d_key).first()
+        if not d_setting:
+            d_setting = Setting(key=d_key, description=f"Onboarding dismissed flag for {user_id}")
+            db.add(d_setting)
+        d_setting.value = "true"
+
+    db.commit()
+    return {"status": "success", "message": "Onboarding settings saved successfully"}
 
 
 
@@ -977,13 +1194,10 @@ async def turn_in_assignment(
         for placeholder, value in fields.items():
             docs_service.replace_text(student_doc_id, placeholder, str(value or ""))
     
-    # Attach additional files if provided
-    if drive_file_ids:
-        for file_id in drive_file_ids:
-            try:
-                docs_service.share_file(file_id, "me", "writer")
-            except HttpError:
-                pass
+    # Preserve privacy for older files that may have been made link-accessible.
+    for drive_id in [student_doc_id, *drive_file_ids]:
+        if not docs_service.remove_public_sharing(drive_id):
+            raise HTTPException(status_code=502, detail="Could not verify private sharing for an attached Drive file.")
     
     # Attach the created cover document and all requested files to the student's
     # actual Classroom submission, then turn it in only after attachment succeeds.
@@ -998,6 +1212,7 @@ async def turn_in_assignment(
             courseId=course.external_id,
             courseWorkId=assignment.external_id,
             id=submission_id,
+            body={},
         ).execute()
     except Exception as error:
         err_str = str(error)
@@ -1075,7 +1290,8 @@ def unsubmit_assignment(
         service.service.courses().courseWork().studentSubmissions().reclaim(
             courseId=course.external_id,
             courseWorkId=assignment.external_id,
-            id=submission_id
+            id=submission_id,
+            body={},
         ).execute()
     except HTTPException:
         raise
@@ -1146,31 +1362,41 @@ def _attach_submission_files(
         submission_id = sub_obj["id"]
         sub_state = sub_obj.get("state", "NEW")
 
-        # If already turned in, attempt to reclaim so new attachments can be added
+        # If already turned in, reclaim first so new attachments can be added.
+        # Google Classroom requires body={} on reclaim requests.
         if sub_state == "TURNED_IN":
             try:
                 reclaim_res = submissions_api.reclaim(
                     courseId=course_id,
                     courseWorkId=coursework_id,
                     id=submission_id,
+                    body={},
                 ).execute()
-                sub_state = reclaim_res.get("state", "CREATED")
+                sub_state = reclaim_res.get("state", "RECLAIMED_BY_STUDENT")
             except Exception as reclaim_err:
-                logger.info(f"Could not reclaim submission {submission_id} (submissions may be locked/closed): {reclaim_err}")
+                logger.warning(f"Could not reclaim submission {submission_id} (submissions may be locked/closed): {reclaim_err}")
 
-        try:
-            submissions_api.modifyAttachments(
-                courseId=course_id,
-                courseWorkId=coursework_id,
-                id=submission_id,
-                body={"addAttachments": [{"driveFile": {"id": file_id}} for file_id in file_ids]},
-            ).execute()
-        except Exception as attach_err:
-            err_str = str(attach_err)
-            logger.warning(f"Failed to modifyAttachments on submission {submission_id}: {attach_err}")
-            # If modifyAttachments fails because submissions are strictly closed / locked:
-            # Don't crash completely if files are already uploaded to Drive and shared!
-            if "already been submitted" not in err_str.lower() and "FAILED_PRECONDITION" not in err_str and "closed" not in err_str and "not permitted" not in err_str:
+        # Check existing attachments so we don't try to re-add duplicate attachments
+        existing_attachments = sub_obj.get("assignmentSubmission", {}).get("attachments", [])
+        existing_drive_ids = set()
+        for att in existing_attachments:
+            drive_file = att.get("driveFile")
+            if drive_file and drive_file.get("id"):
+                existing_drive_ids.add(drive_file.get("id"))
+
+        files_to_add = [fid for fid in file_ids if fid and fid not in existing_drive_ids]
+
+        if files_to_add:
+            try:
+                submissions_api.modifyAttachments(
+                    courseId=course_id,
+                    courseWorkId=coursework_id,
+                    id=submission_id,
+                    body={"addAttachments": [{"driveFile": {"id": file_id}} for file_id in files_to_add]},
+                ).execute()
+            except Exception as attach_err:
+                err_str = str(attach_err)
+                logger.error(f"Failed to modifyAttachments on submission {submission_id}: {attach_err}")
                 raise HTTPException(status_code=502, detail="Failed to attach files to Google Classroom") from attach_err
 
         if return_state:
@@ -1232,6 +1458,75 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
         )
 
     clean_content = strip_execution_metadata(raw_content) if raw_content else (assignment.description or "Assignment Solution Deliverable")
+    content_digest = sha256(clean_content.encode("utf-8")).hexdigest()
+    digest_key = f"quick_turn_in_digest_{sha256(user_id.encode('utf-8')).hexdigest()}_{assignment_id}"
+    digest_row = db.query(Setting).filter(Setting.key == digest_key).first()
+    same_content_as_previous = bool(digest_row and digest_row.value == content_digest)
+    existing_state = getattr(existing_sub.submission_state, "value", existing_sub.submission_state) if existing_sub else None
+
+    if existing_sub and same_content_as_previous and existing_state == SubmissionState.TURNED_IN.value:
+        return {
+            "success": True,
+            "assignment_id": assignment_id,
+            "course_id": course.id,
+            "course_name": course.name,
+            "submission_id": existing_sub.id,
+            "google_doc_id": existing_sub.google_doc_id,
+            "google_doc_url": f"https://docs.google.com/document/d/{existing_sub.google_doc_id}/edit" if existing_sub.google_doc_id else None,
+            "zip_file_id": existing_sub.google_drive_file_id,
+            "classroom_submission_id": existing_sub.classroom_attachment_id,
+            "turned_in": True,
+            "message": "This exact Claude draft has already been turned in to Google Classroom.",
+        }
+
+    # A previous attempt may have attached its files but failed to turn in.
+    # Retry that same pair of private Drive files rather than uploading duplicates.
+    if (
+        existing_sub and same_content_as_previous
+        and existing_state == SubmissionState.CREATED.value
+        and existing_sub.google_doc_id and existing_sub.google_drive_file_id
+        and existing_sub.classroom_attachment_id
+    ):
+        for drive_id in (existing_sub.google_doc_id, existing_sub.google_drive_file_id):
+            if not docs_service.remove_public_sharing(drive_id):
+                raise HTTPException(status_code=502, detail="Could not verify private sharing for a submission file.")
+        submission_id, sub_state = _attach_submission_files(
+            service.service, course.external_id, assignment.external_id,
+            [existing_sub.google_doc_id, existing_sub.google_drive_file_id], return_state=True,
+        )
+        turned_in = sub_state == "TURNED_IN"
+        if not turned_in:
+            try:
+                service.service.courses().courseWork().studentSubmissions().turnIn(
+                    courseId=course.external_id,
+                    courseWorkId=assignment.external_id,
+                    id=submission_id,
+                    body={},
+                ).execute()
+                turned_in = True
+            except Exception as error:
+                logger.warning("Classroom retry turnIn on %s: %s", submission_id, error)
+        existing_sub.classroom_attachment_id = submission_id
+        existing_sub.submission_state = SubmissionState.TURNED_IN if turned_in else SubmissionState.CREATED
+        existing_sub.submitted_at = datetime.now(timezone.utc)
+        assignment.submission_state = existing_sub.submission_state
+        assignment.status = AssignmentStatus.SUBMITTED if turned_in else AssignmentStatus.APPROVED
+        db.commit()
+        return {
+            "success": True,
+            "assignment_id": assignment_id,
+            "course_id": course.id,
+            "course_name": course.name,
+            "submission_id": existing_sub.id,
+            "google_doc_id": existing_sub.google_doc_id,
+            "google_doc_url": f"https://docs.google.com/document/d/{existing_sub.google_doc_id}/edit",
+            "zip_file_id": existing_sub.google_drive_file_id,
+            "classroom_submission_id": submission_id,
+            "turned_in": turned_in,
+            "message": "Existing private deliverables were retried; " + ("the assignment is turned in." if turned_in else "Classroom is still not accepting turn-in."),
+        }
+
+    student_doc_id = existing_sub.google_doc_id if (existing_sub and same_content_as_previous and existing_sub.google_doc_id) else None
 
     # 1. Ensure Google Doc exists for this submission
     if not student_doc_id:
@@ -1272,8 +1567,10 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
         append_downloaded_assets_to_zip(bundle, execution_results, solution_markdown=clean_content, files=files)
         for index, output in enumerate(execution_results or deliverables.get("terminal_outputs", [])):
             filename = output.get("filename") or f"task_{output.get('task', index + 1)}"
+            is_unverified = output.get("verified") is False
+            output_prefix = "claude_reported_output" if is_unverified else "terminal_output"
             text = output.get("terminal_output") or output.get("content") or "No terminal output was produced."
-            bundle.writestr(f"terminal_output_{filename}.txt", text + "\n")
+            bundle.writestr(f"{output_prefix}_{filename}.txt", text + "\n")
 
     zip_bytes = archive.getvalue()
 
@@ -1283,14 +1580,12 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
         raise HTTPException(status_code=502, detail="Failed to upload deliverables ZIP to Google Drive")
     zip_file_id = uploaded_zip["id"]
 
-    # 4. Set share permissions
-    for fid in [student_doc_id, zip_file_id]:
-        try:
-            docs_service.share_file(fid, "me", "writer")
-        except Exception:
-            pass
+    for drive_id in (student_doc_id, zip_file_id):
+        if not docs_service.remove_public_sharing(drive_id):
+            raise HTTPException(status_code=502, detail="Could not verify private sharing for a submission file; nothing was submitted.")
 
-    # 5. Attach both Google Doc and ZIP file to Classroom submission
+    # 4. Attach both Google Doc and ZIP file to Classroom submission. Do not
+    # create "anyone with the link" Drive permissions for private coursework.
     submission_id, sub_state = _attach_submission_files(
         service.service,
         course.external_id,
@@ -1300,8 +1595,8 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
     )
 
     # 6. Turn in on Classroom
-    # If submission is open, execute turnIn.
-    # If submission is closed/disallowed or already turned in, do not crash; leave files attached!
+    # If submission is open, execute turnIn with body={}.
+    # If submission is closed/disallowed by instructor, leave files attached safely without failing.
     turned_in = False
     turn_in_note = ""
 
@@ -1311,6 +1606,7 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
                 courseId=course.external_id,
                 courseWorkId=assignment.external_id,
                 id=submission_id,
+                body={},
             ).execute()
             turned_in = True
         except Exception as error:
@@ -1319,8 +1615,10 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
             turned_in = False
             if "already been submitted" in err_str.lower():
                 turn_in_note = " (Submission was already submitted on Google Classroom)."
-            else:
+            elif "closed" in err_str.lower() or "deadline" in err_str.lower() or "not open" in err_str.lower():
                 turn_in_note = " (Submission deadline has passed or submissions are closed on Google Classroom; deliverables have been safely attached to coursework)."
+            else:
+                turn_in_note = f" (Deliverables attached; could not turn in automatically: {err_str})."
     else:
         turn_in_note = " (Submission was already marked turned in on Google Classroom; deliverables were updated)."
 
@@ -1333,12 +1631,17 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
     existing_sub.google_drive_file_id = zip_file_id
     existing_sub.classroom_attachment_id = submission_id
     existing_sub.submitted_at = datetime.now(timezone.utc)
-    existing_sub.submission_state = SubmissionState.TURNED_IN
+    submission_is_turned_in = turned_in or sub_state == "TURNED_IN"
+    existing_sub.submission_state = SubmissionState.TURNED_IN if submission_is_turned_in else SubmissionState.CREATED
     existing_sub.approved_by_user = True
     existing_sub.approved_at = datetime.now(timezone.utc)
+    if not digest_row:
+        digest_row = Setting(key=digest_key, description="Digest of last Claude draft submitted to Classroom")
+        db.add(digest_row)
+    digest_row.value = content_digest
 
-    assignment.submission_state = SubmissionState.TURNED_IN
-    assignment.status = AssignmentStatus.SUBMITTED
+    assignment.submission_state = SubmissionState.TURNED_IN if submission_is_turned_in else SubmissionState.CREATED
+    assignment.status = AssignmentStatus.SUBMITTED if submission_is_turned_in else AssignmentStatus.APPROVED
     db.commit()
     db.refresh(existing_sub)
 
@@ -1404,8 +1707,13 @@ def check_and_execute_course_auto_turn_in(db: Session, course_id: int, user_id: 
             due_at = due_at.replace(tzinfo=timezone.utc)
 
         time_to_deadline_mins = (due_at - now).total_seconds() / 60.0
-        # Trigger if deadline is within minutes_before (e.g. 60 mins), with 15 min grace period if slightly past due
-        if -15.0 <= time_to_deadline_mins <= float(minutes_before):
+        # Never auto-submit after the deadline; scan cadence can miss narrow windows.
+        if 0.0 <= time_to_deadline_mins <= float(max(5, min(minutes_before, 1440))):
+            prior_submission = db.query(Submission).filter(Submission.assignment_id == asgn.id).first()
+            if prior_submission and prior_submission.submitted_at:
+                # A failed/closed submission already has attached files and is left
+                # for a deliberate manual retry instead of uploading duplicate ZIPs.
+                continue
             sol = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == asgn.id).first()
             if sol and (sol.validated_content or sol.draft_content):
                 try:
@@ -1418,14 +1726,24 @@ def check_and_execute_course_auto_turn_in(db: Session, course_id: int, user_id: 
     return turned_in_results
 
 
+class QuickTurnInPayload(BaseModel):
+    confirm_submission: bool = False
+
+
 class CourseAutoTurnInPayload(BaseModel):
     enabled: bool = True
-    minutes_before: Optional[int] = 60
+    minutes_before: int = Field(default=60, ge=5, le=1440)
+    confirm_submission: bool = False
+
+
+class CourseAutoTurnInCheckPayload(BaseModel):
+    confirm_submission: bool = False
 
 
 @router.post("/assignments/{assignment_id}/quick-turn-in", response_model=dict)
 def quick_turn_in_assignment(
     assignment_id: int,
+    payload: QuickTurnInPayload,
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
@@ -1433,6 +1751,8 @@ def quick_turn_in_assignment(
     Immediate Quick Turn In:
     Uploads Google Doc + auto-zipped deliverables archive directly to Google Classroom submission.
     """
+    if payload.confirm_submission is not True:
+        raise HTTPException(status_code=400, detail="Explicit confirmation is required before submitting to Google Classroom.")
     user_id = _classroom_user_id(clerk_user)
     return execute_quick_turn_in(db, assignment_id, user_id)
 
@@ -1461,11 +1781,30 @@ def get_course_auto_turn_in(
         except Exception:
             enabled = setting.value.lower() == "true"
 
+    latest_submission = (
+        db.query(Submission)
+        .join(Assignment, Submission.assignment_id == Assignment.id)
+        .filter(
+            Submission.user_id == user_id,
+            Assignment.user_id == user_id,
+            Assignment.course_id == course_id,
+        )
+        .order_by(Submission.submitted_at.desc().nullslast(), Submission.created_at.desc())
+        .first()
+    )
+    next_check = datetime.now(timezone.utc) + timedelta(minutes=1) if enabled else None
+
     return {
         "course_id": course_id,
         "course_name": course.name,
         "enabled": enabled,
         "minutes_before": minutes_before,
+        "last_run": (latest_submission.submitted_at or latest_submission.created_at) if latest_submission else None,
+        "last_result": {
+            "status": getattr(latest_submission.submission_state, "value", latest_submission.submission_state),
+            "assignment_id": latest_submission.assignment_id,
+        } if latest_submission else None,
+        "next_run": next_check,
     }
 
 
@@ -1481,6 +1820,8 @@ def update_course_auto_turn_in(
     Automatically turns in before 60 minutes to deadline.
     """
     user_id = _classroom_user_id(clerk_user)
+    if payload.enabled and payload.confirm_submission is not True:
+        raise HTTPException(status_code=400, detail="Confirm that you want Claude-generated deliverables submitted automatically for this course.")
     course = db.query(Course).filter(Course.id == course_id, Course.user_id == user_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
@@ -1489,7 +1830,7 @@ def update_course_auto_turn_in(
     setting = db.query(Setting).filter(Setting.key == setting_key).first()
     setting_val = {
         "enabled": payload.enabled,
-        "minutes_before": payload.minutes_before or 60,
+        "minutes_before": payload.minutes_before,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "course_id": course_id,
         "course_name": course.name,
@@ -1505,30 +1846,30 @@ def update_course_auto_turn_in(
         setting.value = json.dumps(setting_val)
     db.commit()
 
+    # Enabling is prospective; saving preferences must never trigger an immediate submission.
     turned_in = []
-    if payload.enabled:
-        try:
-            turned_in = check_and_execute_course_auto_turn_in(db, course_id, user_id)
-        except Exception as e:
-            logger.error(f"Error checking auto turn-in on update for course {course_id}: {e}")
 
     return {
         "course_id": course_id,
         "course_name": course.name,
         "enabled": payload.enabled,
-        "minutes_before": payload.minutes_before or 60,
+        "minutes_before": payload.minutes_before,
         "turned_in": turned_in,
-        "message": f"Auto turn-in for {course.name} {'enabled (60 minutes before deadline)' if payload.enabled else 'disabled'}"
+        "next_run": datetime.now(timezone.utc) + timedelta(minutes=1) if payload.enabled else None,
+        "message": f"Auto turn-in for {course.name} {'enabled ' + str(payload.minutes_before) + ' minutes before the deadline' if payload.enabled else 'disabled'}"
     }
 
 
 @router.post("/courses/{course_id}/check-auto-turn-in", response_model=dict)
 def trigger_course_auto_turn_in_check(
     course_id: int,
+    payload: CourseAutoTurnInCheckPayload,
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Manually evaluate auto turn-in for this specific course."""
+    if payload.confirm_submission is not True:
+        raise HTTPException(status_code=400, detail="Confirm that you want eligible Claude drafts submitted for this course now.")
     user_id = _classroom_user_id(clerk_user)
     turned_in = check_and_execute_course_auto_turn_in(db, course_id, user_id)
     return {
@@ -1599,8 +1940,6 @@ async def upload_assignment_material(
 # ===== AI Solution Generation & Agentic Flow =====
 
 class GenerateSolutionRequest(BaseModel):
-    provider: Optional[str] = "crewai"
-    model: Optional[str] = None
     create_google_doc: Optional[bool] = True
 
 
@@ -1612,12 +1951,11 @@ def generate_assignment_solution(
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
-    """Trigger the multi-agent assignment solver flow (async with background tasks)."""
+    """Trigger the Claude browser assignment solver (async with background tasks)."""
     from app.db.models import AssignmentSolution, AssignmentStatus
 
     req = payload or GenerateSolutionRequest()
-    provider = req.provider or "groq"
-    model = req.model or "openai/gpt-oss-120b"
+    provider = "claude_browser"
     create_google_doc = req.create_google_doc if req.create_google_doc is not None else True
 
     user_id = _classroom_user_id(clerk_user)
@@ -1629,15 +1967,24 @@ def generate_assignment_solution(
         raise HTTPException(status_code=404, detail="Assignment not found")
     # Get or create solution record
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
-    if assignment.status == AssignmentStatus.GENERATING:
-        started = solution.generated_at if solution else None
-        if started and started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
-        is_stale = not started or (datetime.now(timezone.utc) - started).total_seconds() > 20 * 60
-        if not is_stale:
-            raise HTTPException(status_code=409, detail="A solution is already being generated for this assignment.")
+    stale_before = datetime.now(timezone.utc) - timedelta(minutes=20)
+    latest_start = db.query(AssignmentSolution.generated_at).filter(
+        AssignmentSolution.assignment_id == assignment_id,
+    ).scalar_subquery()
+    claimed = db.query(Assignment).filter(
+        Assignment.id == assignment_id,
+        Assignment.user_id == user_id,
+        or_(
+            Assignment.status != AssignmentStatus.GENERATING,
+            latest_start.is_(None),
+            latest_start < stale_before,
+        ),
+    ).update({Assignment.status: AssignmentStatus.GENERATING}, synchronize_session=False)
+    if claimed != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A solution is already being generated for this assignment.")
     if not solution:
-        solution = AssignmentSolution(assignment_id=assignment_id)
+        solution = AssignmentSolution(assignment_id=assignment_id, user_id=user_id)
         db.add(solution)
 
     solution.ai_provider = provider
@@ -1660,18 +2007,11 @@ def generate_assignment_solution(
                     assignment_id=assignment_id,
                     user_id=user_id,
                     force=True,
+                    create_google_doc=create_google_doc,
                 )
                 logger.info(f"Claude Browser solution generated for assignment {assignment_id}: status={result.get('status')}")
                 if result.get("status") == "already_running":
-                    logger.info(f"Claude Browser solve for assignment {assignment_id} skipped because another solve is already running.")
-                    from app.db.models import Assignment, AssignmentStatus
-                    asg = sync_db.query(Assignment).filter(
-                        Assignment.id == assignment_id,
-                        Assignment.user_id == user_id,
-                    ).first()
-                    if asg and asg.status == AssignmentStatus.GENERATING:
-                        asg.status = AssignmentStatus.DRAFT
-                        sync_db.commit()
+                    logger.info("Claude solve %s is already active; preserving its generating state.", assignment_id)
                 elif result.get("status") == "draft":
                     from app.db.models import Assignment, AssignmentSolution, AssignmentStatus
                     sol = sync_db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
@@ -1684,7 +2024,7 @@ def generate_assignment_solution(
                     if asg:
                         asg.status = AssignmentStatus.DRAFT
                     sync_db.commit()
-                elif result.get("status") in ("needs_login", "error"):
+                elif result.get("status") != "completed":
                     from app.db.models import Assignment, AssignmentSolution, AssignmentStatus
                     sol = sync_db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
                     asg = sync_db.query(Assignment).filter(
@@ -1697,16 +2037,7 @@ def generate_assignment_solution(
                         asg.status = AssignmentStatus.FAILED
                     sync_db.commit()
             else:
-                from app.services.ai_solution import generate_agentic_solution
-                result = generate_agentic_solution(
-                    db=sync_db,
-                    assignment_id=assignment_id,
-                    provider=provider,
-                    model=model,
-                    create_google_doc=create_google_doc,
-                    user_id=user_id,
-                )
-                logger.info(f"Multi-Agent solution generated for assignment {assignment_id}: status={result.get('status')}")
+                raise RuntimeError("Unsupported assignment solver")
         except Exception as e:
             logger.error(f"Multi-Agent solution generation failed for assignment {assignment_id}: {e}")
             try:
@@ -1778,7 +2109,7 @@ def sync_claude_session(
             description="User's Claude session cookie for direct zero-latency solving.",
         )
         db.add(key_setting)
-    key_setting.value = raw_key
+    key_setting.value = encrypt_token_if_needed(raw_key)
 
     if payload.user_agent:
         ua_setting = db.query(Setting).filter(
@@ -2039,12 +2370,12 @@ def get_solution_status(
         from app.services.terminal_renderer import TerminalCardRenderer
         for result in execution_results:
             data_uri = result.get("screenshot_data_uri")
-            if not data_uri:
+            is_diagram = result.get("language") in ("mermaid", "diagram", "drawio", "drawio.xml", "plantuml", "graphviz", "dot", "mmd", "puml", "xml", "mxfile", "svg")
+            if not data_uri and is_diagram:
                 image_asset = next((asset for asset in result.get("downloaded_assets", []) if asset.get("is_image") and asset.get("data_uri")), None)
                 data_uri = image_asset.get("data_uri") if image_asset else None
-            is_diagram = result.get("language") in ("mermaid", "diagram", "drawio", "drawio.xml", "plantuml", "graphviz", "dot", "mmd", "puml", "xml", "mxfile", "svg")
             is_file_attachment = result.get("language") == "artifact"
-            if not data_uri and not is_diagram and not is_file_attachment and result.get("tool") != "Claude Text Output (no image artifact)":
+            if not data_uri and not is_diagram and not is_file_attachment and result.get("verified") is not False and result.get("tool") != "Claude Text Output (no image artifact)":
                 png = TerminalCardRenderer.generate_terminal_png(
                     result.get("command") or f"Run {result.get('filename') or 'solution file'}",
                     result.get("terminal_output") or "No terminal output was produced.",
@@ -2152,6 +2483,7 @@ def get_solution_status(
         "ai_provider": solution.ai_provider,
         "generated_at": solution.generated_at,
         "validated_at": solution.validated_at,
+        "verification_status": "unverified",
         "google_doc_id": google_doc_id,
         "google_doc_url": google_doc_url,
     }

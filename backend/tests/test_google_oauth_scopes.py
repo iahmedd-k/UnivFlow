@@ -14,4 +14,5 @@ def test_google_oauth_scopes_validity():
     assert "https://www.googleapis.com/auth/classroom.courseworkmaterials.readonly" in scopes
     assert "https://www.googleapis.com/auth/classroom.courseworkmaterials" in scopes
     assert "https://www.googleapis.com/auth/classroom.coursework.students" in scopes
+    assert "https://www.googleapis.com/auth/classroom.coursework.me" in scopes
     assert "https://www.googleapis.com/auth/classroom.coursework.me.readonly" in scopes

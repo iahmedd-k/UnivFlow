@@ -34,6 +34,9 @@ def test_versioned_feature_routes_remain_authenticated(monkeypatch):
     app.include_router(api_router, prefix="/api/v1")
     monkeypatch.setattr(clerk_auth.settings, "environment", "production")
 
-    response = TestClient(app).get("/api/v1/execution/languages")
+    client = TestClient(app)
+    response = client.get("/api/v1/dashboard/overview")
+    removed_solver_route = client.get("/api/v1/execution/languages")
 
     assert response.status_code == 401
+    assert removed_solver_route.status_code == 404

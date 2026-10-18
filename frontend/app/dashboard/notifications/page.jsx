@@ -21,11 +21,13 @@ export default function NotificationsPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [briefing, setBriefing] = useState({ enabled: true, time: '07:30', timezone: 'Asia/Karachi', last_run: null, next_run: null });
 
   const load = useCallback(async (status = filter) => {
     const token = await getToken();
-    const [notifications, summary] = await Promise.all([api.getNotifications(status || null, 50, token), api.getNotificationStats(token)]);
+    const [notifications, summary, preferences] = await Promise.all([api.getNotifications(status || null, 50, token), api.getNotificationStats(token), api.getDailyBriefingPreferences(token)]);
     setItems(notifications || []); setStats(summary || null);
+    if (preferences) setBriefing(preferences);
   }, [filter, getToken]);
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -45,6 +47,28 @@ export default function NotificationsPage() {
     setBusy(true); setError(''); setNotice('');
     try { const token = await getToken(); const result = await api.sendNotification(id, token); setNotice(result.message || 'Notification queued.'); await load(); }
     catch (err) { setError(err.message || 'Could not queue this notification.'); }
+    finally { setBusy(false); }
+  };
+
+  const saveBriefing = async (overrides = briefing) => {
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const token = await getToken();
+      const saved = await api.saveDailyBriefingPreferences({ enabled: overrides.enabled, time: overrides.time, timezone: overrides.timezone }, token);
+      setBriefing(saved);
+      setNotice('Daily briefing schedule saved.');
+    } catch (err) { setError(err.message || 'Could not save the daily briefing schedule.'); }
+    finally { setBusy(false); }
+  };
+
+  const runBriefingNow = async () => {
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const token = await getToken();
+      const result = await api.triggerDailyDigest(token);
+      setNotice(result.message || 'Daily briefing sent.');
+      await load();
+    } catch (err) { setError(err.message || 'Could not send the daily briefing.'); }
     finally { setBusy(false); }
   };
 
@@ -78,6 +102,19 @@ export default function NotificationsPage() {
     </header>
     {error && <div className="rounded-lg border border-[#f1dede] bg-[#fff8f8] px-3 py-2.5 text-xs text-[#a04a4a]">{error}</div>}{notice && <div className="rounded-lg border border-[#d8eee4] bg-[#f3fbf7] px-3 py-2.5 text-xs text-[#43816b]">{notice}</div>}
     <section className="grid grid-cols-1 gap-3.5 md:grid-cols-3">{[['Total queued', loading ? '—' : stats?.total ?? 0], ['Pending', loading ? '—' : stats?.pending ?? 0], ['Sent / failed', loading ? '—' : `${stats?.sent ?? 0} / ${stats?.failed ?? 0}`]].map(([label, value]) => <article className="rounded-xl border border-[#ededf2] bg-white p-4" key={label}><span className="block text-xs text-[#858998]">{label}</span><strong className="mt-2 block text-[22px] font-semibold text-[#343746]">{value}</strong></article>)}</section>
+    <section className="rounded-xl border border-[#ebebf0] bg-white p-5 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div><p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">PERSONAL AUTOMATION</p><h2 className="mt-1 text-sm font-semibold text-[#343746]">Daily academic briefing</h2><p className="mt-1 max-w-2xl text-xs leading-5 text-[#777b89]">Combines today&apos;s classes, attendance warnings, deadlines, and recent sync failures. The schedule uses your selected timezone.</p></div>
+        <label className="flex items-center gap-2 text-xs font-semibold text-[#5c6070]"><input type="checkbox" checked={briefing.enabled} onChange={(event) => setBriefing((current) => ({ ...current, enabled: event.target.checked }))} /> Enabled</label>
+      </div>
+      <div className="mt-4 flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1 text-xs font-medium text-[#5c6070]">Send at<input type="time" value={briefing.time} disabled={!briefing.enabled} onChange={(event) => setBriefing((current) => ({ ...current, time: event.target.value }))} className="h-9 rounded-md border border-[#e5e5ec] bg-white px-2.5 text-xs disabled:opacity-50" /></label>
+        <label className="flex flex-col gap-1 text-xs font-medium text-[#5c6070]">Timezone<select value={briefing.timezone} disabled={!briefing.enabled} onChange={(event) => setBriefing((current) => ({ ...current, timezone: event.target.value }))} className="h-9 rounded-md border border-[#e5e5ec] bg-white px-2.5 text-xs disabled:opacity-50"><option value="Asia/Karachi">Asia/Karachi</option><option value="UTC">UTC</option><option value="America/New_York">America/New_York</option></select></label>
+        <button type="button" onClick={() => saveBriefing()} disabled={busy} className="h-9 rounded-md bg-[#6657d9] px-3 text-xs font-semibold text-white disabled:opacity-50">Save schedule</button>
+        <button type="button" onClick={runBriefingNow} disabled={busy} className="h-9 rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] disabled:opacity-50">Run now</button>
+      </div>
+      <p className="mt-3 text-xs text-[#858998]">Last run: {briefing.last_run ? new Date(briefing.last_run).toLocaleString() : 'Never'} · Next run: {briefing.enabled && briefing.next_run ? new Date(briefing.next_run).toLocaleString() : 'Disabled'}</p>
+    </section>
     <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm"><header className="flex items-center justify-between gap-3.5 border-b border-[#f0f0f3] px-5 py-4"><div><p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">DELIVERY QUEUE</p><h2 className="text-[13px] font-semibold text-[#343746]">Recent notifications</h2></div><span className="inline-flex items-center rounded-full bg-[#f1f1f6] px-2 py-1 text-xs font-semibold text-[#6e7281]">{items.length}</span></header><nav className="flex gap-1.5 overflow-auto border-b border-[#efeff3] px-4 py-3" aria-label="Notification status">{filters.map((item) => <button key={item.key || 'all'} type="button" className={`whitespace-nowrap rounded-md border px-2.5 py-1.5 text-xs ${filter === item.key ? 'border-[#e9e5ff] bg-[#f2efff] font-semibold text-[#5e4fc5]' : 'border-transparent text-[#777b89]'}`} onClick={() => changeFilter(item.key)}>{item.label}</button>)}</nav>
       {loading ? <div className="px-5 py-8 text-center text-xs leading-relaxed text-[#9396a3]">Loading notifications…</div> : items.length ? <div className="flex flex-col">{items.map((item) => <article className="flex min-h-[60px] items-center gap-3 border-b border-[#f1f1f4] px-4 py-3 last:border-b-0 hover:bg-[#fafafd]" key={item.id}><span className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-lg bg-[#f0edff] text-[#6657d9]"><Icon name="messageText" size={15}/></span><span className="flex min-w-0 flex-1 flex-col gap-1"><strong className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#414553]">{item.subject || 'Uniflow notification'}</strong><small className="overflow-hidden text-ellipsis whitespace-nowrap text-xs text-[#9295a2]">{item.recipient} · {item.notification_type || 'General'}{item.error ? ` · ${item.error}` : ''}</small><small className="overflow-hidden text-ellipsis whitespace-nowrap text-xs text-[#9295a2]">{item.payload}</small></span><span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold ${statusTone(item.status)}`}>{(item.status || 'PENDING').toLowerCase()}</span>{item.status === 'PENDING' && <button className="inline-flex min-h-9 shrink-0 items-center justify-center rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb] disabled:opacity-55" type="button" disabled={busy} onClick={() => sendOne(item.id)}>Send</button>}</article>)}</div> : <div className="px-5 py-8 text-center text-xs leading-relaxed text-[#9396a3]"><strong className="mb-1 block text-xs text-[#515563]">No notifications here</strong>New notifications appear when Uniflow queues an email for delivery.</div>}
     </section>

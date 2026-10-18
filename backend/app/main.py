@@ -56,6 +56,9 @@ app = FastAPI(
     title=settings.app_name,
     description="Uniflow - Unified Academic Assistant",
     version="1.0.0",
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
+    openapi_url=None if settings.is_production else "/openapi.json",
     lifespan=lifespan,
 )
 
@@ -82,7 +85,6 @@ cors_origins = list(dict.fromkeys([
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?|https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -96,7 +98,7 @@ def _cors_headers(request: Request) -> dict:
         "Access-Control-Allow-Methods": "*",
         "Access-Control-Allow-Headers": "*",
     }
-    if origin:
+    if origin in cors_origins:
         headers["Access-Control-Allow-Origin"] = origin
     return headers
 
@@ -122,7 +124,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled server error on {request.method} {request.url.path}: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc) or "Internal server error occurred."},
+        content={"detail": "Internal server error. Please try again."},
         headers=_cors_headers(request),
     )
 
@@ -156,7 +158,7 @@ def health_check(db: Session = Depends(get_db)):
         db.execute(text("SELECT 1"))
         checks["database"] = "healthy"
     except Exception as e:
-        checks["database"] = f"unhealthy: {str(e)}"
+        checks["database"] = "unhealthy"
     
     # Redis/Upstash check
     try:
@@ -167,7 +169,7 @@ def health_check(db: Session = Depends(get_db)):
         else:
             checks["redis"] = "not_configured"
     except Exception as e:
-        checks["redis"] = f"unhealthy: {str(e)}"
+        checks["redis"] = "unhealthy"
     
     # Supabase check
     try:
@@ -178,7 +180,7 @@ def health_check(db: Session = Depends(get_db)):
         else:
             checks["supabase"] = "not_configured"
     except Exception as e:
-        checks["supabase"] = f"unhealthy: {str(e)}"
+        checks["supabase"] = "unhealthy"
     
     # S3 check
     try:
@@ -189,33 +191,7 @@ def health_check(db: Session = Depends(get_db)):
         else:
             checks["s3"] = "not_configured"
     except Exception as e:
-        checks["s3"] = f"unhealthy: {str(e)}"
-    
-    # Piston check
-    try:
-        from app.integrations.piston.client import PistonClient
-        import httpx
-        piston = PistonClient()
-        resp = httpx.get(f"{settings.piston_base_url}/health", timeout=5.0)
-        if resp.status_code == 200:
-            checks["piston"] = "healthy"
-        else:
-            checks["piston"] = f"unhealthy: HTTP {resp.status_code}"
-    except Exception as e:
-        checks["piston"] = f"unhealthy: {str(e)}"
-    
-    # Kroki check
-    try:
-        from app.integrations.kroki.client import KrokiClient
-        kroki = KrokiClient()
-        import httpx
-        resp = httpx.get(f"{settings.kroki_base_url}/", timeout=5.0)
-        if resp.status_code == 200:
-            checks["kroki"] = "healthy"
-        else:
-            checks["kroki"] = f"unhealthy: HTTP {resp.status_code}"
-    except Exception as e:
-        checks["kroki"] = f"unhealthy: {str(e)}"
+        checks["s3"] = "unhealthy"
     
     all_healthy = all(v == "healthy" or v == "not_configured" for v in checks.values())
     
