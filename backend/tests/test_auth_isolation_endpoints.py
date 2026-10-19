@@ -9,7 +9,8 @@ from app.main import app
 from app.db.database import get_db, Base
 from app.db.models import (
     Course, TimetableEntry, ClassSchedule, AttendanceRecord,
-    Exam, DailyReport, Announcement, PortalSyncJob, Setting
+    Exam, DailyReport, Announcement, PortalSyncJob, Setting,
+    Assignment, AssignmentSolution, AssignmentStatus
 )
 from app.auth.clerk_auth import require_current_user, get_current_user_optional
 from app.auth.access_gate import _key as access_setting_key
@@ -197,3 +198,76 @@ def test_timetable_wipe_does_not_affect_other_users(test_db, client, monkeypatch
     entry = test_db.query(TimetableEntry).filter(TimetableEntry.external_id == "portal-tt:alice-keep").first()
     assert entry is not None
     assert entry.user_id == "user_alice"
+
+
+def test_notification_email_crud(test_db, client, monkeypatch):
+    """Ensure /auth/notification-email endpoints resolve without NameError and isolate per user."""
+    monkeypatch.setattr(settings, "environment", "production")
+    user = {"id": "user_notif_test", "email": "test@uniflow.app", "name": "Notif User"}
+    test_db.add(Setting(
+        key=access_setting_key("grant", "user_notif_test"),
+        value='{"granted_at":"test-approved"}',
+    ))
+    test_db.commit()
+
+    app.dependency_overrides[require_current_user] = lambda: user
+    app.dependency_overrides[get_current_user_optional] = lambda: user
+
+    # 1. GET initially returns None
+    resp = client.get("/api/v1/auth/notification-email")
+    assert resp.status_code == 200
+    assert resp.json()["email"] is None
+
+    # 2. PUT updates notification email
+    resp = client.put("/api/v1/auth/notification-email", json={"email": "custom@alert.com"})
+    assert resp.status_code == 200
+    assert resp.json()["email"] == "custom@alert.com"
+
+    # 3. GET retrieves updated email
+    resp = client.get("/api/v1/auth/notification-email")
+    assert resp.status_code == 200
+    assert resp.json()["email"] == "custom@alert.com"
+
+    # 4. DELETE removes notification email
+    resp = client.delete("/api/v1/auth/notification-email")
+    assert resp.status_code == 200
+    assert resp.json()["email"] is None
+
+
+def test_get_solution_status_handles_stale_browser_logs_without_unbound_error(test_db, client, monkeypatch):
+    """Ensure GET /classroom/assignments/{id}/solution/status does not raise UnboundLocalError."""
+    monkeypatch.setattr(settings, "environment", "production")
+    user = {"id": "user_solution_test", "email": "sol@uniflow.app", "name": "Sol User"}
+    test_db.add(Setting(
+        key=access_setting_key("grant", "user_solution_test"),
+        value='{"granted_at":"test-approved"}',
+    ))
+    # Seed course and assignment
+    course = Course(id=99, name="Test Course", user_id="user_solution_test", external_id="ext-course-99")
+    assignment = Assignment(
+        id=190,
+        title="Operating Systems Lab 1",
+        course_id=99,
+        user_id="user_solution_test",
+        external_id="ext-assign-190",
+        status=AssignmentStatus.DRAFT,
+    )
+    solution = AssignmentSolution(
+        assignment_id=190,
+        validation_errors="Browser logs: Target page, context or browser has been closed",
+    )
+    test_db.add(course)
+    test_db.add(assignment)
+    test_db.add(solution)
+    test_db.commit()
+
+    app.dependency_overrides[require_current_user] = lambda: user
+    app.dependency_overrides[get_current_user_optional] = lambda: user
+
+    resp = client.get("/api/v1/classroom/assignments/190/solution/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] in ("not_started", "failed")
+    # Validation errors should have been auto-cleared
+    assert data.get("validation_errors") is None
+

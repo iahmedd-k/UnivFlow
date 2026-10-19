@@ -54,11 +54,23 @@ export const isFirebaseConfigured = Boolean(app);
 // Initialize Analytics conditionally on the browser
 export let analytics = null;
 if (typeof window !== "undefined" && app) {
-  isAnalyticsSupported().then((supported) => {
-    if (supported && app) {
-      analytics = getAnalytics(app);
-    }
-  }).catch(() => {});
+  try {
+    isAnalyticsSupported()
+      .then((supported) => {
+        if (supported && app) {
+          try {
+            analytics = getAnalytics(app);
+          } catch {
+            // Silently ignore analytics initialization failures (e.g., IndexedDB quota limits)
+          }
+        }
+      })
+      .catch(() => {
+        // Silently ignore IndexedDB quota or permission errors
+      });
+  } catch {
+    // Suppress synchronous IndexedDB/permission errors
+  }
 }
 
 /**
@@ -76,7 +88,7 @@ export async function requestNotificationPermission(vapidKey = null) {
   }
 
   try {
-    const supported = await isMessagingSupported();
+    const supported = await isMessagingSupported().catch(() => false);
     if (!supported || !app) {
       console.warn("Firebase Messaging is not supported in this browser.");
       return null;
@@ -111,7 +123,7 @@ export async function onMessageListener(callback) {
   if (typeof window === "undefined" || !app) return () => {};
 
   try {
-    const supported = await isMessagingSupported();
+    const supported = await isMessagingSupported().catch(() => false);
     if (!supported || !app) return () => {};
 
     const messaging = getMessaging(app);

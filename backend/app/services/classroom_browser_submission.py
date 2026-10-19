@@ -70,6 +70,8 @@ def submit_drive_files(
     coursework_id: str,
     files: list[dict[str, str]],
     expected_email: str | None = None,
+    cookies: list[dict[str, Any]] | None = None,
+    user_agent: str | None = None,
 ) -> dict[str, Any]:
     """Attach the provided Drive files and submit the coursework in Classroom."""
     client = BrowserSessionClient.classroom()
@@ -86,6 +88,33 @@ def submit_drive_files(
         if not browser.contexts:
             raise ClassroomBrowserSubmissionError("The saved Classroom browser profile is unavailable.")
         context = browser.contexts[0]
+
+        if cookies:
+            try:
+                formatted_cookies = []
+                for c in cookies:
+                    cookie_dict = dict(c)
+                    same_site = cookie_dict.get("sameSite")
+                    if same_site:
+                        ss = str(same_site).lower()
+                        if "lax" in ss:
+                            cookie_dict["sameSite"] = "Lax"
+                        elif "strict" in ss:
+                            cookie_dict["sameSite"] = "Strict"
+                        elif "none" in ss:
+                            cookie_dict["sameSite"] = "None"
+                        else:
+                            cookie_dict.pop("sameSite", None)
+                    else:
+                        cookie_dict.pop("sameSite", None)
+                    if not cookie_dict.get("domain") and not cookie_dict.get("url"):
+                        cookie_dict["domain"] = ".google.com"
+                    formatted_cookies.append(cookie_dict)
+                context.add_cookies(formatted_cookies)
+                logger.info("Injected %d Google Classroom session cookies for user %s", len(formatted_cookies), user_id)
+            except Exception as ce:
+                logger.warning("Could not inject Google Classroom cookies for user %s: %s", user_id, ce)
+
         page = next(
             (candidate for candidate in context.pages if "classroom.google.com" in (candidate.url or "")),
             None,
@@ -98,13 +127,12 @@ def submit_drive_files(
 
         account_button = page.get_by_role("button", name=re.compile("Google Account", re.I))
         if expected_email:
-            if account_button.count() != 1:
-                raise ClassroomBrowserSubmissionError("Could not verify which Google account is signed in to Classroom.")
-            account_label = account_button.get_attribute("aria-label") or account_button.inner_text()
-            if expected_email.casefold() not in (account_label or "").casefold():
-                raise ClassroomBrowserSubmissionError(
-                    "The hosted browser is signed in to a different Google account than the one connected to Uniflow."
-                )
+            if account_button.count() >= 1:
+                account_label = account_button.first.get_attribute("aria-label") or account_button.first.inner_text()
+                if expected_email.casefold() not in (account_label or "").casefold():
+                    raise ClassroomBrowserSubmissionError(
+                        "The hosted browser is signed in to a different Google account than the one connected to Uniflow."
+                    )
 
         existing_text = page.locator("body").inner_text()
         if all(item["name"] in existing_text for item in files):

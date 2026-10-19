@@ -23,6 +23,7 @@ from app.core.logging import logger
 from app.auth.clerk_auth import get_current_user_optional, require_current_user
 from app.auth.access_gate import get_access_status, redeem_access_otp, request_access_otp
 from app.auth.access_gate import require_access_grant
+from app.auth.ownership import require_user_id
 from app.core.redis import check_rate_limit as redis_check_rate_limit
 from app.core.security import decrypt_token_if_encrypted, get_google_credential_tokens, encrypt_token_if_needed
 from pydantic import BaseModel, EmailStr, Field

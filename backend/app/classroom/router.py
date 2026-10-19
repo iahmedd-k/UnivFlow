@@ -1417,15 +1417,42 @@ def _finish_quick_turn_in_in_classroom_browser(
 
     browser = BrowserSessionClient.classroom()
     state = browser.status(user_id)
+    opened_viewer_url = None
     if not state.get("active"):
-        opened = browser.open(user_id)
+        try:
+            opened = browser.open(user_id)
+            opened_viewer_url = opened.get("viewer_url")
+        except Exception as open_err:
+            logger.warning("Could not launch Classroom browser session for user %s: %s", user_id, open_err)
+
+    # Fetch stored Google session cookies and user agent
+    cookie_setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:google_session_cookies"
+    ).first()
+    google_cookies = None
+    if cookie_setting and cookie_setting.value:
+        try:
+            from app.core.security import decrypt_token_if_encrypted
+            decrypted = decrypt_token_if_encrypted(cookie_setting.value)
+            google_cookies = json.loads(decrypted)
+        except Exception as ce:
+            logger.warning("Could not load decrypted Google session cookies for user %s: %s", user_id, ce)
+
+    ua_setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:google_user_agent"
+    ).first()
+    google_ua = ua_setting.value.strip() if ua_setting and ua_setting.value else None
+
+    # If neither cookies nor an existing authenticated profile exists, prompt setup
+    if not google_cookies and not state.get("profile_exists"):
+        curr_state = browser.status(user_id)
         return {
             "success": False,
             "needs_browser_login": True,
-            "viewer_url": opened.get("viewer_url"),
+            "viewer_url": curr_state.get("viewer_url") or opened_viewer_url,
             "google_doc_id": google_doc_id,
             "zip_file_id": zip_file_id,
-            "message": "Google Classroom needs a one-time sign-in in your private browser. Sign in there, then retry Quick Turn In; the prepared files have been saved for reuse.",
+            "message": "Google Classroom needs a one-time session sync. Use the Uniflow extension popup to sync your Google Classroom session, or sign in via Settings.",
         }
 
     email_row = db.query(Setting).filter(
@@ -1442,16 +1469,18 @@ def _finish_quick_turn_in_in_classroom_browser(
                 {"id": zip_file_id, "name": zip_filename},
             ],
             expected_email=expected_email,
+            cookies=google_cookies,
+            user_agent=google_ua,
         )
     except ClassroomBrowserLoginRequired:
-        state = browser.status(user_id)
+        curr_state = browser.status(user_id)
         return {
             "success": False,
             "needs_browser_login": True,
-            "viewer_url": state.get("viewer_url"),
+            "viewer_url": curr_state.get("viewer_url") or opened_viewer_url,
             "google_doc_id": google_doc_id,
             "zip_file_id": zip_file_id,
-            "message": "Sign in to the Google account connected to Uniflow in your private Classroom browser, then retry Quick Turn In.",
+            "message": "Your Google Classroom session has expired or requires sign-in. Use the Uniflow extension popup to re-sync your Classroom session.",
         }
     except Exception as error:
         logger.exception("Google Classroom browser submission failed for assignment %s", assignment.id)
@@ -2255,13 +2284,22 @@ def open_google_classroom_browser(clerk_user: Optional[dict] = Depends(get_curre
 
 
 @router.get("/gcr-browser/status", response_model=dict)
-def get_google_classroom_browser_status(clerk_user: Optional[dict] = Depends(get_current_user_optional)):
+def get_google_classroom_browser_status(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Return this user's Google Classroom browser state without exposing CDP details."""
-    result = BrowserSessionClient.classroom().status(_classroom_user_id(clerk_user))
+    user_id = _classroom_user_id(clerk_user)
+    result = BrowserSessionClient.classroom().status(user_id)
+    cookie_setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:google_session_cookies"
+    ).first()
+    has_synced_session = bool(cookie_setting and cookie_setting.value)
     return {
         "active": bool(result.get("active")),
         "profile_exists": bool(result.get("profile_exists")),
         "viewer_url": result.get("viewer_url"),
+        "has_synced_session": has_synced_session,
     }
 
 
@@ -2270,6 +2308,105 @@ def delete_google_classroom_browser_profile(clerk_user: Optional[dict] = Depends
     """Stop and delete this user's saved Google Classroom browser session."""
     BrowserSessionClient.classroom().delete_profile(_classroom_user_id(clerk_user))
     return {"profile_deleted": True}
+
+
+class GoogleClassroomCookieSyncRequest(BaseModel):
+    cookies: Union[List[Dict[str, Any]], str]
+    user_agent: Optional[str] = None
+
+
+@router.post("/gcr-browser/sync-session", response_model=dict)
+def sync_google_classroom_session(
+    payload: GoogleClassroomCookieSyncRequest,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Sync the student's existing Google Classroom session cookies from the extension or settings."""
+    user_id = _classroom_user_id(clerk_user)
+    raw_cookies = payload.cookies
+    cookie_list = []
+    if isinstance(raw_cookies, str):
+        # Allow cookie string format "name=val; name2=val2"
+        for part in raw_cookies.split(";"):
+            part = part.strip()
+            if "=" in part:
+                name, val = part.split("=", 1)
+                cookie_list.append({
+                    "name": name.strip(),
+                    "value": val.strip(),
+                    "domain": ".google.com",
+                    "path": "/",
+                    "secure": True,
+                })
+    elif isinstance(raw_cookies, list):
+        cookie_list = [dict(c) for c in raw_cookies if isinstance(c, dict) and c.get("name") and c.get("value")]
+
+    if not cookie_list:
+        raise HTTPException(
+            status_code=400,
+            detail="No valid cookies provided. Ensure you are signed in to Google Classroom.",
+        )
+
+    # Check that at least one Google auth cookie is present
+    auth_cookie_names = {"OSID", "SID", "HSID", "SSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID"}
+    has_auth_cookie = any(c.get("name") in auth_cookie_names or c.get("name", "").startswith("__Secure-") for c in cookie_list)
+    if not has_auth_cookie:
+        raise HTTPException(
+            status_code=400,
+            detail="Provided cookies do not include Google Classroom authentication tokens (e.g. OSID, SID). Log into classroom.google.com first.",
+        )
+
+    json_str = json.dumps(cookie_list)
+    encrypted_cookies = encrypt_token_if_needed(json_str)
+
+    key_setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:google_session_cookies"
+    ).first()
+    if not key_setting:
+        key_setting = Setting(
+            key=f"classroom:{user_id}:google_session_cookies",
+            description="User's Google Classroom session cookies for automated background turn-in.",
+        )
+        db.add(key_setting)
+    key_setting.value = encrypted_cookies
+
+    if payload.user_agent:
+        ua_setting = db.query(Setting).filter(
+            Setting.key == f"classroom:{user_id}:google_user_agent"
+        ).first()
+        if not ua_setting:
+            ua_setting = Setting(
+                key=f"classroom:{user_id}:google_user_agent",
+                description="User's browser User-Agent for Google Classroom session alignment.",
+            )
+            db.add(ua_setting)
+        ua_setting.value = payload.user_agent.strip()
+
+    db.commit()
+    logger.info("Synced %d Google Classroom cookies for user %s", len(cookie_list), user_id)
+    return {
+        "status": "connected",
+        "has_synced_session": True,
+        "cookie_count": len(cookie_list),
+        "message": f"Successfully connected {len(cookie_list)} Google Classroom session cookies! Assignments can now be turned in automatically in the background.",
+    }
+
+
+@router.delete("/gcr-browser/session", response_model=dict)
+def disconnect_google_classroom_session(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Disconnect the student's synced Google Classroom session cookies."""
+    user_id = _classroom_user_id(clerk_user)
+    db.query(Setting).filter(
+        Setting.key.in_([
+            f"classroom:{user_id}:google_session_cookies",
+            f"classroom:{user_id}:google_user_agent",
+        ])
+    ).delete(synchronize_session=False)
+    db.commit()
+    return {"status": "disconnected", "has_synced_session": False}
 
 
 class ClaudeCookieSyncRequest(BaseModel):
@@ -2539,7 +2676,7 @@ def get_solution_status(
 ):
     """Get AI solution generation status, content, and linked Google Doc."""
     from app.db.models import AssignmentSolution, Submission
-    _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
+    assignment = _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
     if not solution:
         return {"status": "not_started"}
@@ -2616,7 +2753,6 @@ def get_solution_status(
             solution.validation_errors = None
             db.commit()
 
-    assignment = _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
     has_content = bool(solution.validated_content or solution.draft_content)
     is_generating = bool(assignment and assignment.status == AssignmentStatus.GENERATING)
     is_completed = bool(solution.validated_content) and not is_generating

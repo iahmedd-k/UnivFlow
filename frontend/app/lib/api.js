@@ -439,6 +439,15 @@ export const api = {
     method: 'DELETE',
   }),
 
+  syncClassroomSession: async (cookies, userAgent = null, token = null) => fetchFromApi('/classroom/gcr-browser/sync-session', token, {
+    method: 'POST',
+    body: JSON.stringify({ cookies, user_agent: userAgent }),
+  }),
+
+  disconnectClassroomSession: async (token = null) => fetchFromApi('/classroom/gcr-browser/session', token, {
+    method: 'DELETE',
+  }),
+
   getClaudeBrowserStatus: async (token = null) => fetchFromApi('/classroom/claude-browser/status', token, { noCache: true }),
 
   setAutomaticClaudeSolving: async (enabled, token = null) => fetchFromApi('/classroom/claude-browser/automatic-solving', token, {

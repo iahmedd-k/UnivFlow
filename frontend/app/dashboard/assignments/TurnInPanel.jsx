@@ -32,6 +32,7 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
   const [classroomBrowserBusy, setClassroomBrowserBusy] = useState(false);
   const [classroomViewerUrl, setClassroomViewerUrl] = useState('');
   const [classroomProfileExists, setClassroomProfileExists] = useState(false);
+  const [hasSyncedSession, setHasSyncedSession] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -78,7 +79,10 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
       try {
         const token = getToken ? await getToken() : null;
         const state = await api.getClassroomBrowserStatus(token);
-        if (!cancelled) setClassroomProfileExists(Boolean(state?.profile_exists));
+        if (!cancelled) {
+          setClassroomProfileExists(Boolean(state?.profile_exists));
+          setHasSyncedSession(Boolean(state?.has_synced_session));
+        }
       } catch (e) {
         console.error('Failed to load Google Classroom browser status:', e);
       }
@@ -261,6 +265,12 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
             <Icon name="upload" size={16} />
             <span>{quickSubmitting ? 'Submitting Doc & ZIP to GCR…' : submitted ? 'Turned in to Google Classroom' : '⚡ Quick Turn In (Doc + ZIP)'}</span>
           </button>
+          {hasSyncedSession && (
+            <div className="mt-2 flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs text-emerald-800">
+              <Icon name="checkCircle" size={13} className="text-emerald-600 shrink-0" />
+              <span>Background Classroom Session Active (Autonomous turn-in ready)</span>
+            </div>
+          )}
           <button
             type="button"
             onClick={connectClassroomBrowser}

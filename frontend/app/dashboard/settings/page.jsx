@@ -122,6 +122,8 @@ export default function SettingsPage() {
   const [googleConnected, setGoogleConnected] = useState(false);
   const [googleEmail, setGoogleEmail] = useState('');
   const [googleBusy, setGoogleBusy] = useState(false);
+  const [gcrBrowserStatus, setGcrBrowserStatus] = useState(null);
+  const [gcrBusy, setGcrBusy] = useState(false);
 
   const loadGoogleAuth = useCallback(async () => {
     try {
@@ -134,15 +136,33 @@ export default function SettingsPage() {
     }
   }, [getToken]);
 
+  const loadGcrStatus = useCallback(async () => {
+    try {
+      const token = await getToken();
+      const status = await api.getClassroomBrowserStatus(token);
+      setGcrBrowserStatus(status);
+    } catch (err) {
+      console.error('Failed to load Google Classroom browser status:', err);
+    }
+  }, [getToken]);
+
   useEffect(() => {
     let active = true;
     const fetchGoogle = async () => {
       try {
         const token = await getToken();
-        const status = await api.getAuthStatus(token);
+        const [status, gcr] = await Promise.all([
+          api.getAuthStatus(token).catch(() => null),
+          api.getClassroomBrowserStatus(token).catch(() => null),
+        ]);
         if (active) {
-          setGoogleConnected(Boolean(status?.google_connected));
-          setGoogleEmail(status?.google_email || '');
+          if (status) {
+            setGoogleConnected(Boolean(status?.google_connected));
+            setGoogleEmail(status?.google_email || '');
+          }
+          if (gcr) {
+            setGcrBrowserStatus(gcr);
+          }
         }
       } catch (err) {
         console.error('Failed to load Google auth status:', err);
@@ -151,6 +171,23 @@ export default function SettingsPage() {
     fetchGoogle();
     return () => { active = false; };
   }, [getToken]);
+
+  const handleDisconnectGcrSession = async () => {
+    if (!window.confirm('Disconnect your synced Google Classroom background session? Automatic background turn-in will need to be re-synced.')) return;
+    setGcrBusy(true);
+    setError('');
+    setSuccess('');
+    try {
+      const token = await getToken();
+      await api.disconnectClassroomSession(token);
+      setSuccess('Google Classroom background session disconnected.');
+      await loadGcrStatus();
+    } catch (err) {
+      setError(err.message || 'Could not disconnect Google Classroom background session.');
+    } finally {
+      setGcrBusy(false);
+    }
+  };
 
   const handleConnectGoogle = async () => {
     setGoogleBusy(true);
@@ -942,6 +979,39 @@ export default function SettingsPage() {
                 )}
               </div>
             </article>
+
+            {/* Sub-item: Background Autonomous Turn-In Session */}
+            <div className="my-2 rounded-lg border border-[#e8e7f8] bg-[#faf9fe] p-3 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <strong className="text-xs font-semibold text-[#483ba6]">Background Turn-In Session</strong>
+                  {gcrBrowserStatus?.has_synced_session ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-[#f3fbf7] px-2 py-0.5 text-[11px] font-semibold text-[#3a8369] border border-[#d8eee4]">
+                      <span className="size-1.5 rounded-full bg-[#3a8369]" /> Synced (Autonomous)
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-[#fff8eb] px-2 py-0.5 text-[11px] font-semibold text-[#9a6514] border border-[#fce3b8]">
+                      <span className="size-1.5 rounded-full bg-[#9a6514]" /> Needs 1-Click Sync
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-xs text-[#686c80] max-w-xl">
+                  {gcrBrowserStatus?.has_synced_session
+                    ? 'Your Google Classroom session is securely stored on the server. Uniflow will automatically attach deliverables and turn in assignments before the deadline—even if your laptop is closed.'
+                    : 'Open the Uniflow Academic Companion extension and click "⚡ Sync Classroom" once to enable autonomous background turn-in.'}
+                </p>
+              </div>
+              {gcrBrowserStatus?.has_synced_session && (
+                <button
+                  type="button"
+                  onClick={handleDisconnectGcrSession}
+                  disabled={gcrBusy}
+                  className="shrink-0 rounded-md border border-[#e0c4c4] bg-white px-2.5 py-1 text-xs font-semibold text-[#a04a4a] hover:bg-[#fff5f5] disabled:opacity-55"
+                >
+                  {gcrBusy ? 'Disconnecting…' : 'Disconnect Session'}
+                </button>
+              )}
+            </div>
 
             {/* 2. University Portal (Air University) */}
             <article className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3.5">

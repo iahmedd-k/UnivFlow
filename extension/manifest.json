@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Uniflow Claude Companion",
-  "version": "1.0.0",
-  "description": "1-Click Claude.ai session synchronization for Uniflow autonomous assignment solver.",
+  "name": "Uniflow Academic Companion",
+  "version": "1.1.0",
+  "description": "1-Click session synchronization for Claude.ai, Google Classroom, and University Portal.",
   "permissions": [
     "cookies",
     "storage",

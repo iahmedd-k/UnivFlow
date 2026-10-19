@@ -1,10 +1,16 @@
 let foundSessionKey = null;
 let foundPortalCookie = null;
+let foundGcrCookies = null;
 
 const sessionStatus = document.getElementById("sessionStatus");
 const cookieBox = document.getElementById("cookieBox");
 const syncBtn = document.getElementById("syncBtn");
 const copyBtn = document.getElementById("copyBtn");
+
+const gcrSessionStatus = document.getElementById("gcrSessionStatus");
+const gcrCookieBox = document.getElementById("gcrCookieBox");
+const syncGcrBtn = document.getElementById("syncGcrBtn");
+const copyGcrBtn = document.getElementById("copyGcrBtn");
 
 const portalSessionStatus = document.getElementById("portalSessionStatus");
 const portalCookieBox = document.getElementById("portalCookieBox");
@@ -43,6 +49,53 @@ chrome.cookies.get({ url: "https://claude.ai", name: "sessionKey" }, (cookie) =>
   }
 });
 
+// Check Google Classroom cookies
+chrome.cookies.getAll({ domain: "google.com" }, (gCookies) => {
+  chrome.cookies.getAll({ url: "https://classroom.google.com" }, (cCookies) => {
+    const combined = [...(gCookies || []), ...(cCookies || [])];
+    const unique = [];
+    const seen = new Set();
+    for (const c of combined) {
+      const key = `${c.name}@${c.domain}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        unique.push(c);
+      }
+    }
+
+    const authCookies = unique.filter(c => {
+      const n = c.name;
+      return (
+        n === "OSID" || n === "SID" || n === "HSID" || n === "SSID" ||
+        n === "APISID" || n === "SAPISID" || n === "SIDCC" ||
+        n.startsWith("__Secure-")
+      );
+    });
+
+    if (authCookies.length > 0) {
+      foundGcrCookies = authCookies.map(c => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+        secure: c.secure,
+        httpOnly: c.httpOnly,
+        sameSite: c.sameSite,
+      }));
+      gcrSessionStatus.textContent = "Active Session";
+      gcrSessionStatus.className = "badge badge-ok";
+      const osid = authCookies.find(c => c.name === "OSID" || c.name === "SID");
+      gcrCookieBox.textContent = osid ? `${osid.name}=${osid.value.slice(0, 14)}… (${authCookies.length} cookies)` : `${authCookies.length} auth cookies found`;
+      syncGcrBtn.disabled = false;
+    } else {
+      gcrSessionStatus.textContent = "Not Signed In";
+      gcrSessionStatus.className = "badge badge-warn";
+      gcrCookieBox.innerHTML = 'Log into <a href="https://classroom.google.com" target="_blank">Classroom</a> first.';
+      syncGcrBtn.disabled = true;
+    }
+  });
+});
+
 // Check University Portal cookies
 chrome.cookies.getAll({ domain: "portals.au.edu.pk" }, (cookies) => {
   if (cookies && cookies.length > 0) {
@@ -71,6 +124,20 @@ copyBtn.addEventListener("click", () => {
     showNotice("✅ sessionKey copied to clipboard! Paste it into Uniflow Settings.");
   }).catch(() => {
     showNotice("Could not copy automatically. Value: " + foundSessionKey);
+  });
+});
+
+// Copy Google Classroom cookies
+copyGcrBtn.addEventListener("click", () => {
+  if (!foundGcrCookies || foundGcrCookies.length === 0) {
+    showNotice("No active Google Classroom cookies found. Please log into classroom.google.com first.", true);
+    return;
+  }
+  const summary = JSON.stringify(foundGcrCookies, null, 2);
+  navigator.clipboard.writeText(summary).then(() => {
+    showNotice(`✅ ${foundGcrCookies.length} Google Classroom cookies copied to clipboard!`);
+  }).catch(() => {
+    showNotice("Could not copy automatically.");
   });
 });
 
@@ -123,6 +190,45 @@ syncBtn.addEventListener("click", async () => {
   } finally {
     syncBtn.disabled = false;
     syncBtn.textContent = "⚡ Sync Claude";
+  }
+});
+
+// Sync Google Classroom session
+syncGcrBtn.addEventListener("click", async () => {
+  if (!foundGcrCookies || foundGcrCookies.length === 0) return;
+  const baseUrl = apiUrlInput.value.trim().replace(/\/+$/, "");
+  const token = authTokenInput.value.trim();
+  if (!baseUrl) {
+    showNotice("Please enter your Uniflow backend API URL.", true);
+    return;
+  }
+  chrome.storage.local.set({ uniflowApiUrl: baseUrl, uniflowAuthToken: token });
+
+  syncGcrBtn.disabled = true;
+  syncGcrBtn.textContent = "Syncing…";
+
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = token.startsWith("Bearer ") ? token : `Bearer ${token}`;
+
+    const resp = await fetch(`${baseUrl}/classroom/gcr-browser/sync-session`, {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({ cookies: foundGcrCookies, user_agent: navigator.userAgent })
+    });
+
+    if (!resp.ok) {
+      const errJson = await resp.json().catch(() => ({}));
+      throw new Error(errJson.detail || `HTTP ${resp.status}`);
+    }
+
+    const result = await resp.json();
+    showNotice("✅ " + (result.message || "Google Classroom session synced to Uniflow!"));
+  } catch (err) {
+    showNotice("Sync failed: " + err.message, true);
+  } finally {
+    syncGcrBtn.disabled = false;
+    syncGcrBtn.textContent = "⚡ Sync Classroom";
   }
 });
 
