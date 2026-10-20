@@ -37,47 +37,215 @@ def _wait_for_picker_frame(page, timeout_seconds: float = 25.0):
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         for frame in page.frames:
-            if "drive.google.com" in (frame.url or "") and "picker" in (frame.url or ""):
+            url = (frame.url or "").lower()
+            if "picker" in url and ("google.com" in url or "drive" in url or "docs" in url):
+                # If the frame has nested child frames, return the one containing the picker document
+                for child in frame.child_frames:
+                    if "picker" in (child.url or "").lower():
+                        return child
                 return frame
         page.wait_for_timeout(250)
     raise ClassroomBrowserSubmissionError("Google Drive picker did not open in Classroom.")
 
 
 def _select_drive_file(frame, file_id: str, display_name: str) -> None:
-    search = frame.get_by_role("combobox", name=re.compile("Search in Drive", re.I))
-    # Search by the unique Drive ID to avoid selecting one of the duplicate
-    # filenames often produced by retries.
-    search.fill(f"https://drive.google.com/open?id={quote(file_id, safe='')}")
-    search.press("Enter")
-    options = frame.get_by_role("option")
-    deadline = time.monotonic() + 18.0
+    """Select the requested Drive file inside the Google Drive picker dialog.
+    
+    Prefers matching directly against the 'Recent' tab items (open by default, where
+    the newly generated submission file appears immediately) before falling back to search.
+    """
+    clean_name = (display_name or "").strip()
+    base_name = clean_name.rsplit(".", 1)[0] if "." in clean_name else clean_name
+
+    # Give the picker iframe a few seconds to populate its items
+    deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         try:
-            if options.count() >= 1:
+            if frame.locator('[role="option"], [role="gridcell"], [role="row"], div[data-id], .picker-dataview-item').count() > 0:
                 break
         except Exception:
             pass
-        time.sleep(0.25)
-    if options.count() == 0:
-        # Some Drive picker versions treat a pasted URL as a title search.
-        # Retry with the expected name.
-        search.fill(display_name)
-        search.press("Enter")
-        deadline = time.monotonic() + 12.0
-        while time.monotonic() < deadline:
-            if options.count() >= 1:
-                break
-            time.sleep(0.25)
-    if options.count() == 0:
-        # Check Recent list directly for the filename
-        recent_item = frame.locator(f'[role="option"]:has-text("{display_name}"), div[role="row"]:has-text("{display_name}")')
-        if recent_item.count() >= 1:
-            recent_item.first.click()
+        time.sleep(0.3)
+
+    # 1. Check for Drive file ID match in item attributes (data-id, data-item-id)
+    if file_id:
+        try:
+            id_loc = frame.locator(f'[data-id="{file_id}"], [data-item-id="{file_id}"]')
+            if id_loc.count() > 0 and id_loc.first.is_visible():
+                id_loc.first.click(force=True)
+                logger.info("Selected Drive file by ID %s in picker.", file_id)
+                return
+        except Exception as e:
+            logger.debug("Drive ID selection check: %s", e)
+
+    # 2. Check if the file is visible in the 'Recent' list (default tab)
+    recent_selectors = [
+        f'[role="option"]:has-text("{clean_name}")',
+        f'[role="gridcell"]:has-text("{clean_name}")',
+        f'[role="row"]:has-text("{clean_name}")',
+        f'.picker-dataview-item:has-text("{clean_name}")',
+        f'div[title*="{clean_name}" i]',
+        f'div[aria-label*="{clean_name}" i]',
+    ]
+    if base_name and base_name != clean_name and len(base_name) > 3:
+        recent_selectors.extend([
+            f'[role="option"]:has-text("{base_name}")',
+            f'[role="gridcell"]:has-text("{base_name}")',
+            f'[role="row"]:has-text("{base_name}")',
+            f'div[title*="{base_name}" i]',
+            f'div[aria-label*="{base_name}" i]',
+        ])
+
+    for sel in recent_selectors:
+        try:
+            cand = frame.locator(sel)
+            if cand.count() > 0 and cand.first.is_visible():
+                cand.first.click(force=True)
+                logger.info("Found and selected Drive file '%s' directly in Recent list via %s.", clean_name, sel)
+                return
+        except Exception:
+            continue
+
+    # 3. Direct text match
+    try:
+        text_loc = frame.get_by_text(clean_name, exact=False)
+        if text_loc.count() > 0 and text_loc.first.is_visible():
+            text_loc.first.click(force=True)
+            logger.info("Selected Drive file '%s' via text match in picker.", clean_name)
             return
-        raise ClassroomBrowserSubmissionError(
-            f"Could not uniquely identify {display_name} in the user's Drive."
-        )
-    options.first.click()
+    except Exception:
+        pass
+
+    # 4. Search input fallback (with rapid detection, never hanging 30s)
+    search_input = None
+    for sel in [
+        'input[aria-label*="Search" i]',
+        'input[placeholder*="Search" i]',
+        'input[type="search"]',
+        '[role="searchbox"]',
+        'input.picker-search-input',
+        'input[type="text"]',
+    ]:
+        try:
+            cand = frame.locator(sel)
+            for i in range(cand.count()):
+                item = cand.nth(i)
+                if item.is_visible():
+                    search_input = item
+                    break
+        except Exception:
+            continue
+        if search_input:
+            break
+
+    # If search input is hidden behind a search toggle button
+    if not search_input:
+        for icon_sel in [
+            'button[aria-label*="Search" i]',
+            '[role="button"][aria-label*="Search" i]',
+            '.picker-search-icon',
+        ]:
+            try:
+                icon = frame.locator(icon_sel)
+                if icon.count() > 0 and icon.first.is_visible():
+                    icon.first.click(force=True)
+                    time.sleep(0.4)
+                    for sel in ['input[aria-label*="Search" i]', 'input[placeholder*="Search" i]', 'input[type="text"]']:
+                        cand = frame.locator(sel)
+                        if cand.count() > 0 and cand.first.is_visible():
+                            search_input = cand.first
+                            break
+            except Exception:
+                pass
+            if search_input:
+                break
+
+    if search_input:
+        query = clean_name or base_name
+        logger.info("Searching Drive picker for: %s", query)
+        try:
+            search_input.click(force=True)
+            search_input.fill(query)
+            search_input.press("Enter")
+            time.sleep(1.0)
+
+            search_deadline = time.monotonic() + 6.0
+            while time.monotonic() < search_deadline:
+                for sel in recent_selectors + ['[role="option"]', '[role="gridcell"]', '[role="row"]', '.picker-dataview-item']:
+                    cand = frame.locator(sel)
+                    if cand.count() > 0 and cand.first.is_visible():
+                        cand.first.click(force=True)
+                        logger.info("Selected Drive file '%s' from search results.", clean_name)
+                        return
+                time.sleep(0.3)
+        except Exception as se:
+            logger.warning("Drive search in picker failed: %s", se)
+
+    # 5. Last resort: select first visible option if only one available
+    try:
+        first_option = frame.locator('[role="option"], [role="gridcell"], [role="row"]').first
+        if first_option.count() > 0 and first_option.is_visible():
+            first_option.click(force=True)
+            logger.info("Selected top available item in Drive picker as fallback.")
+            return
+    except Exception:
+        pass
+
+    raise ClassroomBrowserSubmissionError(
+        f"Could not find or select '{display_name}' in Google Drive picker. Please check your Google Drive."
+    )
+
+
+def _confirm_picker_selection(picker) -> None:
+    """Find and click the confirmation button (Insert / Select / Add) in the Drive picker."""
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        for sel in [
+            'button:has-text("Insert")',
+            'button:has-text("Select")',
+            'button:has-text("Add")',
+            '[role="button"]:has-text("Insert")',
+            '[role="button"]:has-text("Select")',
+            '[role="button"]:has-text("Add")',
+            'button[aria-label*="Insert" i]',
+            'button[aria-label*="Select" i]',
+            'button[aria-label*="Add" i]',
+            'div[role="button"][name="Insert"]',
+            'div[role="button"][name="Select"]',
+        ]:
+            candidates = picker.locator(sel)
+            count = candidates.count()
+            for i in range(count):
+                btn = candidates.nth(i)
+                try:
+                    if btn.is_visible() and btn.is_enabled():
+                        btn.click(force=True)
+                        logger.info("Confirmed Drive picker selection via button: %s", sel)
+                        return
+                except Exception:
+                    pass
+        time.sleep(0.3)
+
+    # JavaScript fallback inside picker frame
+    try:
+        clicked = picker.evaluate("""() => {
+            const all = Array.from(document.querySelectorAll('button, [role="button"], div[tabindex="0"]'));
+            for (const b of all) {
+                const txt = (b.innerText || b.getAttribute('aria-label') || '').trim();
+                if (/^(Insert|Select|Add)$/i.test(txt) && !b.disabled && b.getAttribute('aria-disabled') !== 'true') {
+                    b.click();
+                    return true;
+                }
+            }
+            return false;
+        }""")
+        if clicked:
+            logger.info("Confirmed Drive picker selection via JS evaluation fallback.")
+            return
+    except Exception as je:
+        logger.warning("Picker JS confirmation fallback error: %s", je)
+
+    logger.warning("No enabled confirmation button found in picker. Double-clicking item may have completed selection.")
 
 
 def submit_drive_files(
@@ -215,18 +383,34 @@ def submit_drive_files(
             logger.info("Assignment %s is already turned in on Google Classroom for user %s", coursework_id, user_id)
             return {"attached": len(files), "turned_in": True, "already_submitted": True}
 
+        # Filter to files that actually have valid Drive IDs
+        valid_files = [
+            f for f in files
+            if isinstance(f, dict) and f.get("id") and str(f.get("id")).strip()
+        ]
+
+        def _is_file_in_text(fname: str, txt: str) -> bool:
+            if not fname:
+                return True
+            if fname.lower() in txt.lower():
+                return True
+            base = fname.rsplit(".", 1)[0] if "." in fname else fname
+            return (base.lower() in txt.lower()) if len(base) > 3 else False
+
         # 2. Check if files are already attached
         attached_count = 0
-        all_attached = all(item["name"] in body_text for item in files)
-        if all_attached:
-            attached_count = len(files)
-        else:
+        all_attached = all(_is_file_in_text(item["name"], body_text) for item in valid_files) if valid_files else True
+        if all_attached and valid_files:
+            attached_count = len(valid_files)
+        elif valid_files:
             # Look for the Add/Create button using multiple robust selectors
             add_button = None
             for sel in [
                 'button:has-text("Add or create")',
+                '[role="button"]:has-text("Add or create")',
                 '[aria-label*="Add or create" i]',
                 'button:has-text("Add work")',
+                '[role="button"]:has-text("Add work")',
                 '[aria-label*="Add work" i]',
                 'button:has-text("+ Add")',
                 'button:has-text("Add")',
@@ -243,7 +427,7 @@ def submit_drive_files(
 
             if not add_button:
                 # If neither Add/Create nor Turn in is available, check why
-                turn_in_candidates = page.locator('button:has-text("Turn in"), button:has-text("Mark as done")')
+                turn_in_candidates = page.locator('button:has-text("Turn in"), button:has-text("Mark as done"), [role="button"]:has-text("Turn in"), [role="button"]:has-text("Mark as done")')
                 has_turn_in = any(turn_in_candidates.nth(i).is_visible() for i in range(turn_in_candidates.count())) if turn_in_candidates.count() > 0 else False
 
                 if not has_turn_in:
@@ -251,59 +435,54 @@ def submit_drive_files(
                     raise ClassroomBrowserSubmissionError(
                         "The assignment does not expose an 'Add or create' control. Check if the assignment deadline has passed, or if it is already submitted."
                     )
-                # If Turn In exists without Add control (e.g., question assignment or student already has files attached):
                 logger.info("Assignment has no attachment control but 'Turn in' / 'Mark as done' is available.")
-            add_button.click(force=True)
-            page.wait_for_timeout(800)
+            else:
+                add_button.click(force=True)
+                page.wait_for_timeout(800)
 
-            # Click Google Drive option in dropdown menu
-            drive_option = None
-            for sel in [
-                '[role="menuitem"]:has-text("Google Drive")',
-                'li[role="menuitem"]:has-text("Google Drive")',
-                'li:has-text("Google Drive")',
-                '[aria-label*="Google Drive" i]',
-                'text="Google Drive"',
-            ]:
-                loc = page.locator(sel)
-                count = loc.count()
-                for i in range(count):
-                    cand = loc.nth(i)
-                    if cand.is_visible():
-                        drive_option = cand
+                # Click Google Drive option in dropdown menu
+                drive_option = None
+                for sel in [
+                    '[role="menuitem"]:has-text("Google Drive")',
+                    'li[role="menuitem"]:has-text("Google Drive")',
+                    'li:has-text("Google Drive")',
+                    '[aria-label*="Google Drive" i]',
+                    'text="Google Drive"',
+                ]:
+                    loc = page.locator(sel)
+                    count = loc.count()
+                    for i in range(count):
+                        cand = loc.nth(i)
+                        if cand.is_visible():
+                            drive_option = cand
+                            break
+                    if drive_option:
                         break
-                if drive_option:
-                    break
 
-            if not drive_option:
-                raise ClassroomBrowserSubmissionError("Classroom did not show 'Google Drive' in the attachment dropdown.")
+                if not drive_option:
+                    raise ClassroomBrowserSubmissionError("Classroom did not show 'Google Drive' in the attachment dropdown.")
 
-            try:
-                drive_option.click(force=True, timeout=5000)
-            except Exception:
-                drive_option.evaluate("el => el.closest('[role=\"menuitem\"]')?.click() || el.click()")
+                try:
+                    drive_option.click(force=True, timeout=5000)
+                except Exception:
+                    drive_option.evaluate("el => el.closest('[role=\"menuitem\"]')?.click() || el.click()")
 
-            picker = _wait_for_picker_frame(page)
-            for item in files:
-                _select_drive_file(picker, item["id"], item["name"])
-            add_files_button = picker.locator('button:has-text("Add"), button:has-text("Insert"), [aria-label*="Add" i]').first
-            if add_files_button.count() == 0:
-                add_files_button = picker.get_by_role("button", name="Add", exact=True)
-            if add_files_button.count() != 1 or not add_files_button.is_enabled():
-                raise ClassroomBrowserSubmissionError("Classroom did not enable Add for the selected Drive files.")
-            add_files_button.click(force=True)
+                picker = _wait_for_picker_frame(page)
+                for item in valid_files:
+                    _select_drive_file(picker, item["id"], item["name"])
+                _confirm_picker_selection(picker)
 
-            # Wait for files to appear in student's work list
-            deadline = time.monotonic() + 12.0
-            while time.monotonic() < deadline:
-                page.wait_for_timeout(600)
-                updated_text = page.locator("body").inner_text()
-                attached_count = sum(1 for item in files if item["name"] in updated_text)
-                if attached_count == len(files):
-                    break
+                # Wait for files to appear in student's work list
+                deadline = time.monotonic() + 12.0
+                while time.monotonic() < deadline:
+                    page.wait_for_timeout(600)
+                    updated_text = page.locator("body").inner_text()
+                    attached_count = sum(1 for item in valid_files if _is_file_in_text(item["name"], updated_text))
+                    if attached_count == len(valid_files):
+                        break
 
-            if attached_count != len(files):
-                logger.warning("Could not verify all attached files. Text snippet: %r", updated_text[:300])
+                if attached_count != len(valid_files):
+                    logger.warning("Could not verify all attached files. Text snippet: %r", updated_text[:300])
 
         # 3. Final submission check: click Turn In / Mark as Done
         body_text = page.locator("body").inner_text()
@@ -313,15 +492,21 @@ def submit_drive_files(
         action_btn = None
         for sel in [
             'button:has-text("Turn in")',
+            '[role="button"]:has-text("Turn in")',
             'button:has-text("Hand in")',
+            '[role="button"]:has-text("Hand in")',
             'button:has-text("Mark as done")',
+            '[role="button"]:has-text("Mark as done")',
         ]:
             loc = page.locator(sel)
             for i in range(loc.count()):
                 cand = loc.nth(i)
-                if cand.is_visible() and cand.is_enabled():
-                    action_btn = cand
-                    break
+                try:
+                    if cand.is_visible() and cand.is_enabled():
+                        action_btn = cand
+                        break
+                except Exception:
+                    pass
             if action_btn:
                 break
 
@@ -333,13 +518,32 @@ def submit_drive_files(
         page.wait_for_timeout(800)
 
         # Confirm turn in dialog if prompted
-        confirmation_dialog = page.get_by_role("dialog").last
-        if confirmation_dialog.count() and confirmation_dialog.is_visible():
-            confirmation = confirmation_dialog.get_by_role(
-                "button", name=re.compile(r"^(Turn in|Mark as done|Submit|Hand in)$", re.I)
-            ).last
-            if confirmation.count() and confirmation.is_enabled():
-                confirmation.click(force=True)
+        dialog_deadline = time.monotonic() + 5.0
+        while time.monotonic() < dialog_deadline:
+            confirmed = False
+            for sel in [
+                'div[role="dialog"] button:has-text("Turn in")',
+                'div[role="dialog"] [role="button"]:has-text("Turn in")',
+                'div[role="dialog"] button:has-text("Mark as done")',
+                'div[role="dialog"] [role="button"]:has-text("Mark as done")',
+                'div[role="dialog"] button:has-text("Submit")',
+                'div[role="dialog"] button:has-text("Hand in")',
+                '[role="dialog"] button:has-text("Turn in")',
+            ]:
+                loc = page.locator(sel)
+                if loc.count() > 0:
+                    cand = loc.last
+                    try:
+                        if cand.is_visible() and cand.is_enabled():
+                            cand.click(force=True)
+                            logger.info("Confirmed turn in dialog via: %s", sel)
+                            confirmed = True
+                            break
+                    except Exception:
+                        pass
+            if confirmed:
+                break
+            time.sleep(0.3)
 
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
