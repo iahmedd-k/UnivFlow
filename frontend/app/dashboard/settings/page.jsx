@@ -1098,19 +1098,30 @@ export default function SettingsPage() {
                   <span className="grid size-6 place-items-center rounded-md bg-violet-light text-violet font-bold text-[11px]">U</span>
                   <strong className="text-xs font-semibold text-[#3b318c]">Uniflow Academic Companion Extension</strong>
                 </div>
-                {extensionDetected ? (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800 border border-emerald-200">
-                    <span className="size-1.5 rounded-full bg-emerald-600 animate-pulse" /> Active in Chrome
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setShowExtensionHelp(true)}
-                    className="text-[11px] font-semibold text-violet underline hover:text-violet-dark self-start"
+                <div className="flex items-center gap-2">
+                  <a
+                    href="/uniflow-companion.zip"
+                    download="uniflow-companion.zip"
+                    className="inline-flex items-center gap-1 rounded-md border border-line bg-white px-2.5 py-1 text-[11px] font-semibold text-violet hover:bg-violet-light/40 transition"
+                    title="Download the updated companion extension .zip package"
                   >
-                    Setup Extension (1-Click Sync)
-                  </button>
-                )}
+                    <Icon name="download" size={12} />
+                    <span>📥 Download Pack (.zip)</span>
+                  </a>
+                  {extensionDetected ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800 border border-emerald-200">
+                      <span className="size-1.5 rounded-full bg-emerald-600 animate-pulse" /> Active in Chrome
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowExtensionHelp(true)}
+                      className="text-[11px] font-semibold text-violet underline hover:text-violet-dark self-start"
+                    >
+                      Setup Guide
+                    </button>
+                  )}
+                </div>
               </div>
 
               <p className="text-[11px] text-[#636779] leading-relaxed">
