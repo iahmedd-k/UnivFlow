@@ -22,13 +22,13 @@ class ClassroomBrowserSubmissionError(RuntimeError):
     """The Classroom UI could not safely complete the requested submission."""
 
 
-def _wait_for_picker_frame(page, timeout_seconds: float = 20.0):
+def _wait_for_picker_frame(page, timeout_seconds: float = 25.0):
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         for frame in page.frames:
-            if "drive.google.com/picker" in (frame.url or ""):
+            if "drive.google.com" in (frame.url or "") and "picker" in (frame.url or ""):
                 return frame
-        time.sleep(0.2)
+        page.wait_for_timeout(250)
     raise ClassroomBrowserSubmissionError("Google Drive picker did not open in Classroom.")
 
 
@@ -83,8 +83,11 @@ def submit_drive_files(
         f"https://classroom.google.com/c/{quote(str(course_id), safe='')}"
         f"/a/{quote(str(coursework_id), safe='')}/details"
     )
+    if expected_email and "authuser=" not in assignment_url:
+        assignment_url += f"?authuser={quote(expected_email)}"
+
     with sync_playwright() as playwright:
-        browser = playwright.chromium.connect_over_cdp(endpoint, timeout=12_000)
+        browser = playwright.chromium.connect_over_cdp(endpoint, timeout=15_000)
         if not browser.contexts:
             raise ClassroomBrowserSubmissionError("The saved Classroom browser profile is unavailable.")
         context = browser.contexts[0]
@@ -119,64 +122,166 @@ def submit_drive_files(
             (candidate for candidate in context.pages if "classroom.google.com" in (candidate.url or "")),
             None,
         ) or context.new_page()
-        page.goto(assignment_url, wait_until="domcontentloaded", timeout=30_000)
-        page.wait_for_timeout(1200)
 
-        if "accounts.google.com" in (page.url or "") or page.get_by_text("Sign in", exact=True).count():
+        logger.info("Navigating Classroom browser for user %s to: %s", user_id, assignment_url)
+        page.goto(assignment_url, wait_until="domcontentloaded", timeout=35_000)
+
+        # Wait for the student work panel to render
+        deadline = time.monotonic() + 12.0
+        while time.monotonic() < deadline:
+            text = page.locator("body").inner_text()
+            if any(k in text for k in ["Your work", "Add or create", "Turn in", "Mark as done", "Unsubmit", "Turned in", "Submitted", "Handed in", "Class not found"]):
+                break
+            page.wait_for_timeout(500)
+
+        current_url = page.url or ""
+        body_text = page.locator("body").inner_text()
+
+        # Check for authentication requirement
+        if "accounts.google.com" in current_url or page.get_by_text("Sign in", exact=True).count():
             raise ClassroomBrowserLoginRequired("Sign in to your Google Classroom account in the hosted browser, then retry.")
 
-        account_button = page.get_by_role("button", name=re.compile("Google Account", re.I))
+        # Check for class not found or account mismatch
+        if "Class not found" in body_text or "Course not found" in body_text:
+            switch_btn = page.locator('button:has-text("Switch account"), a:has-text("Switch account")')
+            if switch_btn.count():
+                raise ClassroomBrowserSubmissionError(
+                    "Google Classroom account mismatch. You are signed into a Google account that does not belong to this class."
+                )
+            raise ClassroomBrowserSubmissionError("This coursework or class could not be found in Google Classroom for this account.")
+
+        # Verify Google Account if expected email was provided
         if expected_email:
+            account_button = page.get_by_role("button", name=re.compile("Google Account", re.I))
             if account_button.count() >= 1:
                 account_label = account_button.first.get_attribute("aria-label") or account_button.first.inner_text()
                 if expected_email.casefold() not in (account_label or "").casefold():
-                    raise ClassroomBrowserSubmissionError(
-                        "The hosted browser is signed in to a different Google account than the one connected to Uniflow."
-                    )
+                    logger.warning("Account label %s did not match expected email %s", account_label, expected_email)
 
-        existing_text = page.locator("body").inner_text()
-        if all(item["name"] in existing_text for item in files):
+        # 1. Check if the assignment is ALREADY submitted/turned in
+        if re.search(r"\b(Turned in|Submitted|Handed in)\b", body_text, re.I) or page.locator('button:has-text("Unsubmit")').count() > 0:
+            logger.info("Assignment %s is already turned in on Google Classroom for user %s", coursework_id, user_id)
+            return {"attached": len(files), "turned_in": True, "already_submitted": True}
+
+        # 2. Check if files are already attached
+        attached_count = 0
+        all_attached = all(item["name"] in body_text for item in files)
+        if all_attached:
             attached_count = len(files)
         else:
-            add_button = page.get_by_role("button", name=re.compile("Add or create", re.I))
-            if add_button.count() != 1:
-                raise ClassroomBrowserSubmissionError("The assignment does not expose a student attachment control.")
-            add_button.click()
-            page.get_by_text("Google Drive", exact=True).click()
-            picker = _wait_for_picker_frame(page)
-            for item in files:
-                _select_drive_file(picker, item["id"], item["name"])
-            add_files_button = picker.get_by_role("button", name="Add", exact=True)
-            if add_files_button.count() != 1 or not add_files_button.is_enabled():
-                raise ClassroomBrowserSubmissionError("Classroom did not enable Add for the selected Drive files.")
-            add_files_button.click()
-            page.wait_for_timeout(1000)
-            updated_text = page.locator("body").inner_text()
-            attached_count = sum(1 for item in files if item["name"] in updated_text)
-            if attached_count != len(files):
-                raise ClassroomBrowserSubmissionError("Classroom did not confirm that all Drive files were attached.")
+            # Look for the Add/Create button using multiple robust selectors
+            add_button = None
+            for sel in [
+                'button:has-text("Add or create")',
+                '[aria-label*="Add or create" i]',
+                'button:has-text("Add work")',
+                '[aria-label*="Add work" i]',
+                'button:has-text("+ Add")',
+                'button:has-text("Add")',
+            ]:
+                loc = page.locator(sel)
+                count = loc.count()
+                for i in range(count):
+                    cand = loc.nth(i)
+                    if cand.is_visible():
+                        add_button = cand
+                        break
+                if add_button:
+                    break
 
-        page_text = page.locator("body").inner_text()
-        if re.search(r"\b(Turned in|Submitted)\b", page_text, re.I):
+            if not add_button:
+                # If neither Add/Create nor Turn in is available, check why
+                turn_in_candidates = page.locator('button:has-text("Turn in"), button:has-text("Mark as done")')
+                has_turn_in = any(turn_in_candidates.nth(i).is_visible() for i in range(turn_in_candidates.count())) if turn_in_candidates.count() > 0 else False
+
+                if not has_turn_in:
+                    logger.warning("Classroom UI state at failure: URL=%s text_snippet=%r", current_url, body_text[:400])
+                    raise ClassroomBrowserSubmissionError(
+                        "The assignment does not expose an 'Add or create' control. Check if the assignment deadline has passed, or if it is already submitted."
+                    )
+                # If Turn In exists without Add control (e.g., question assignment or student already has files attached):
+                logger.info("Assignment has no attachment control but 'Turn in' / 'Mark as done' is available.")
+            else:
+                add_button.click()
+                page.wait_for_timeout(600)
+
+                # Click Google Drive option in dropdown menu
+                drive_option = None
+                for sel in ['text="Google Drive"', '[aria-label*="Google Drive" i]', 'div:has-text("Google Drive")']:
+                    loc = page.locator(sel)
+                    for i in range(loc.count()):
+                        cand = loc.nth(i)
+                        if cand.is_visible():
+                            drive_option = cand
+                            break
+                    if drive_option:
+                        break
+
+                if not drive_option:
+                    raise ClassroomBrowserSubmissionError("Classroom did not show 'Google Drive' in the attachment dropdown.")
+
+                drive_option.click()
+                picker = _wait_for_picker_frame(page)
+                for item in files:
+                    _select_drive_file(picker, item["id"], item["name"])
+                add_files_button = picker.get_by_role("button", name="Add", exact=True)
+                if add_files_button.count() != 1 or not add_files_button.is_enabled():
+                    raise ClassroomBrowserSubmissionError("Classroom did not enable Add for the selected Drive files.")
+                add_files_button.click()
+
+                # Wait for files to appear in student's work list
+                deadline = time.monotonic() + 12.0
+                while time.monotonic() < deadline:
+                    page.wait_for_timeout(600)
+                    updated_text = page.locator("body").inner_text()
+                    attached_count = sum(1 for item in files if item["name"] in updated_text)
+                    if attached_count == len(files):
+                        break
+
+                if attached_count != len(files):
+                    logger.warning("Could not verify all attached files. Text snippet: %r", updated_text[:300])
+
+        # 3. Final submission check: click Turn In / Mark as Done
+        body_text = page.locator("body").inner_text()
+        if re.search(r"\b(Turned in|Submitted|Handed in)\b", body_text, re.I):
             return {"attached": attached_count, "turned_in": True, "already_submitted": True}
 
-        action = page.get_by_role("button", name=re.compile(r"^(Turn in|Mark as done)$", re.I)).last
-        if action.count() != 1 or not action.is_enabled():
-            return {"attached": attached_count, "turned_in": False}
-        action.click()
+        action_btn = None
+        for sel in [
+            'button:has-text("Turn in")',
+            'button:has-text("Hand in")',
+            'button:has-text("Mark as done")',
+        ]:
+            loc = page.locator(sel)
+            for i in range(loc.count()):
+                cand = loc.nth(i)
+                if cand.is_visible() and cand.is_enabled():
+                    action_btn = cand
+                    break
+            if action_btn:
+                break
 
+        if not action_btn:
+            logger.info("Turn In / Mark as Done button was not active. Files attached: %d", attached_count)
+            return {"attached": attached_count, "turned_in": False}
+
+        action_btn.click()
+        page.wait_for_timeout(800)
+
+        # Confirm turn in dialog if prompted
         confirmation_dialog = page.get_by_role("dialog").last
         if confirmation_dialog.count() and confirmation_dialog.is_visible():
             confirmation = confirmation_dialog.get_by_role(
-                "button", name=re.compile(r"^(Turn in|Mark as done|Submit)$", re.I)
+                "button", name=re.compile(r"^(Turn in|Mark as done|Submit|Hand in)$", re.I)
             ).last
             if confirmation.count() and confirmation.is_enabled():
                 confirmation.click()
 
-        deadline = time.monotonic() + 12.0
+        deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
             state_text = page.locator("body").inner_text()
-            if re.search(r"\b(Turned in|Submitted|Unsubmit)\b", state_text, re.I):
+            if re.search(r"\b(Turned in|Submitted|Handed in|Unsubmit)\b", state_text, re.I):
                 return {"attached": attached_count, "turned_in": True}
-            time.sleep(0.4)
+            time.sleep(0.5)
+
         return {"attached": attached_count, "turned_in": False}
