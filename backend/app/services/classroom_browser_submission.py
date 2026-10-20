@@ -253,45 +253,57 @@ def submit_drive_files(
                     )
                 # If Turn In exists without Add control (e.g., question assignment or student already has files attached):
                 logger.info("Assignment has no attachment control but 'Turn in' / 'Mark as done' is available.")
-            else:
-                add_button.click()
-                page.wait_for_timeout(600)
+            add_button.click(force=True)
+            page.wait_for_timeout(800)
 
-                # Click Google Drive option in dropdown menu
-                drive_option = None
-                for sel in ['text="Google Drive"', '[aria-label*="Google Drive" i]', 'div:has-text("Google Drive")']:
-                    loc = page.locator(sel)
-                    for i in range(loc.count()):
-                        cand = loc.nth(i)
-                        if cand.is_visible():
-                            drive_option = cand
-                            break
-                    if drive_option:
+            # Click Google Drive option in dropdown menu
+            drive_option = None
+            for sel in [
+                '[role="menuitem"]:has-text("Google Drive")',
+                'li[role="menuitem"]:has-text("Google Drive")',
+                'li:has-text("Google Drive")',
+                '[aria-label*="Google Drive" i]',
+                'text="Google Drive"',
+            ]:
+                loc = page.locator(sel)
+                count = loc.count()
+                for i in range(count):
+                    cand = loc.nth(i)
+                    if cand.is_visible():
+                        drive_option = cand
                         break
+                if drive_option:
+                    break
 
-                if not drive_option:
-                    raise ClassroomBrowserSubmissionError("Classroom did not show 'Google Drive' in the attachment dropdown.")
+            if not drive_option:
+                raise ClassroomBrowserSubmissionError("Classroom did not show 'Google Drive' in the attachment dropdown.")
 
-                drive_option.click()
-                picker = _wait_for_picker_frame(page)
-                for item in files:
-                    _select_drive_file(picker, item["id"], item["name"])
+            try:
+                drive_option.click(force=True, timeout=5000)
+            except Exception:
+                drive_option.evaluate("el => el.closest('[role=\"menuitem\"]')?.click() || el.click()")
+
+            picker = _wait_for_picker_frame(page)
+            for item in files:
+                _select_drive_file(picker, item["id"], item["name"])
+            add_files_button = picker.locator('button:has-text("Add"), button:has-text("Insert"), [aria-label*="Add" i]').first
+            if add_files_button.count() == 0:
                 add_files_button = picker.get_by_role("button", name="Add", exact=True)
-                if add_files_button.count() != 1 or not add_files_button.is_enabled():
-                    raise ClassroomBrowserSubmissionError("Classroom did not enable Add for the selected Drive files.")
-                add_files_button.click()
+            if add_files_button.count() != 1 or not add_files_button.is_enabled():
+                raise ClassroomBrowserSubmissionError("Classroom did not enable Add for the selected Drive files.")
+            add_files_button.click(force=True)
 
-                # Wait for files to appear in student's work list
-                deadline = time.monotonic() + 12.0
-                while time.monotonic() < deadline:
-                    page.wait_for_timeout(600)
-                    updated_text = page.locator("body").inner_text()
-                    attached_count = sum(1 for item in files if item["name"] in updated_text)
-                    if attached_count == len(files):
-                        break
+            # Wait for files to appear in student's work list
+            deadline = time.monotonic() + 12.0
+            while time.monotonic() < deadline:
+                page.wait_for_timeout(600)
+                updated_text = page.locator("body").inner_text()
+                attached_count = sum(1 for item in files if item["name"] in updated_text)
+                if attached_count == len(files):
+                    break
 
-                if attached_count != len(files):
-                    logger.warning("Could not verify all attached files. Text snippet: %r", updated_text[:300])
+            if attached_count != len(files):
+                logger.warning("Could not verify all attached files. Text snippet: %r", updated_text[:300])
 
         # 3. Final submission check: click Turn In / Mark as Done
         body_text = page.locator("body").inner_text()
@@ -317,7 +329,7 @@ def submit_drive_files(
             logger.info("Turn In / Mark as Done button was not active. Files attached: %d", attached_count)
             return {"attached": attached_count, "turned_in": False}
 
-        action_btn.click()
+        action_btn.click(force=True)
         page.wait_for_timeout(800)
 
         # Confirm turn in dialog if prompted
@@ -327,7 +339,7 @@ def submit_drive_files(
                 "button", name=re.compile(r"^(Turn in|Mark as done|Submit|Hand in)$", re.I)
             ).last
             if confirmation.count() and confirmation.is_enabled():
-                confirmation.click()
+                confirmation.click(force=True)
 
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
