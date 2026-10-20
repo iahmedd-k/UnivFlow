@@ -36,14 +36,54 @@ def _to_gcr_base64_id(raw_id: str) -> str:
 def _wait_for_picker_frame(page, timeout_seconds: float = 25.0):
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
+        # 1. Search page frames
         for frame in page.frames:
             url = (frame.url or "").lower()
             if "picker" in url and ("google.com" in url or "drive" in url or "docs" in url):
-                # If the frame has nested child frames, return the one containing the picker document
+                target = frame
                 for child in frame.child_frames:
                     if "picker" in (child.url or "").lower():
-                        return child
-                return frame
+                        target = child
+                        break
+                # Check if picker frame requires authentication
+                try:
+                    body_text = target.locator("body").inner_text()
+                    if any(k in body_text for k in ["Sign in to access this content", "Sign in to your Google Account", "You must sign in"]):
+                        logger.warning("Google Drive picker requires sign-in: %r", body_text[:200])
+                        raise ClassroomBrowserLoginRequired(
+                            "Your Google Classroom / Google Drive session has expired or requires sign-in. Use the Uniflow extension to sync your Google session, or sign in via Settings."
+                        )
+                except ClassroomBrowserLoginRequired:
+                    raise
+                except Exception:
+                    pass
+                return target
+
+        # 2. Check DOM iframe elements
+        try:
+            picker_iframes = page.locator('iframe[src*="picker"], iframe[class*="picker"], iframe[name*="picker"]')
+            for i in range(picker_iframes.count()):
+                f = picker_iframes.nth(i).content_frame()
+                if f:
+                    url = (f.url or "").lower()
+                    if "picker" in url or "drive.google.com" in url:
+                        try:
+                            body_text = f.locator("body").inner_text()
+                            if any(k in body_text for k in ["Sign in to access this content", "Sign in to your Google Account", "You must sign in"]):
+                                logger.warning("Google Drive picker iframe requires sign-in: %r", body_text[:200])
+                                raise ClassroomBrowserLoginRequired(
+                                    "Your Google Classroom / Google Drive session has expired or requires sign-in. Use the Uniflow extension to sync your Google session, or sign in via Settings."
+                                )
+                        except ClassroomBrowserLoginRequired:
+                            raise
+                        except Exception:
+                            pass
+                        return f
+        except ClassroomBrowserLoginRequired:
+            raise
+        except Exception:
+            pass
+
         page.wait_for_timeout(250)
     raise ClassroomBrowserSubmissionError("Google Drive picker did not open in Classroom.")
 
@@ -56,6 +96,19 @@ def _select_drive_file(frame, file_id: str, display_name: str) -> None:
     """
     clean_name = (display_name or "").strip()
     base_name = clean_name.rsplit(".", 1)[0] if "." in clean_name else clean_name
+
+    # Check if picker frame requires authentication
+    try:
+        body_text = frame.locator("body").inner_text()
+        if any(k in body_text for k in ["Sign in to access this content", "Sign in to your Google Account", "You must sign in"]):
+            logger.warning("Google Drive picker requires sign-in: %r", body_text[:200])
+            raise ClassroomBrowserLoginRequired(
+                "Your Google Classroom / Google Drive session has expired or requires sign-in. Use the Uniflow extension to sync your Google session, or sign in via Settings."
+            )
+    except ClassroomBrowserLoginRequired:
+        raise
+    except Exception:
+        pass
 
     # Give the picker iframe a few seconds to populate its items
     deadline = time.monotonic() + 5.0
@@ -304,7 +357,7 @@ def submit_drive_files(
                             cookie_dict["sameSite"] = "Lax"
                         elif "strict" in ss:
                             cookie_dict["sameSite"] = "Strict"
-                        elif "none" in ss:
+                        elif "none" in ss or "no_restriction" in ss:
                             cookie_dict["sameSite"] = "None"
                         else:
                             cookie_dict.pop("sameSite", None)
@@ -313,8 +366,20 @@ def submit_drive_files(
                     if not cookie_dict.get("domain") and not cookie_dict.get("url"):
                         cookie_dict["domain"] = ".google.com"
                     formatted_cookies.append(cookie_dict)
-                context.add_cookies(formatted_cookies)
-                logger.info("Injected %d Google Classroom session cookies for user %s", len(formatted_cookies), user_id)
+
+                try:
+                    context.add_cookies(formatted_cookies)
+                    logger.info("Injected %d Google Classroom session cookies for user %s", len(formatted_cookies), user_id)
+                except Exception as batch_err:
+                    logger.debug("Batch cookie injection failed (%s), injecting individually...", batch_err)
+                    added = 0
+                    for fc in formatted_cookies:
+                        try:
+                            context.add_cookies([fc])
+                            added += 1
+                        except Exception:
+                            pass
+                    logger.info("Injected %d/%d Google Classroom session cookies for user %s", added, len(formatted_cookies), user_id)
             except Exception as ce:
                 logger.warning("Could not inject Google Classroom cookies for user %s: %s", user_id, ce)
 
@@ -437,77 +502,89 @@ def submit_drive_files(
                     )
                 logger.info("Assignment has no attachment control but 'Turn in' / 'Mark as done' is available.")
             else:
-                # Robust dropdown opener: Click 'Add or create' and poll for menu with retries
-                drive_option = None
-                menu_deadline = time.monotonic() + 15.0
-                last_click = 0.0
-                click_attempt = 0
+                # 1. First check if Google Drive picker is already open
+                picker = None
+                try:
+                    for frame in page.frames:
+                        url = (frame.url or "").lower()
+                        if "picker" in url and "drive.google.com" in url:
+                            picker = _wait_for_picker_frame(page, timeout_seconds=3.0)
+                            break
+                except Exception:
+                    picker = None
 
-                while time.monotonic() < menu_deadline:
-                    # 1. Search for Google Drive option in dropdown menu using all variants
-                    for sel in [
-                        '[data-type="2"]',
-                        'li[data-type="2"]',
-                        '[role="menuitem"][data-type="2"]',
-                        '[role="menuitem"]:has-text("Google Drive")',
-                        'li[role="menuitem"]:has-text("Google Drive")',
-                        'li:has-text("Google Drive")',
-                        '[role="menuitem"]:has-text("Drive")',
-                        'li[role="menuitem"]:has-text("Drive")',
-                        'li:has-text("Drive")',
-                        '[aria-label*="Google Drive" i]',
-                        '[aria-label*="Drive" i]',
-                        '[role="menu"] [role="menuitem"]:first-child',
-                        'div[role="menu"] li:first-child',
-                    ]:
-                        try:
-                            loc = page.locator(sel)
-                            for i in range(loc.count()):
-                                cand = loc.nth(i)
-                                if cand.is_visible():
-                                    drive_option = cand
-                                    break
-                        except Exception:
-                            pass
+                if not picker:
+                    # Robust dropdown opener: Click 'Add or create' and poll for menu with retries
+                    drive_option = None
+                    menu_deadline = time.monotonic() + 15.0
+                    last_click = 0.0
+                    click_attempt = 0
+
+                    while time.monotonic() < menu_deadline:
+                        # Re-click add_button if menu has not rendered
+                        if time.monotonic() - last_click > 1.5:
+                            logger.info("Clicking 'Add or create' button (attempt %d)...", click_attempt + 1)
+                            try:
+                                add_button.click(force=True)
+                            except Exception:
+                                add_button.evaluate("el => el.click()")
+                            last_click = time.monotonic()
+                            click_attempt += 1
+
+                        page.wait_for_timeout(350)
+
+                        # Search for Google Drive option in dropdown menu (scoped strictly to menu items)
+                        for sel in [
+                            '[role="menu"] [role="menuitem"]:has-text("Google Drive")',
+                            '[role="menuitem"]:has-text("Google Drive")',
+                            'li[role="menuitem"]:has-text("Google Drive")',
+                            'li:has-text("Google Drive")',
+                            '[role="menu"] li:has-text("Google Drive")',
+                            '[role="menu"] [role="menuitem"]:has-text("Drive")',
+                            '[role="menuitem"]:has-text("Drive")',
+                            'li[role="menuitem"]:has-text("Drive")',
+                            'li:has-text("Drive")',
+                            '[role="menu"] [role="menuitem"][data-type="2"]',
+                            'li[role="menuitem"][data-type="2"]',
+                            '[role="menu"] [role="menuitem"]:first-child',
+                            'div[role="menu"] li:first-child',
+                        ]:
+                            try:
+                                loc = page.locator(sel)
+                                for i in range(loc.count()):
+                                    cand = loc.nth(i)
+                                    if cand.is_visible():
+                                        drive_option = cand
+                                        break
+                            except Exception:
+                                pass
+                            if drive_option:
+                                break
+
                         if drive_option:
                             break
 
-                    if drive_option:
-                        break
+                    if not drive_option:
+                        logger.warning("Classroom dropdown failed to expose Drive option. Current page text: %r", body_text[:400])
+                        raise ClassroomBrowserSubmissionError("Classroom did not show 'Google Drive' in the attachment dropdown.")
 
-                    # If menu hasn't appeared yet, re-click add_button every 1.5s
-                    if time.monotonic() - last_click > 1.5:
-                        logger.info("Clicking 'Add or create' button (attempt %d)...", click_attempt + 1)
-                        try:
-                            add_button.click(force=True)
-                        except Exception:
-                            add_button.evaluate("el => el.click()")
-                        last_click = time.monotonic()
-                        click_attempt += 1
-
-                    page.wait_for_timeout(350)
-
-                if not drive_option:
-                    logger.warning("Classroom dropdown failed to expose Drive option. Current page text: %r", body_text[:400])
-                    raise ClassroomBrowserSubmissionError("Classroom did not show 'Google Drive' in the attachment dropdown.")
-
-                # Click Drive option (targeting the menuitem / li to avoid pointer interception)
-                logger.info("Found Google Drive option in dropdown. Clicking...")
-                clicked_drive = False
-                try:
-                    drive_option.click(force=True, timeout=3000)
-                    clicked_drive = True
-                except Exception as e:
-                    logger.debug("Standard click on Drive option failed (%s), trying JS click...", e)
-
-                if not clicked_drive:
+                    # Click Drive option (targeting the menuitem / li to avoid pointer interception)
+                    logger.info("Found Google Drive option in dropdown. Clicking...")
+                    clicked_drive = False
                     try:
-                        drive_option.evaluate("el => (el.closest('[role=\"menuitem\"], li') || el).click()")
+                        drive_option.click(force=True, timeout=3000)
                         clicked_drive = True
-                    except Exception as je:
-                        logger.warning("JS click on Drive option failed: %s", je)
+                    except Exception as e:
+                        logger.debug("Standard click on Drive option failed (%s), trying JS click...", e)
 
-                picker = _wait_for_picker_frame(page)
+                    if not clicked_drive:
+                        try:
+                            drive_option.evaluate("el => (el.closest('[role=\"menuitem\"], li') || el).click()")
+                            clicked_drive = True
+                        except Exception as je:
+                            logger.warning("JS click on Drive option failed: %s", je)
+
+                    picker = _wait_for_picker_frame(page)
                 for item in valid_files:
                     _select_drive_file(picker, item["id"], item["name"])
                 _confirm_picker_selection(picker)
