@@ -11,7 +11,7 @@ import { isExtensionInstalled, syncGcrViaExtension, autoVisitAndSyncGcr } from '
  * Turn-in tab: the student attaches the files THEY produced, picks a
  * cover/template if one applies, and submits to Google Classroom.
  */
-export default function TurnInPanel({ assignment, onTurnIn }) {
+export default function TurnInPanel({ assignment, onTurnIn, onStatusChange }) {
   const { getToken } = useAuth();
   const [templates, setTemplates] = useState([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState(null);
@@ -188,6 +188,7 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
       }
       setSubmitted(Boolean(res.turned_in));
       setNotice(res.message || 'Successfully turned in Google Doc and ZIP deliverables to Google Classroom!');
+      if (onStatusChange) onStatusChange();
     } catch (e) {
       setError(e.message || 'Quick turn-in failed. Please try again.');
     } finally {
@@ -240,6 +241,7 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
       await onTurnIn(assignment.id, selectedTemplateId, files.map((f) => f.fileObj), token);
       setSubmitted(true);
       setNotice('Assignment turned in successfully to Google Classroom!');
+      if (onStatusChange) onStatusChange();
     } catch (e) {
       setError(e.message || 'Turn-in failed. Please try again.');
     } finally {
@@ -256,6 +258,7 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
       await api.unsubmitAssignment(assignment.id, token);
       setSubmitted(false);
       setNotice('Assignment unsubmitted on Google Classroom. You can now add or edit your deliverable files and turn in again.');
+      if (onStatusChange) onStatusChange();
     } catch (e) {
       setError(e.message || 'Could not unsubmit assignment on Google Classroom.');
     } finally {
@@ -280,7 +283,7 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
             enabled: scheduleEnabled,
             submit_when_ready: submitWhenReady,
             minutes_before: scheduleMinutesBefore,
-            confirm_submission: scheduleEnabled,
+            confirm_submission: Boolean(scheduleEnabled || submitWhenReady),
           },
           token
         );
@@ -457,7 +460,7 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
                   <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-900 text-xs">
                     <strong className="block font-semibold mb-1">Why is the Extension needed?</strong>
                     <p className="text-[11px] leading-relaxed">
-                      Google blocks Google Account logins on in-app / automated browsers with <em>"This browser or app may not be secure"</em> or continuous captchas.
+                      Google blocks Google Account logins on in-app / automated browsers with <em>&quot;This browser or app may not be secure&quot;</em> or continuous captchas.
                       Since you are <strong>already logged in</strong> to Google Classroom in your normal Chrome browser, the Uniflow Companion securely copies your active session with zero password prompts!
                     </p>
                   </div>

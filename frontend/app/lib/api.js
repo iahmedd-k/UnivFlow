@@ -20,6 +20,18 @@ const ROOT_URL = API_BASE.replace('/api/v1', '');
 const clientCache = new Map();
 const CACHE_TTL_MS = 25000; // 25 seconds
 
+export function clearApiCache(prefix = null) {
+  if (!prefix) {
+    clientCache.clear();
+    return;
+  }
+  for (const [key] of clientCache) {
+    if (key.includes(prefix)) {
+      clientCache.delete(key);
+    }
+  }
+}
+
 export async function fetchFromApi(endpoint, token = null, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
   const url = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
@@ -80,11 +92,20 @@ export async function fetchFromApi(endpoint, token = null, options = {}) {
       if (method === 'GET' && !options.noCache) {
         clientCache.set(cacheKey, { timestamp: Date.now(), data: json });
       } else {
-        // Targeted cache invalidation: only clear related keys rather than wiping all data
+        // Targeted cache invalidation: clear related keys across coupled domains (assignments, classroom, courses, dashboard)
         const endpointPrefix = endpoint.split('/')[1] || '';
+        const relatedPrefixes = new Set([endpointPrefix, 'dashboard']);
+        if (endpointPrefix === 'classroom' || endpointPrefix === 'assignments' || endpointPrefix === 'courses') {
+          relatedPrefixes.add('classroom');
+          relatedPrefixes.add('assignments');
+          relatedPrefixes.add('courses');
+        }
         for (const [key] of clientCache) {
-          if (endpointPrefix && (key.includes(endpointPrefix) || key.includes('dashboard'))) {
-            clientCache.delete(key);
+          for (const prefix of relatedPrefixes) {
+            if (prefix && key.includes(prefix)) {
+              clientCache.delete(key);
+              break;
+            }
           }
         }
       }
@@ -104,6 +125,9 @@ export async function fetchFromApi(endpoint, token = null, options = {}) {
 }
 
 export const api = {
+  // Cache utility
+  clearCache: clearApiCache,
+
   // Health
   checkHealth: async () => {
     try {
@@ -292,7 +316,7 @@ export const api = {
     return fetchFromApi(url, token, options);
   },
 
-  getAssignment: async (id, token = null) => fetchFromApi(`/assignments/${id}`, token),
+  getAssignment: async (id, token = null, options = {}) => fetchFromApi(`/assignments/${id}`, token, options),
 
   // University
   getExams: async (token = null, since = null) => {

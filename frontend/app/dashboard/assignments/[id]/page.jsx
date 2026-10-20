@@ -46,14 +46,14 @@ export default function AssignmentDetailPage() {
   const [error, setError] = useState(null);
   const [tab, setTab] = useState('overview');
 
-  const loadAssignment = useCallback(async () => {
+  const loadAssignment = useCallback(async (options = {}) => {
     setLoading(true);
     setError(null);
     try {
       const token = getToken ? await getToken() : null;
       // Try single endpoint or fallback to filtering list
       try {
-        const single = await api.getAssignment(assignmentId, token);
+        const single = await api.getAssignment(assignmentId, token, options);
         if (single && single.id) {
           setAssignment(single);
           return;
@@ -61,7 +61,7 @@ export default function AssignmentDetailPage() {
       } catch {
         // Fallback to list search
       }
-      const data = await api.getAssignments(null, token);
+      const data = await api.getAssignments(null, token, null, options);
       const found = (data || []).find((a) => String(a.id) === String(assignmentId));
       if (!found) throw new Error('Assignment not found');
       setAssignment(found);
@@ -79,7 +79,7 @@ export default function AssignmentDetailPage() {
 
   const handleTurnIn = async (id, templateId, files, token) => {
     await api.turnInAssignment(id, { template_id: templateId, files }, token);
-    await loadAssignment();
+    await loadAssignment({ noCache: true });
   };
 
   if (loading) {
@@ -367,7 +367,13 @@ export default function AssignmentDetailPage() {
 
           {tab === 'tutor' && <TutorPanel assignment={assignment} />}
           {tab === 'solver' && <SolutionPanel assignment={assignment} />}
-          {tab === 'turnin' && <TurnInPanel assignment={assignment} onTurnIn={handleTurnIn} />}
+          {tab === 'turnin' && (
+            <TurnInPanel
+              assignment={assignment}
+              onTurnIn={handleTurnIn}
+              onStatusChange={() => loadAssignment({ noCache: true })}
+            />
+          )}
         </div>
       </div>
     </main>

@@ -1,47 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const body = await request.json();
-  
-  const { mode, changes_requested, auto_approve_future } = body;
-  
-  // In production: call backend API
-  // const res = await fetch(`${process.env.BACKEND_URL}/assignments/${id}/approve`, {
-  //   method: "POST",
-  //   headers: { "Content-Type": "application/json" },
-  //   body: JSON.stringify(body),
-  // });
-  
-  // Mock response
-  console.log(`Approving assignment ${id} with mode: ${mode}`);
-  
-  if (mode === "AUTO") {
-    // Auto-approve and submit
-    return NextResponse.json({
-      success: true,
-      message: "Assignment auto-approved and submitted",
-      assignment: {
-        id,
-        status: "SUBMITTED",
-        approval_mode: "AUTO",
-        approved_at: new Date().toISOString(),
-        submitted_at: new Date().toISOString(),
+  const authHeader = request.headers.get("authorization");
+  const body = await request.json().catch(() => ({}));
+
+  try {
+    const backendRes = await fetch(`${API_BASE}/assignments/${id}/approve`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(authHeader ? { Authorization: authHeader } : {}),
       },
+      body: JSON.stringify(body),
     });
+
+    const data = await backendRes.json().catch(() => ({}));
+    return NextResponse.json(data, { status: backendRes.status });
+  } catch (err: any) {
+    return NextResponse.json(
+      { detail: err?.message || "Failed to forward approval request to backend" },
+      { status: 502 }
+    );
   }
-  
-  return NextResponse.json({
-    success: true,
-    message: "Assignment approved",
-    assignment: {
-      id,
-      status: "APPROVED",
-      approval_mode: "MANUAL",
-      approved_at: new Date().toISOString(),
-    },
-  });
 }
