@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Uniflow Claude Sync</title>
+  <title>Uniflow Companion</title>
   <style>
     * {
       box-sizing: border-box;
@@ -12,7 +12,7 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
     body {
-      width: 340px;
+      width: 360px;
       padding: 16px;
       background: #fafafc;
       color: #292d3a;
@@ -24,16 +24,16 @@
       margin-bottom: 14px;
     }
     .logo {
-      width: 32px;
-      height: 32px;
+      width: 34px;
+      height: 34px;
       background: linear-gradient(135deg, #6657d9, #8c7cf0);
-      border-radius: 8px;
+      border-radius: 9px;
       display: flex;
       align-items: center;
       justify-content: center;
       color: white;
       font-weight: 700;
-      font-size: 16px;
+      font-size: 17px;
       box-shadow: 0 2px 6px rgba(102, 87, 217, 0.3);
     }
     .title {
@@ -50,23 +50,31 @@
       border: 1px solid #ebebf0;
       border-radius: 10px;
       padding: 12px;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.02);
     }
-    .status-row {
+    .card-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
       font-size: 12px;
-      margin-bottom: 8px;
     }
-    .status-label {
-      color: #636779;
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .checkbox-label input[type="checkbox"] {
+      cursor: pointer;
+      accent-color: #6657d9;
     }
     .badge {
-      font-size: 11px;
+      font-size: 10px;
       font-weight: 600;
-      padding: 2px 8px;
+      padding: 2px 7px;
       border-radius: 12px;
     }
     .badge-ok {
@@ -79,6 +87,11 @@
       color: #9a6514;
       border: 1px solid #fce3b8;
     }
+    .badge-info {
+      background: #eef2ff;
+      color: #4338ca;
+      border: 1px solid #e0e7ff;
+    }
     .cookie-preview {
       font-family: monospace;
       font-size: 10px;
@@ -88,23 +101,96 @@
       color: #555869;
       word-break: break-all;
       margin-top: 6px;
-      max-height: 44px;
+      max-height: 40px;
       overflow: hidden;
     }
-    .field {
+    .actions-row {
+      display: flex;
+      gap: 6px;
       margin-top: 8px;
+    }
+    .btn {
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+    }
+    .btn-primary {
+      background: #6657d9;
+      color: white;
+    }
+    .btn-primary:hover:not(:disabled) {
+      background: #5344c9;
+    }
+    .btn-blue {
+      background: #1a73e8;
+      color: white;
+    }
+    .btn-blue:hover:not(:disabled) {
+      background: #1557b0;
+    }
+    .btn-green {
+      background: #2d7a52;
+      color: white;
+    }
+    .btn-green:hover:not(:disabled) {
+      background: #235e3e;
+    }
+    .btn-secondary {
+      background: white;
+      border: 1px solid #dcdce6;
+      color: #555869;
+    }
+    .btn-secondary:hover:not(:disabled) {
+      background: #f6f6f9;
+    }
+    .btn-visit {
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      color: #374151;
+      padding: 6px 10px;
+      font-size: 10px;
+    }
+    .btn-visit:hover:not(:disabled) {
+      background: #e5e7eb;
+    }
+    .btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .master-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .btn-large {
+      width: 100%;
+      padding: 10px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .field {
+      margin-top: 6px;
     }
     .field label {
       display: block;
-      font-size: 11px;
+      font-size: 10px;
       font-weight: 600;
       color: #636779;
-      margin-bottom: 4px;
+      margin-bottom: 3px;
     }
     .field input {
       width: 100%;
-      padding: 7px 10px;
-      font-size: 12px;
+      padding: 6px 9px;
+      font-size: 11px;
       border: 1px solid #dcdce6;
       border-radius: 6px;
       background: #fdfdfd;
@@ -113,38 +199,6 @@
     }
     .field input:focus {
       border-color: #6657d9;
-    }
-    .btn {
-      width: 100%;
-      padding: 10px;
-      background: #6657d9;
-      color: white;
-      border: none;
-      border-radius: 8px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background 0.15s ease;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-    }
-    .btn:hover:not(:disabled) {
-      background: #5344c9;
-    }
-    .btn:disabled {
-      background: #c2bee8;
-      cursor: not-allowed;
-    }
-    .btn-secondary {
-      background: white;
-      border: 1px solid #dcdce6;
-      color: #555869;
-      margin-top: 6px;
-    }
-    .btn-secondary:hover:not(:disabled) {
-      background: #f6f6f9;
     }
     .notice {
       margin-top: 10px;
@@ -164,11 +218,22 @@
       color: #a83838;
       border: 1px solid #fedcdc;
     }
+    .notice-info {
+      background: #eef2ff;
+      color: #4338ca;
+      border: 1px solid #e0e7ff;
+    }
     .footer {
       text-align: center;
       font-size: 10px;
       color: #9da1b2;
       margin-top: 12px;
+      line-height: 1.4;
+    }
+    .hint {
+      font-size: 10px;
+      color: #6b7280;
+      margin-top: 4px;
     }
   </style>
 </head>
@@ -177,74 +242,107 @@
     <div class="logo">U</div>
     <div>
       <div class="title">Uniflow Academic Companion</div>
-      <div class="subtitle">1-Click Background Session Sync</div>
+      <div class="subtitle">1-Click Auto-Visit & Session Synchronizer</div>
     </div>
   </div>
 
+  <!-- Google Classroom Card -->
   <div class="card">
-    <div class="status-row">
-      <span class="status-label">Claude.ai Session:</span>
-      <span id="sessionStatus" class="badge badge-warn">Checking…</span>
-    </div>
-    <div id="cookieBox" class="cookie-preview">Searching for sessionKey cookie…</div>
-    <div style="display: flex; gap: 6px; margin-top: 8px;">
-      <button id="syncBtn" class="btn" style="flex: 1; padding: 8px;" disabled>
-        <span>⚡ Sync Claude</span>
-      </button>
-      <button id="copyBtn" class="btn btn-secondary" style="margin-top: 0; padding: 8px 12px;" title="Copy key">
-        <span>📋 Copy</span>
-      </button>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="status-row">
-      <span class="status-label">Google Classroom:</span>
+    <div class="card-header">
+      <label class="checkbox-label">
+        <input type="checkbox" id="checkGcr" checked>
+        <span>Google Classroom</span>
+      </label>
       <span id="gcrSessionStatus" class="badge badge-warn">Checking…</span>
     </div>
     <div id="gcrCookieBox" class="cookie-preview">Searching for Classroom cookies…</div>
-    <div style="display: flex; gap: 6px; margin-top: 8px;">
-      <button id="syncGcrBtn" class="btn" style="flex: 1; padding: 8px; background: #1a73e8;" disabled>
+    <div class="actions-row">
+      <button id="syncGcrBtn" class="btn btn-blue" style="flex: 1;" disabled>
         <span>⚡ Sync Classroom</span>
       </button>
-      <button id="copyGcrBtn" class="btn btn-secondary" style="margin-top: 0; padding: 8px 12px;" title="Copy summary">
-        <span>📋 Copy</span>
+      <button id="visitGcrBtn" class="btn btn-visit" title="Open Classroom & capture session">
+        <span>🌐 Auto-Visit</span>
+      </button>
+      <button id="copyGcrBtn" class="btn btn-secondary" title="Copy cookies">
+        <span>📋</span>
       </button>
     </div>
   </div>
 
+  <!-- Claude Card -->
   <div class="card">
-    <div class="status-row">
-      <span class="status-label">University Portal:</span>
+    <div class="card-header">
+      <label class="checkbox-label">
+        <input type="checkbox" id="checkClaude">
+        <span>Claude.ai</span>
+      </label>
+      <span id="sessionStatus" class="badge badge-warn">Checking…</span>
+    </div>
+    <div id="cookieBox" class="cookie-preview">Searching for sessionKey cookie…</div>
+    <p id="claudeConnectedNote" class="hint" style="display:none;">✓ Already active. Kept connected without re-fetching.</p>
+    <div class="actions-row">
+      <button id="syncBtn" class="btn btn-primary" style="flex: 1;" disabled>
+        <span>⚡ Sync Claude</span>
+      </button>
+      <button id="visitClaudeBtn" class="btn btn-visit" title="Open Claude.ai & capture session">
+        <span>🌐 Auto-Visit</span>
+      </button>
+      <button id="copyBtn" class="btn btn-secondary" title="Copy key">
+        <span>📋</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- University Portal Card -->
+  <div class="card">
+    <div class="card-header">
+      <label class="checkbox-label">
+        <input type="checkbox" id="checkPortal">
+        <span>University Portal</span>
+      </label>
       <span id="portalSessionStatus" class="badge badge-warn">Checking…</span>
     </div>
     <div id="portalCookieBox" class="cookie-preview">Searching for portal cookies…</div>
-    <div style="display: flex; gap: 6px; margin-top: 8px;">
-      <button id="syncPortalBtn" class="btn" style="flex: 1; padding: 8px; background: #2d7a52;" disabled>
+    <p id="portalConnectedNote" class="hint" style="display:none;">✓ Already active. Kept connected without re-fetching.</p>
+    <div class="actions-row">
+      <button id="syncPortalBtn" class="btn btn-green" style="flex: 1;" disabled>
         <span>⚡ Sync Portal</span>
       </button>
-      <button id="copyPortalBtn" class="btn btn-secondary" style="margin-top: 0; padding: 8px 12px;" title="Copy cookie">
-        <span>📋 Copy</span>
+      <button id="visitPortalBtn" class="btn btn-visit" title="Open Portal & capture session">
+        <span>🌐 Auto-Visit</span>
+      </button>
+      <button id="copyPortalBtn" class="btn btn-secondary" title="Copy cookie">
+        <span>📋</span>
       </button>
     </div>
   </div>
 
-  <div class="card">
+  <!-- Master Action Buttons -->
+  <div class="master-actions">
+    <button id="syncSelectedBtn" class="btn btn-primary btn-large">
+      <span>⚡ Sync Selected Sessions</span>
+    </button>
+    <button id="autoVisitAllBtn" class="btn btn-secondary btn-large" style="border-color: #6657d9; color: #6657d9;">
+      <span>🚀 Auto-Visit & Extract Needed Sessions</span>
+    </button>
+  </div>
+
+  <!-- Configuration Card -->
+  <div class="card" style="margin-top: 10px;">
     <div class="field">
       <label for="apiUrl">Uniflow Backend URL:</label>
       <input type="text" id="apiUrl" value="http://localhost:8000" placeholder="https://api.yourdomain.com">
     </div>
-    <div class="field" style="margin-top: 8px;">
-      <label for="authToken">Auth Token (optional if logged in on tab):</label>
+    <div class="field">
+      <label for="authToken">Auth Token (auto-detected if Uniflow open):</label>
       <input type="password" id="authToken" placeholder="Bearer token or leave blank for auto-detect">
     </div>
   </div>
 
   <div id="noticeBox" class="notice"></div>
 
-
   <div class="footer">
-    Zero VNC latency · No Cloudflare Captchas · 100% Private
+    Zero VNC latency · Secure local extraction · Never re-fetches active Claude/Portal sessions unless disconnected.
   </div>
 
   <script src="popup.js"></script>

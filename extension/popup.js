@@ -6,34 +6,58 @@ const sessionStatus = document.getElementById("sessionStatus");
 const cookieBox = document.getElementById("cookieBox");
 const syncBtn = document.getElementById("syncBtn");
 const copyBtn = document.getElementById("copyBtn");
+const visitClaudeBtn = document.getElementById("visitClaudeBtn");
+const checkClaude = document.getElementById("checkClaude");
+const claudeConnectedNote = document.getElementById("claudeConnectedNote");
 
 const gcrSessionStatus = document.getElementById("gcrSessionStatus");
 const gcrCookieBox = document.getElementById("gcrCookieBox");
 const syncGcrBtn = document.getElementById("syncGcrBtn");
 const copyGcrBtn = document.getElementById("copyGcrBtn");
+const visitGcrBtn = document.getElementById("visitGcrBtn");
+const checkGcr = document.getElementById("checkGcr");
 
 const portalSessionStatus = document.getElementById("portalSessionStatus");
 const portalCookieBox = document.getElementById("portalCookieBox");
 const syncPortalBtn = document.getElementById("syncPortalBtn");
 const copyPortalBtn = document.getElementById("copyPortalBtn");
+const visitPortalBtn = document.getElementById("visitPortalBtn");
+const checkPortal = document.getElementById("checkPortal");
+const portalConnectedNote = document.getElementById("portalConnectedNote");
+
+const syncSelectedBtn = document.getElementById("syncSelectedBtn");
+const autoVisitAllBtn = document.getElementById("autoVisitAllBtn");
 
 const noticeBox = document.getElementById("noticeBox");
 const apiUrlInput = document.getElementById("apiUrl");
 const authTokenInput = document.getElementById("authToken");
 
-function showNotice(text, isError = false) {
+function showNotice(text, type = "ok") {
   noticeBox.style.display = "block";
-  noticeBox.className = "notice " + (isError ? "notice-err" : "notice-ok");
+  noticeBox.className = "notice " + (type === "err" ? "notice-err" : type === "info" ? "notice-info" : "notice-ok");
   noticeBox.textContent = text;
 }
 
-// Load saved API URL & token
-chrome.storage.local.get(["uniflowApiUrl", "uniflowAuthToken"], (data) => {
-  if (data.uniflowApiUrl) apiUrlInput.value = data.uniflowApiUrl;
-  if (data.uniflowAuthToken) authTokenInput.value = data.uniflowAuthToken;
-});
+// 1. Load saved preferences and connection history
+chrome.storage.local.get(
+  ["uniflowApiUrl", "uniflowAuthToken", "claudeConnected", "portalConnected", "gcrConnected"],
+  (data) => {
+    if (data.uniflowApiUrl) apiUrlInput.value = data.uniflowApiUrl;
+    if (data.uniflowAuthToken) authTokenInput.value = data.uniflowAuthToken;
 
-// Check Claude cookie
+    // Rule: Claude & Portal are only fetched if NOT connected before
+    if (data.claudeConnected) {
+      checkClaude.checked = false; // Don't re-fetch by default
+      claudeConnectedNote.style.display = "block";
+    }
+    if (data.portalConnected) {
+      checkPortal.checked = false; // Don't re-fetch by default
+      portalConnectedNote.style.display = "block";
+    }
+  }
+);
+
+// 2. Check Claude.ai sessionKey
 chrome.cookies.get({ url: "https://claude.ai", name: "sessionKey" }, (cookie) => {
   if (cookie && cookie.value) {
     foundSessionKey = cookie.value;
@@ -44,12 +68,12 @@ chrome.cookies.get({ url: "https://claude.ai", name: "sessionKey" }, (cookie) =>
   } else {
     sessionStatus.textContent = "Not Signed In";
     sessionStatus.className = "badge badge-warn";
-    cookieBox.innerHTML = 'Log into <a href="https://claude.ai" target="_blank">claude.ai</a> first.';
+    cookieBox.innerHTML = 'Log into <a href="https://claude.ai" target="_blank">claude.ai</a> or click Auto-Visit.';
     syncBtn.disabled = true;
   }
 });
 
-// Check Google Classroom cookies
+// 3. Check Google Classroom cookies
 chrome.cookies.getAll({ domain: "google.com" }, (gCookies) => {
   chrome.cookies.getAll({ url: "https://classroom.google.com" }, (cCookies) => {
     const combined = [...(gCookies || []), ...(cCookies || [])];
@@ -63,7 +87,7 @@ chrome.cookies.getAll({ domain: "google.com" }, (gCookies) => {
       }
     }
 
-    const authCookies = unique.filter(c => {
+    const authCookies = unique.filter((c) => {
       const n = c.name;
       return (
         n === "OSID" || n === "SID" || n === "HSID" || n === "SSID" ||
@@ -73,7 +97,7 @@ chrome.cookies.getAll({ domain: "google.com" }, (gCookies) => {
     });
 
     if (authCookies.length > 0) {
-      foundGcrCookies = authCookies.map(c => ({
+      foundGcrCookies = authCookies.map((c) => ({
         name: c.name,
         value: c.value,
         domain: c.domain,
@@ -84,189 +108,243 @@ chrome.cookies.getAll({ domain: "google.com" }, (gCookies) => {
       }));
       gcrSessionStatus.textContent = "Active Session";
       gcrSessionStatus.className = "badge badge-ok";
-      const osid = authCookies.find(c => c.name === "OSID" || c.name === "SID");
-      gcrCookieBox.textContent = osid ? `${osid.name}=${osid.value.slice(0, 14)}… (${authCookies.length} cookies)` : `${authCookies.length} auth cookies found`;
+      const osid = authCookies.find((c) => c.name === "OSID" || c.name === "SID");
+      gcrCookieBox.textContent = osid
+        ? `${osid.name}=${osid.value.slice(0, 14)}… (${authCookies.length} auth cookies)`
+        : `${authCookies.length} auth cookies found`;
       syncGcrBtn.disabled = false;
     } else {
       gcrSessionStatus.textContent = "Not Signed In";
       gcrSessionStatus.className = "badge badge-warn";
-      gcrCookieBox.innerHTML = 'Log into <a href="https://classroom.google.com" target="_blank">Classroom</a> first.';
+      gcrCookieBox.innerHTML = 'Log into <a href="https://classroom.google.com" target="_blank">Classroom</a> or click Auto-Visit.';
       syncGcrBtn.disabled = true;
     }
   });
 });
 
-// Check University Portal cookies
+// 4. Check University Portal cookies
 chrome.cookies.getAll({ domain: "portals.au.edu.pk" }, (cookies) => {
   if (cookies && cookies.length > 0) {
-    const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join("; ");
-    foundPortalCookie = cookieStr;
-    const sess = cookies.find(c => c.name === "ASP.NET_SessionId");
+    foundPortalCookie = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
     portalSessionStatus.textContent = "Active Session";
     portalSessionStatus.className = "badge badge-ok";
-    portalCookieBox.textContent = sess ? `ASP.NET_SessionId=${sess.value.slice(0, 12)}…` : `${cookies.length} cookie(s) found`;
+    const aspNet = cookies.find((c) => c.name.toLowerCase().includes("sessionid"));
+    portalCookieBox.textContent = aspNet
+      ? `${aspNet.name}=${aspNet.value.slice(0, 14)}…`
+      : `${cookies.length} portal cookies found`;
     syncPortalBtn.disabled = false;
   } else {
     portalSessionStatus.textContent = "Not Signed In";
     portalSessionStatus.className = "badge badge-warn";
-    portalCookieBox.innerHTML = 'Log into <a href="https://portals.au.edu.pk/students/" target="_blank">portal</a> first.';
+    portalCookieBox.innerHTML = 'Log into portal or click Auto-Visit.';
     syncPortalBtn.disabled = true;
   }
 });
 
-// Copy sessionKey
-copyBtn.addEventListener("click", () => {
-  if (!foundSessionKey) {
-    showNotice("No active Claude sessionKey found. Please log into claude.ai first.", true);
-    return;
-  }
-  navigator.clipboard.writeText(foundSessionKey).then(() => {
-    showNotice("✅ sessionKey copied to clipboard! Paste it into Uniflow Settings.");
-  }).catch(() => {
-    showNotice("Could not copy automatically. Value: " + foundSessionKey);
-  });
-});
-
-// Copy Google Classroom cookies
-copyGcrBtn.addEventListener("click", () => {
-  if (!foundGcrCookies || foundGcrCookies.length === 0) {
-    showNotice("No active Google Classroom cookies found. Please log into classroom.google.com first.", true);
-    return;
-  }
-  const summary = JSON.stringify(foundGcrCookies, null, 2);
-  navigator.clipboard.writeText(summary).then(() => {
-    showNotice(`✅ ${foundGcrCookies.length} Google Classroom cookies copied to clipboard!`);
-  }).catch(() => {
-    showNotice("Could not copy automatically.");
-  });
-});
-
-// Copy Portal Cookie
-copyPortalBtn.addEventListener("click", () => {
-  if (!foundPortalCookie) {
-    showNotice("No portal cookies found. Please log into portals.au.edu.pk first.", true);
-    return;
-  }
-  navigator.clipboard.writeText(foundPortalCookie).then(() => {
-    showNotice("✅ Portal cookies copied to clipboard! Paste into Uniflow Portal page.");
-  }).catch(() => {
-    showNotice("Could not copy automatically. Value: " + foundPortalCookie);
-  });
-});
-
-// Sync Claude session
-syncBtn.addEventListener("click", async () => {
-  if (!foundSessionKey) return;
+function getTargetConfig() {
   const baseUrl = apiUrlInput.value.trim().replace(/\/+$/, "");
   const token = authTokenInput.value.trim();
-  if (!baseUrl) {
-    showNotice("Please enter your Uniflow backend API URL.", true);
-    return;
+  if (baseUrl) {
+    chrome.storage.local.set({ uniflowApiUrl: baseUrl, uniflowAuthToken: token });
   }
-  chrome.storage.local.set({ uniflowApiUrl: baseUrl, uniflowAuthToken: token });
+  return { apiUrl: baseUrl, token };
+}
 
-  syncBtn.disabled = true;
-  syncBtn.textContent = "Syncing…";
-
-  try {
-    const headers = { "Content-Type": "application/json" };
-    if (token) headers["Authorization"] = token.startsWith("Bearer ") ? token : `Bearer ${token}`;
-
-    const resp = await fetch(`${baseUrl}/classroom/claude-browser/sync-session`, {
-      method: "POST",
-      headers: headers,
-      body: JSON.stringify({ session_key: foundSessionKey, user_agent: navigator.userAgent })
-    });
-
-    if (!resp.ok) {
-      const errJson = await resp.json().catch(() => ({}));
-      throw new Error(errJson.detail || `HTTP ${resp.status}`);
-    }
-
-    const result = await resp.json();
-    showNotice("✅ " + (result.message || "Claude session synced to Uniflow!"));
-  } catch (err) {
-    showNotice("Sync failed: " + err.message, true);
-  } finally {
-    syncBtn.disabled = false;
-    syncBtn.textContent = "⚡ Sync Claude";
-  }
-});
-
-// Sync Google Classroom session
-syncGcrBtn.addEventListener("click", async () => {
-  if (!foundGcrCookies || foundGcrCookies.length === 0) return;
-  const baseUrl = apiUrlInput.value.trim().replace(/\/+$/, "");
-  const token = authTokenInput.value.trim();
-  if (!baseUrl) {
-    showNotice("Please enter your Uniflow backend API URL.", true);
-    return;
-  }
-  chrome.storage.local.set({ uniflowApiUrl: baseUrl, uniflowAuthToken: token });
-
+// 5. Individual Sync & Auto-Visit actions
+syncGcrBtn.addEventListener("click", () => {
+  const { apiUrl, token } = getTargetConfig();
   syncGcrBtn.disabled = true;
   syncGcrBtn.textContent = "Syncing…";
-
-  try {
-    const headers = { "Content-Type": "application/json" };
-    if (token) headers["Authorization"] = token.startsWith("Bearer ") ? token : `Bearer ${token}`;
-
-    const resp = await fetch(`${baseUrl}/classroom/gcr-browser/sync-session`, {
-      method: "POST",
-      headers: headers,
-      body: JSON.stringify({ cookies: foundGcrCookies, user_agent: navigator.userAgent })
-    });
-
-    if (!resp.ok) {
-      const errJson = await resp.json().catch(() => ({}));
-      throw new Error(errJson.detail || `HTTP ${resp.status}`);
-    }
-
-    const result = await resp.json();
-    showNotice("✅ " + (result.message || "Google Classroom session synced to Uniflow!"));
-  } catch (err) {
-    showNotice("Sync failed: " + err.message, true);
-  } finally {
+  chrome.runtime.sendMessage({ action: "SYNC_GCR", payload: { apiUrl, token } }, (res) => {
     syncGcrBtn.disabled = false;
     syncGcrBtn.textContent = "⚡ Sync Classroom";
-  }
+    if (res?.success) {
+      showNotice("✅ " + (res.message || "Google Classroom session synced!"));
+    } else {
+      showNotice("Classroom sync failed: " + (res?.error || "Unknown error"), "err");
+    }
+  });
 });
 
-// Sync Portal cookies
-syncPortalBtn.addEventListener("click", async () => {
-  if (!foundPortalCookie) return;
-  const baseUrl = apiUrlInput.value.trim().replace(/\/+$/, "");
-  const token = authTokenInput.value.trim();
-  if (!baseUrl) {
-    showNotice("Please enter your Uniflow backend API URL.", true);
-    return;
-  }
-  chrome.storage.local.set({ uniflowApiUrl: baseUrl, uniflowAuthToken: token });
+visitGcrBtn.addEventListener("click", () => {
+  const { apiUrl, token } = getTargetConfig();
+  showNotice("Opening Google Classroom to capture session…", "info");
+  chrome.runtime.sendMessage({ action: "AUTO_VISIT_GCR", payload: { apiUrl, token } }, (res) => {
+    if (res?.success) {
+      showNotice("✅ Google Classroom session captured & synced!");
+      setTimeout(() => location.reload(), 1500);
+    } else {
+      showNotice("Auto-visit failed: " + (res?.error || "Check your login"), "err");
+    }
+  });
+});
 
+syncBtn.addEventListener("click", () => {
+  const { apiUrl, token } = getTargetConfig();
+  syncBtn.disabled = true;
+  syncBtn.textContent = "Syncing…";
+  chrome.runtime.sendMessage(
+    { action: "SYNC_SELECTED", payload: { syncGcr: false, syncClaude: true, forceClaude: true, syncPortal: false, apiUrl, token } },
+    (res) => {
+      syncBtn.disabled = false;
+      syncBtn.textContent = "⚡ Sync Claude";
+      if (res?.success && res.results?.claude && !res.results.claude.skipped) {
+        showNotice("✅ Claude sessionKey synced to Uniflow!");
+        chrome.storage.local.set({ claudeConnected: true });
+      } else {
+        showNotice(res?.error || res?.results?.claude?.reason || "Claude sync failed", "err");
+      }
+    }
+  );
+});
+
+visitClaudeBtn.addEventListener("click", () => {
+  const { apiUrl, token } = getTargetConfig();
+  showNotice("Opening Claude.ai to capture sessionKey…", "info");
+  chrome.runtime.sendMessage(
+    { action: "SYNC_SELECTED", payload: { syncGcr: false, syncClaude: true, forceClaude: true, autoVisit: true, syncPortal: false, apiUrl, token } },
+    (res) => {
+      if (res?.success && res.results?.claude && !res.results.claude.skipped) {
+        showNotice("✅ Claude sessionKey captured & synced!");
+        chrome.storage.local.set({ claudeConnected: true });
+        setTimeout(() => location.reload(), 1500);
+      } else {
+        showNotice(res?.error || "Failed to capture Claude session", "err");
+      }
+    }
+  );
+});
+
+syncPortalBtn.addEventListener("click", () => {
+  const { apiUrl, token } = getTargetConfig();
   syncPortalBtn.disabled = true;
   syncPortalBtn.textContent = "Syncing…";
-
-  try {
-    const headers = { "Content-Type": "application/json" };
-    if (token) headers["Authorization"] = token.startsWith("Bearer ") ? token : `Bearer ${token}`;
-
-    const resp = await fetch(`${baseUrl}/portal/sync-cookies`, {
-      method: "POST",
-      headers: headers,
-      body: JSON.stringify({ cookies: foundPortalCookie })
-    });
-
-    if (!resp.ok) {
-      const errJson = await resp.json().catch(() => ({}));
-      throw new Error(errJson.detail || `HTTP ${resp.status}`);
+  chrome.runtime.sendMessage(
+    { action: "SYNC_SELECTED", payload: { syncGcr: false, syncClaude: false, syncPortal: true, forcePortal: true, apiUrl, token } },
+    (res) => {
+      syncPortalBtn.disabled = false;
+      syncPortalBtn.textContent = "⚡ Sync Portal";
+      if (res?.success && res.results?.portal && !res.results.portal.skipped) {
+        showNotice("✅ University Portal cookies synced!");
+        chrome.storage.local.set({ portalConnected: true });
+      } else {
+        showNotice(res?.error || res?.results?.portal?.reason || "Portal sync failed", "err");
+      }
     }
+  );
+});
 
-    const result = await resp.json();
-    showNotice("✅ " + (result.message || "University portal records synced to Uniflow!"));
-  } catch (err) {
-    showNotice("Sync failed: " + err.message, true);
-  } finally {
-    syncPortalBtn.disabled = false;
-    syncPortalBtn.textContent = "⚡ Sync Portal";
+visitPortalBtn.addEventListener("click", () => {
+  const { apiUrl, token } = getTargetConfig();
+  showNotice("Opening University Portal to capture cookies…", "info");
+  chrome.runtime.sendMessage(
+    { action: "SYNC_SELECTED", payload: { syncGcr: false, syncClaude: false, syncPortal: true, forcePortal: true, autoVisit: true, apiUrl, token } },
+    (res) => {
+      if (res?.success && res.results?.portal && !res.results.portal.skipped) {
+        showNotice("✅ Portal cookies captured & synced!");
+        chrome.storage.local.set({ portalConnected: true });
+        setTimeout(() => location.reload(), 1500);
+      } else {
+        showNotice(res?.error || "Failed to capture Portal cookies", "err");
+      }
+    }
+  );
+});
+
+// 6. Master Action: Sync Selected Sessions
+syncSelectedBtn.addEventListener("click", () => {
+  const { apiUrl, token } = getTargetConfig();
+  const syncGcr = checkGcr.checked;
+  const syncClaude = checkClaude.checked;
+  const syncPortal = checkPortal.checked;
+
+  if (!syncGcr && !syncClaude && !syncPortal) {
+    showNotice("Please check at least one session to sync.", "err");
+    return;
   }
+
+  syncSelectedBtn.disabled = true;
+  syncSelectedBtn.textContent = "Syncing Selected…";
+
+  chrome.runtime.sendMessage(
+    {
+      action: "SYNC_SELECTED",
+      payload: {
+        syncGcr,
+        syncClaude,
+        syncPortal,
+        autoVisit: false,
+        apiUrl,
+        token,
+      },
+    },
+    (res) => {
+      syncSelectedBtn.disabled = false;
+      syncSelectedBtn.textContent = "⚡ Sync Selected Sessions";
+      if (res?.success) {
+        const msgs = [];
+        if (res.results?.gcr && !res.results.gcr.skipped) msgs.push("Classroom ✓");
+        if (res.results?.claude && !res.results.claude.skipped) msgs.push("Claude ✓");
+        if (res.results?.portal && !res.results.portal.skipped) msgs.push("Portal ✓");
+        showNotice(`✅ Synced: ${msgs.length > 0 ? msgs.join(", ") : "Sessions checked"}`);
+      } else {
+        showNotice("Sync error: " + (res?.error || "Check backend connection"), "err");
+      }
+    }
+  );
+});
+
+// 7. Master Action: Auto-Visit & Extract Needed Sessions
+autoVisitAllBtn.addEventListener("click", () => {
+  const { apiUrl, token } = getTargetConfig();
+  const syncGcr = checkGcr.checked;
+  const syncClaude = checkClaude.checked;
+  const syncPortal = checkPortal.checked;
+
+  autoVisitAllBtn.disabled = true;
+  autoVisitAllBtn.textContent = "Visiting & Extracting…";
+  showNotice("Opening required tabs to capture sessions…", "info");
+
+  chrome.runtime.sendMessage(
+    {
+      action: "SYNC_SELECTED",
+      payload: {
+        syncGcr,
+        syncClaude,
+        syncPortal,
+        autoVisit: true,
+        apiUrl,
+        token,
+      },
+    },
+    (res) => {
+      autoVisitAllBtn.disabled = false;
+      autoVisitAllBtn.textContent = "🚀 Auto-Visit & Extract Needed Sessions";
+      if (res?.success) {
+        showNotice("✅ Finished auto-visiting! All needed sessions updated.");
+        setTimeout(() => location.reload(), 1800);
+      } else {
+        showNotice("Auto-visit error: " + (res?.error || "Some sessions could not be captured"), "err");
+      }
+    }
+  );
+});
+
+// Copy button handlers
+copyGcrBtn.addEventListener("click", () => {
+  if (!foundGcrCookies) return showNotice("No Classroom cookies found.", "err");
+  navigator.clipboard.writeText(JSON.stringify(foundGcrCookies));
+  showNotice(`📋 Copied ${foundGcrCookies.length} Classroom cookies.`);
+});
+
+copyBtn.addEventListener("click", () => {
+  if (!foundSessionKey) return showNotice("No Claude sessionKey found.", "err");
+  navigator.clipboard.writeText(foundSessionKey);
+  showNotice("📋 Copied Claude sessionKey.");
+});
+
+copyPortalBtn.addEventListener("click", () => {
+  if (!foundPortalCookie) return showNotice("No Portal cookies found.", "err");
+  navigator.clipboard.writeText(foundPortalCookie);
+  showNotice("📋 Copied Portal cookies.");
 });

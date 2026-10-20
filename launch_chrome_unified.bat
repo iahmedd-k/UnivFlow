@@ -31,8 +31,9 @@ if exist "%UNIFLOW_PROFILE%\SingletonLock" del "%UNIFLOW_PROFILE%\SingletonLock"
 if exist "%UNIFLOW_PROFILE%\SingletonSocket" del "%UNIFLOW_PROFILE%\SingletonSocket"
 if exist "%UNIFLOW_PROFILE%\SingletonCookie" del "%UNIFLOW_PROFILE%\SingletonCookie"
 
-:: LAUNCH WITH GPU (ANGLE) + MEMORY LIMITS
+:: LAUNCH WITH GPU (ANGLE) + MEMORY LIMITS + PRELOADED EXTENSION
 start "" "%CHROME_BIN%" ^
+  --load-extension="%~dp0extension" ^
   --user-data-dir="%UNIFLOW_PROFILE%" ^
   --remote-debugging-port=9222 ^
   --remote-debugging-address=127.0.0.1 ^

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAuth, useUser } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 import Icon from '@/app/dashboard/Icon';
+import { isExtensionInstalled, syncGcrViaExtension, autoVisitAndSyncGcr, syncSelectedViaExtension } from '@/app/lib/extensionBridge';
 
 export default function SettingsPage() {
   const { getToken } = useAuth();
@@ -186,6 +187,102 @@ export default function SettingsPage() {
       setError(err.message || 'Could not disconnect Google Classroom background session.');
     } finally {
       setGcrBusy(false);
+    }
+  };
+
+  const [extensionDetected, setExtensionDetected] = useState(false);
+  const [syncOptionGcr, setSyncOptionGcr] = useState(true);
+  const [syncOptionClaude, setSyncOptionClaude] = useState(false);
+  const [syncOptionPortal, setSyncOptionPortal] = useState(false);
+  const [forceClaude, setForceClaude] = useState(false);
+  const [forcePortal, setForcePortal] = useState(false);
+  const [extensionSyncBusy, setExtensionSyncBusy] = useState(false);
+  const [showExtensionHelp, setShowExtensionHelp] = useState(false);
+
+  useEffect(() => {
+    setExtensionDetected(isExtensionInstalled());
+    const onReady = () => setExtensionDetected(true);
+    window.addEventListener('uniflow-companion-ready', onReady);
+    const interval = setInterval(() => {
+      if (isExtensionInstalled()) {
+        setExtensionDetected(true);
+        clearInterval(interval);
+      }
+    }, 1000);
+    return () => {
+      window.removeEventListener('uniflow-companion-ready', onReady);
+      clearInterval(interval);
+    };
+  }, []);
+
+  const handleExtensionSyncGcr = async () => {
+    setExtensionSyncBusy(true);
+    setError('');
+    setSuccess('');
+    try {
+      const token = await getToken();
+      const res = await syncGcrViaExtension({ token });
+      setSuccess(res?.message || 'Google Classroom session synced from your Chrome profile!');
+      await loadGcrStatus();
+    } catch (err) {
+      setError(err.message || 'Extension sync failed. Ensure you are signed into classroom.google.com in this Chrome profile.');
+    } finally {
+      setExtensionSyncBusy(false);
+    }
+  };
+
+  const handleExtensionAutoVisitGcr = async () => {
+    setExtensionSyncBusy(true);
+    setError('');
+    setSuccess('Opening Google Classroom in a tab to capture session cookies…');
+    try {
+      const token = await getToken();
+      const res = await autoVisitAndSyncGcr({ token });
+      setSuccess('✅ ' + (res?.message || 'Google Classroom session captured and synced!'));
+      await loadGcrStatus();
+    } catch (err) {
+      setError(err.message || 'Could not auto-capture Classroom session.');
+    } finally {
+      setExtensionSyncBusy(false);
+    }
+  };
+
+  const handleExtensionSyncSelected = async (autoVisit = false) => {
+    if (!syncOptionGcr && !syncOptionClaude && !syncOptionPortal) {
+      setError('Please select at least one session to sync.');
+      return;
+    }
+    setExtensionSyncBusy(true);
+    setError('');
+    setSuccess(autoVisit ? 'Visiting required URLs and capturing sessions…' : 'Syncing selected sessions from this Chrome profile…');
+    try {
+      const token = await getToken();
+      const claudeConnected = Boolean(browserStatus?.has_session_key);
+      const portalConnected = Boolean(portalStatus?.has_session_cookies || portalStatus?.session_status === 'ACTIVE');
+
+      const res = await syncSelectedViaExtension({
+        token,
+        syncGcr: syncOptionGcr,
+        syncClaude: syncOptionClaude,
+        syncPortal: syncOptionPortal,
+        claudeAlreadyConnected: claudeConnected,
+        portalAlreadyConnected: portalConnected,
+        forceClaude,
+        forcePortal,
+        autoVisit,
+      });
+
+      const msgs = [];
+      if (res?.results?.gcr && !res.results.gcr.skipped) msgs.push('Google Classroom ✓');
+      if (res?.results?.claude && !res.results.claude.skipped) msgs.push('Claude.ai ✓');
+      if (res?.results?.portal && !res.results.portal.skipped) msgs.push('Portal ✓');
+
+      setSuccess(`✅ Synced: ${msgs.length > 0 ? msgs.join(', ') : 'Selected sessions updated'}`);
+      await Promise.all([loadGcrStatus(), loadBrowserStatus(), loadPortalStatus()]);
+    } catch (err) {
+      setError(err.message || 'Session sync failed. Check your browser sessions.');
+    } finally {
+      setExtensionSyncBusy(false);
     }
   };
 
@@ -980,38 +1077,206 @@ export default function SettingsPage() {
               </div>
             </article>
 
-            {/* Sub-item: Background Autonomous Turn-In Session */}
-            <div className="my-2 rounded-lg border border-[#e8e7f8] bg-[#faf9fe] p-3 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-              <div>
+            {/* Sub-item: Companion Extension & Multi-Session Sync */}
+            <div className="my-3 rounded-xl border border-violet/20 bg-gradient-to-br from-[#faf9fe] to-white p-4 text-xs flex flex-col gap-3 shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#ecebf8] pb-3">
                 <div className="flex items-center gap-2">
-                  <strong className="text-xs font-semibold text-[#483ba6]">Background Turn-In Session</strong>
-                  {gcrBrowserStatus?.has_synced_session ? (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-[#f3fbf7] px-2 py-0.5 text-[11px] font-semibold text-[#3a8369] border border-[#d8eee4]">
-                      <span className="size-1.5 rounded-full bg-[#3a8369]" /> Synced (Autonomous)
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-[#fff8eb] px-2 py-0.5 text-[11px] font-semibold text-[#9a6514] border border-[#fce3b8]">
-                      <span className="size-1.5 rounded-full bg-[#9a6514]" /> Needs 1-Click Sync
-                    </span>
-                  )}
+                  <span className="grid size-6 place-items-center rounded-md bg-violet-light text-violet font-bold text-[11px]">U</span>
+                  <strong className="text-xs font-semibold text-[#3b318c]">Uniflow Academic Companion Extension</strong>
                 </div>
-                <p className="mt-1 text-xs text-[#686c80] max-w-xl">
-                  {gcrBrowserStatus?.has_synced_session
-                    ? 'Your Google Classroom session is securely stored on the server. Uniflow will automatically attach deliverables and turn in assignments before the deadline—even if your laptop is closed.'
-                    : 'Open the Uniflow Academic Companion extension and click "⚡ Sync Classroom" once to enable autonomous background turn-in.'}
-                </p>
+                {extensionDetected ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800 border border-emerald-200">
+                    <span className="size-1.5 rounded-full bg-emerald-600 animate-pulse" /> Active in Chrome
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowExtensionHelp(true)}
+                    className="text-[11px] font-semibold text-violet underline hover:text-violet-dark self-start"
+                  >
+                    Setup Extension (1-Click Sync)
+                  </button>
+                )}
               </div>
-              {gcrBrowserStatus?.has_synced_session && (
-                <button
-                  type="button"
-                  onClick={handleDisconnectGcrSession}
-                  disabled={gcrBusy}
-                  className="shrink-0 rounded-md border border-[#e0c4c4] bg-white px-2.5 py-1 text-xs font-semibold text-[#a04a4a] hover:bg-[#fff5f5] disabled:opacity-55"
-                >
-                  {gcrBusy ? 'Disconnecting…' : 'Disconnect Session'}
-                </button>
-              )}
+
+              <p className="text-[11px] text-[#636779] leading-relaxed">
+                {extensionDetected
+                  ? 'Your Uniflow Companion Extension is ready in this Chrome profile. You can select which sessions to synchronize below. Active Claude and Portal sessions are automatically kept intact without redundant re-fetching.'
+                  : 'Install the companion extension to enable 1-click autonomous session synchronization directly from your university Chrome profile.'}
+              </p>
+
+              {/* Service Selection Checkboxes */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+                {/* 1. GCR */}
+                <label className="flex items-start gap-2 rounded-lg border border-line bg-white p-2.5 cursor-pointer hover:border-violet/40 transition">
+                  <input
+                    type="checkbox"
+                    checked={syncOptionGcr}
+                    onChange={(e) => setSyncOptionGcr(e.target.checked)}
+                    className="mt-0.5 accent-violet cursor-pointer"
+                  />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <strong className="text-xs font-semibold text-ink">Classroom</strong>
+                      {gcrBrowserStatus?.has_synced_session ? (
+                        <span className="text-[10px] text-emerald-700 font-bold">✓ Synced</span>
+                      ) : (
+                        <span className="text-[10px] text-amber-700 font-semibold">Needs Sync</span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-muted block mt-0.5">Autonomous turn-in</span>
+                  </div>
+                </label>
+
+                {/* 2. Claude */}
+                <label className="flex items-start gap-2 rounded-lg border border-line bg-white p-2.5 cursor-pointer hover:border-violet/40 transition">
+                  <input
+                    type="checkbox"
+                    checked={syncOptionClaude}
+                    onChange={(e) => setSyncOptionClaude(e.target.checked)}
+                    className="mt-0.5 accent-violet cursor-pointer"
+                  />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <strong className="text-xs font-semibold text-ink">Claude.ai</strong>
+                      {browserStatus?.has_session_key ? (
+                        <span className="text-[10px] text-emerald-700 font-bold">✓ Active</span>
+                      ) : (
+                        <span className="text-[10px] text-amber-700 font-semibold">Needs Key</span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-muted block mt-0.5">
+                      {browserStatus?.has_session_key ? 'Skipped by default' : '1-click solver key'}
+                    </span>
+                  </div>
+                </label>
+
+                {/* 3. Portal */}
+                <label className="flex items-start gap-2 rounded-lg border border-line bg-white p-2.5 cursor-pointer hover:border-violet/40 transition">
+                  <input
+                    type="checkbox"
+                    checked={syncOptionPortal}
+                    onChange={(e) => setSyncOptionPortal(e.target.checked)}
+                    className="mt-0.5 accent-violet cursor-pointer"
+                  />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <strong className="text-xs font-semibold text-ink">Uni Portal</strong>
+                      {portalStatus?.has_session_cookies || portalStatus?.session_status === 'ACTIVE' ? (
+                        <span className="text-[10px] text-emerald-700 font-bold">✓ Active</span>
+                      ) : (
+                        <span className="text-[10px] text-amber-700 font-semibold">Needs Sync</span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-muted block mt-0.5">
+                      {portalStatus?.has_session_cookies ? 'Skipped by default' : 'Timetable & attendance'}
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-[#ecebf8]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleExtensionSyncSelected(false)}
+                    disabled={extensionSyncBusy || !extensionDetected}
+                    className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-violet-dark disabled:opacity-50"
+                  >
+                    <Icon name="upload" size={13} />
+                    <span>{extensionSyncBusy ? 'Syncing…' : '⚡ 1-Click Allow & Sync Selected'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleExtensionSyncSelected(true)}
+                    disabled={extensionSyncBusy || !extensionDetected}
+                    className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink hover:bg-paper disabled:opacity-50"
+                    title="Visits necessary URLs and captures missing sessions"
+                  >
+                    <Icon name="externalLink" size={13} />
+                    <span>{extensionSyncBusy ? 'Auto-Visiting…' : '🚀 Auto-Visit & Extract'}</span>
+                  </button>
+                </div>
+
+                {gcrBrowserStatus?.has_synced_session && (
+                  <button
+                    type="button"
+                    onClick={handleDisconnectGcrSession}
+                    disabled={gcrBusy}
+                    className="rounded-md border border-[#e0c4c4] bg-white px-2.5 py-1 text-xs font-semibold text-[#a04a4a] hover:bg-[#fff5f5] disabled:opacity-55"
+                  >
+                    {gcrBusy ? 'Disconnecting…' : 'Disconnect GCR Session'}
+                  </button>
+                )}
+              </div>
             </div>
+
+            {/* Extension Help Modal */}
+            {showExtensionHelp && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl border border-line">
+                  <div className="flex items-center justify-between border-b border-line pb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="grid size-7 place-items-center rounded-lg bg-violet-light text-violet font-bold text-xs">U</span>
+                      <h3 className="text-sm font-semibold text-ink">Load Uniflow Companion Extension</h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowExtensionHelp(false)}
+                      className="text-muted hover:text-ink text-sm font-bold"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="mt-3 space-y-3 text-xs text-muted leading-relaxed">
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-900 text-xs">
+                      <strong className="block font-semibold mb-1">Why is the Extension needed?</strong>
+                      <p className="text-[11px] leading-relaxed">
+                        Google blocks Google Account logins on in-app / automated browsers with <em>"This browser or app may not be secure"</em> or continuous captchas.
+                        Since you are <strong>already logged in</strong> to Google Classroom in your normal Chrome browser, the Uniflow Companion securely copies your active session with zero password prompts!
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg border border-violet/20 bg-violet-light/30 p-3">
+                      <strong className="text-violet-dark block font-semibold text-xs mb-1">Fast 2-Step Setup (100% Free)</strong>
+                      <p className="text-[11px] text-muted mb-2.5">Download the companion extension package and load it once into your Chrome browser:</p>
+                      <a
+                        href="/uniflow-companion.zip"
+                        download="uniflow-companion.zip"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-violet-dark transition"
+                      >
+                        <Icon name="download" size={13} />
+                        <span>📥 Download Extension (.zip)</span>
+                      </a>
+                    </div>
+
+                    <div className="rounded-lg border border-line bg-paper p-3">
+                      <strong className="text-ink block font-semibold text-xs mb-1">How to load in Chrome (15 seconds):</strong>
+                      <ol className="list-decimal pl-4 space-y-1 text-[11px] text-muted">
+                        <li>Unzip the downloaded <code className="rounded bg-white px-1 py-0.5 text-ink font-mono border border-line">uniflow-companion.zip</code> file.</li>
+                        <li>In Chrome, go to <code className="rounded bg-white px-1 py-0.5 text-ink font-mono border border-line">chrome://extensions</code></li>
+                        <li>Enable <strong>Developer mode</strong> (toggle in top-right corner).</li>
+                        <li>Click <strong>Load unpacked</strong> and select the unzipped folder.</li>
+                      </ol>
+                    </div>
+
+                    <p className="rounded-lg bg-emerald-50 border border-emerald-200 p-2 text-emerald-800 text-[11px]">
+                      ✨ <strong>Instant detection:</strong> Once loaded, Uniflow detects it immediately. Click <strong>⚡ 1-Click Allow & Sync Selected</strong> to sync all your university sessions!
+                    </p>
+                  </div>
+                  <div className="mt-4 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setShowExtensionHelp(false)}
+                      className="rounded-lg border border-line bg-white px-4 py-1.5 text-xs font-semibold text-ink hover:bg-paper"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* 2. University Portal (Air University) */}
             <article className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3.5">

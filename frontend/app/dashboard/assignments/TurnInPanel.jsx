@@ -5,6 +5,7 @@ import { useAuth } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 import Icon from '@/app/dashboard/Icon';
 import HostedBrowserDialog from './HostedBrowserDialog';
+import { isExtensionInstalled, syncGcrViaExtension, autoVisitAndSyncGcr } from '@/app/lib/extensionBridge';
 
 /**
  * Turn-in tab: the student attaches the files THEY produced, picks a
@@ -33,6 +34,13 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
   const [classroomViewerUrl, setClassroomViewerUrl] = useState('');
   const [classroomProfileExists, setClassroomProfileExists] = useState(false);
   const [hasSyncedSession, setHasSyncedSession] = useState(false);
+
+  // Companion Extension detection & consent
+  const [extensionDetected, setExtensionDetected] = useState(false);
+  const [syncingViaExtension, setSyncingViaExtension] = useState(false);
+  const [autoVisitingGcr, setAutoVisitingGcr] = useState(false);
+  const [showExtensionHelp, setShowExtensionHelp] = useState(false);
+  const [consentGranted, setConsentGranted] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,6 +97,67 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
     })();
     return () => { cancelled = true; };
   }, [getToken]);
+
+  useEffect(() => {
+    setExtensionDetected(isExtensionInstalled());
+    const onReady = () => setExtensionDetected(true);
+    window.addEventListener('uniflow-companion-ready', onReady);
+    const interval = setInterval(() => {
+      if (isExtensionInstalled()) {
+        setExtensionDetected(true);
+        clearInterval(interval);
+      }
+    }, 1000);
+    return () => {
+      window.removeEventListener('uniflow-companion-ready', onReady);
+      clearInterval(interval);
+    };
+  }, []);
+
+  const handleSyncViaExtension = async (autoRetryTurnIn = true) => {
+    if (syncingViaExtension) return;
+    setSyncingViaExtension(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const token = getToken ? await getToken() : null;
+      const res = await syncGcrViaExtension({ token });
+      setHasSyncedSession(true);
+      if (autoRetryTurnIn) {
+        setNotice('✅ Session synced from your Chrome profile! Submitting deliverables to Google Classroom…');
+        const retryRes = await api.quickTurnInAssignment(assignment.id, token);
+        if (retryRes.needs_browser_login) {
+          setError('Google Classroom session requires a fresh login. Please click "Open Classroom & Capture".');
+        } else {
+          setSubmitted(Boolean(retryRes.turned_in));
+          setNotice(retryRes.message || 'Successfully turned in Google Doc and ZIP deliverables to Google Classroom!');
+        }
+      } else {
+        setNotice(res?.message || 'Google Classroom session synced from your Chrome profile!');
+      }
+    } catch (e) {
+      setError(e.message || 'Extension sync failed. Ensure you are signed into classroom.google.com in this Chrome profile.');
+    } finally {
+      setSyncingViaExtension(false);
+    }
+  };
+
+  const handleAutoVisitGcr = async () => {
+    if (autoVisitingGcr) return;
+    setAutoVisitingGcr(true);
+    setError(null);
+    setNotice('Opening Google Classroom in a tab to capture session cookies…');
+    try {
+      const token = getToken ? await getToken() : null;
+      const res = await autoVisitAndSyncGcr({ token });
+      setHasSyncedSession(true);
+      setNotice('✅ ' + (res?.message || 'Google Classroom session captured! You can now Quick Turn In.'));
+    } catch (e) {
+      setError(e.message || 'Could not auto-capture Classroom session.');
+    } finally {
+      setAutoVisitingGcr(false);
+    }
+  };
 
   const handleFileChange = (e) => {
     const picked = Array.from(e.target.files || []);
@@ -266,11 +335,88 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
             <span>{quickSubmitting ? 'Submitting Doc & ZIP to GCR…' : submitted ? 'Turned in to Google Classroom' : '⚡ Quick Turn In (Doc + ZIP)'}</span>
           </button>
           {hasSyncedSession && (
-            <div className="mt-2 flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs text-emerald-800">
-              <Icon name="checkCircle" size={13} className="text-emerald-600 shrink-0" />
-              <span>Background Classroom Session Active (Autonomous turn-in ready)</span>
+            <div className="mt-2 flex items-center justify-between gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs text-emerald-800">
+              <div className="flex items-center gap-1.5">
+                <Icon name="checkCircle" size={13} className="text-emerald-600 shrink-0" />
+                <span className="font-medium">Background Classroom Session Active</span>
+              </div>
+              {extensionDetected && (
+                <button
+                  type="button"
+                  onClick={() => handleSyncViaExtension(false)}
+                  disabled={syncingViaExtension}
+                  className="text-[11px] font-semibold text-emerald-700 underline hover:text-emerald-900"
+                >
+                  {syncingViaExtension ? 'Refreshing…' : 'Refresh from Profile'}
+                </button>
+              )}
             </div>
           )}
+
+          {/* Extension Consent & 1-Click Sync Card */}
+          {!hasSyncedSession && (
+            <div className="mt-3 rounded-lg border border-violet/30 bg-violet-light/30 p-3 text-xs flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 font-semibold text-violet-dark">
+                  <Icon name="sparkles" size={13} />
+                  <span>Google Classroom Session Required</span>
+                </div>
+                {extensionDetected ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                    <span className="size-1.5 rounded-full bg-emerald-600 animate-pulse" /> Extension Detected
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowExtensionHelp(true)}
+                    className="text-[11px] font-semibold text-violet underline hover:text-violet-dark"
+                  >
+                    Install Extension?
+                  </button>
+                )}
+              </div>
+              <p className="text-[11px] text-muted leading-relaxed">
+                {extensionDetected
+                  ? 'Your Uniflow Companion Extension is ready in this Chrome profile. Authorize Uniflow to sync your active university Google Classroom session for automated turn-in.'
+                  : 'To enable autonomous turn-ins, sync your Classroom session via the companion extension or sign in via our secure private browser.'}
+              </p>
+
+              {extensionDetected ? (
+                <div className="flex flex-col sm:flex-row gap-2 mt-1">
+                  <button
+                    type="button"
+                    onClick={() => handleSyncViaExtension(true)}
+                    disabled={syncingViaExtension}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-violet px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-dark disabled:opacity-50"
+                  >
+                    <Icon name="upload" size={13} />
+                    <span>{syncingViaExtension ? 'Syncing from Chrome Profile…' : '⚡ 1-Click Allow & Sync Session'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAutoVisitGcr}
+                    disabled={autoVisitingGcr}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-line bg-white px-3 py-2 text-xs font-semibold text-ink transition hover:bg-paper disabled:opacity-50"
+                  >
+                    <Icon name="externalLink" size={13} />
+                    <span>{autoVisitingGcr ? 'Opening Classroom…' : '🌐 Open Classroom & Capture'}</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-col sm:flex-row gap-2 mt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowExtensionHelp(true)}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-violet/30 bg-white px-3 py-2 text-xs font-semibold text-violet transition hover:bg-violet-light/50"
+                  >
+                    <Icon name="download" size={13} />
+                    <span>Setup Companion Extension (1-Click Sync)</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           <button
             type="button"
             onClick={connectClassroomBrowser}
@@ -278,13 +424,82 @@ export default function TurnInPanel({ assignment, onTurnIn }) {
             className={`${secondaryButtonClass} mt-2 w-full`}
           >
             <Icon name="externalLink" size={14} />
-            <span>{classroomBrowserBusy ? 'Starting private browser…' : 'Sign in to Google Classroom'}</span>
+            <span>{classroomBrowserBusy ? 'Starting private browser…' : 'Sign in via Private In-App Browser'}</span>
           </button>
+          <p className="mt-1 text-[11px] text-muted">
+            ⚠️ <em>If Google blocks login with "This browser may not be secure", use the Companion Extension above (which uses your already-signed-in Chrome profile).</em>
+          </p>
           <HostedBrowserDialog url={classroomViewerUrl} onClose={() => setClassroomViewerUrl('')} />
           {classroomProfileExists && (
             <button type="button" onClick={forgetClassroomBrowser} disabled={classroomBrowserBusy} className="mt-2 self-start text-xs font-medium text-rose underline disabled:opacity-50">
               Forget saved Classroom login
             </button>
+          )}
+
+          {/* Extension Installation Help Modal */}
+          {showExtensionHelp && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+              <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl border border-line">
+                <div className="flex items-center justify-between border-b border-line pb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="grid size-7 place-items-center rounded-lg bg-violet-light text-violet font-bold text-xs">U</span>
+                    <h3 className="text-sm font-semibold text-ink">Load Uniflow Companion Extension</h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowExtensionHelp(false)}
+                    className="text-muted hover:text-ink text-sm font-bold"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="mt-3 space-y-3 text-xs text-muted leading-relaxed">
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-900 text-xs">
+                    <strong className="block font-semibold mb-1">Why is the Extension needed?</strong>
+                    <p className="text-[11px] leading-relaxed">
+                      Google blocks Google Account logins on in-app / automated browsers with <em>"This browser or app may not be secure"</em> or continuous captchas.
+                      Since you are <strong>already logged in</strong> to Google Classroom in your normal Chrome browser, the Uniflow Companion securely copies your active session with zero password prompts!
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg border border-violet/20 bg-violet-light/30 p-3">
+                    <strong className="text-violet-dark block font-semibold text-xs mb-1">Fast 2-Step Setup (100% Free)</strong>
+                    <p className="text-[11px] text-muted mb-2.5">Download the companion extension package and load it once into your Chrome browser:</p>
+                    <a
+                      href="/uniflow-companion.zip"
+                      download="uniflow-companion.zip"
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-violet-dark transition"
+                    >
+                      <Icon name="download" size={13} />
+                      <span>📥 Download Extension (.zip)</span>
+                    </a>
+                  </div>
+
+                  <div className="rounded-lg border border-line bg-paper p-3">
+                    <strong className="text-ink block font-semibold text-xs mb-1">How to load in Chrome (15 seconds):</strong>
+                    <ol className="list-decimal pl-4 space-y-1 text-[11px] text-muted">
+                      <li>Unzip the downloaded <code className="rounded bg-white px-1 py-0.5 text-ink font-mono border border-line">uniflow-companion.zip</code> file.</li>
+                      <li>In Chrome, go to <code className="rounded bg-white px-1 py-0.5 text-ink font-mono border border-line">chrome://extensions</code></li>
+                      <li>Enable <strong>Developer mode</strong> (toggle in top-right corner).</li>
+                      <li>Click <strong>Load unpacked</strong> and select the unzipped folder.</li>
+                    </ol>
+                  </div>
+
+                  <p className="rounded-lg bg-emerald-50 border border-emerald-200 p-2 text-emerald-800 text-[11px]">
+                    ✨ <strong>Instant detection:</strong> Once loaded, Uniflow detects it immediately. Click <strong>⚡ 1-Click Allow & Sync Session</strong> and your assignments will submit automatically forever!
+                  </p>
+                </div>
+                <div className="mt-4 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setShowExtensionHelp(false)}
+                    className="rounded-lg border border-line bg-white px-4 py-1.5 text-xs font-semibold text-ink hover:bg-paper"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </div>
 

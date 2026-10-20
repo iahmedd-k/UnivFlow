@@ -5,6 +5,7 @@ import { useAuth, useUser } from '@clerk/nextjs';
 import Link from 'next/link';
 import { api } from '@/app/lib/api';
 import Icon from '@/app/dashboard/Icon';
+import { isExtensionInstalled, syncGcrViaExtension } from '@/app/lib/extensionBridge';
 
 function formatDate(value, options = { month: 'short', day: 'numeric' }) {
   if (!value) return 'Date TBC';
@@ -78,6 +79,75 @@ export default function DashboardOverview() {
   const [clearingTimetable, setClearingTimetable] = useState(false);
   const [timetableNotice, setTimetableNotice] = useState('');
 
+  const [extensionDetected, setExtensionDetected] = useState(false);
+  const [syncingGcrDashboard, setSyncingGcrDashboard] = useState(false);
+  const [pendingTurnInId, setPendingTurnInId] = useState(null);
+  const [companionNotice, setCompanionNotice] = useState('');
+  const [copiedExtensionUrl, setCopiedExtensionUrl] = useState(false);
+  const [showCompanionGuide, setShowCompanionGuide] = useState(false);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setExtensionDetected(isExtensionInstalled());
+    const onReady = () => setExtensionDetected(true);
+    window.addEventListener('uniflow-companion-ready', onReady);
+    const interval = setInterval(() => {
+      if (isExtensionInstalled()) {
+        setExtensionDetected(true);
+        clearInterval(interval);
+      }
+    }, 1000);
+    return () => {
+      window.removeEventListener('uniflow-companion-ready', onReady);
+      clearInterval(interval);
+    };
+  }, []);
+
+  const handleSyncCompanionSession = async () => {
+    setSyncingGcrDashboard(true);
+    setTurnInError('');
+    setCompanionNotice('');
+    try {
+      const token = await getToken();
+      const res = await syncGcrViaExtension({ token });
+      setCompanionNotice('✅ ' + (res?.message || 'Google Classroom session synced! Automated turn-in and solver sync are ready.'));
+    } catch (e) {
+      setTurnInError(e.message || 'Could not sync Classroom session from extension. Ensure you are signed into classroom.google.com in this Chrome profile.');
+    } finally {
+      setSyncingGcrDashboard(false);
+    }
+  };
+
+  const handleCopyExtensionUrl = async () => {
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText('chrome://extensions');
+      }
+      setCopiedExtensionUrl(true);
+      setTimeout(() => setCopiedExtensionUrl(false), 2000);
+    } catch (err) {
+      console.warn('Clipboard write failed:', err);
+    }
+  };
+
+  const handleSyncFromExtensionAndRetry = async () => {
+    setSyncingGcrDashboard(true);
+    setTurnInError('');
+    try {
+      const token = await getToken();
+      const res = await syncGcrViaExtension({ token });
+      setTurnInNotice('✅ ' + (res?.message || 'Classroom session synced from your profile! Resuming turn-in…'));
+      setClassroomLoginRequired(false);
+      if (pendingTurnInId) {
+        await handleDashboardQuickTurnIn(pendingTurnInId);
+      }
+    } catch (e) {
+      setTurnInError(e.message || 'Could not sync Classroom session from extension.');
+    } finally {
+      setSyncingGcrDashboard(false);
+    }
+  };
+
   const handleDashboardClearTimetable = async () => {
     setClearingTimetable(true);
     setError('');
@@ -114,6 +184,7 @@ export default function DashboardOverview() {
     const assignment = (upcoming?.assignments || []).find((item) => item.id === assignmentId);
     if (!window.confirm(`Submit "${assignment?.title || 'this assignment'}" to Google Classroom now? Uniflow will attach the Google Doc and a ZIP of deliverables.`)) return;
     setTurningInId(assignmentId);
+    setPendingTurnInId(assignmentId);
     setError('');
     setTurnInError('');
     setTurnInNotice('');
@@ -212,6 +283,149 @@ export default function DashboardOverview() {
       <StatCard label="Open assignments" value={loading ? '—' : assignmentCount} detail="Still in your coursework queue" tone="bg-warning-bg text-warning" icon="clock" />
       <StatCard label="AI Solved Solutions" value={loading ? '—' : agentHub.total_solved} detail={agentHub.active_count > 0 ? `${agentHub.active_count} generating now` : "Verified deliverables ready"} tone="bg-success-bg text-success" icon="sparkles" />
       <StatCard label="Attendance" value={loading ? '—' : `${Number(overview?.average_attendance || 0).toFixed(0)}%`} detail="Average across courses" tone="bg-info-bg text-info" icon="chart" />
+    </section>
+
+    {/* Academic Companion Extension Card for Friends */}
+    <section className="mb-5 overflow-hidden rounded-2xl border border-violet/20 bg-gradient-to-br from-surface via-surface to-violet-light/30 p-5 shadow-sm transition">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3.5">
+          <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-violet text-white shadow-md shadow-violet/25">
+            <Icon name="sparkles" size={20} />
+          </div>
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-bold tracking-tight text-ink">Uniflow Academic Companion (v1.3.0)</h2>
+              {extensionDetected ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800">
+                  <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  Active & Connected
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-800">
+                  ⚡ 1-Click Setup Recommended
+                </span>
+              )}
+            </div>
+            <p className="mt-1 text-xs text-muted max-w-2xl leading-relaxed">
+              Automates Google Classroom turn-ins and AI solving with zero Google bot blocks or password prompts.
+              {extensionDetected
+                ? ' Your active session is synced with automatic background renewal enabled.'
+                : ' Download our free companion pack below and load it once into Chrome.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-center shrink-0">
+          <a
+            href="/uniflow-companion.zip"
+            download="uniflow-companion.zip"
+            className="inline-flex min-h-9 items-center gap-2 rounded-xl bg-violet px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:-translate-y-px hover:bg-violet-dark"
+            title="Download the companion extension zip package"
+          >
+            <Icon name="download" size={14} />
+            <span>📥 Download Pack (.zip)</span>
+          </a>
+
+          {extensionDetected ? (
+            <button
+              type="button"
+              onClick={handleSyncCompanionSession}
+              disabled={syncingGcrDashboard}
+              className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-violet/30 bg-white px-3 py-2 text-xs font-semibold text-violet-dark hover:bg-violet-light/50 transition disabled:opacity-50"
+            >
+              <Icon name="refresh" size={13} className={syncingGcrDashboard ? "animate-spin" : ""} />
+              <span>{syncingGcrDashboard ? 'Syncing…' : '⚡ 1-Click Sync'}</span>
+            </button>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={() => setShowCompanionGuide(!showCompanionGuide)}
+            className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-line bg-white/80 px-3 py-2 text-xs font-semibold text-ink hover:bg-paper transition"
+          >
+            <Icon name={showCompanionGuide ? 'close' : 'help'} size={13} />
+            <span>{showCompanionGuide ? 'Hide Steps' : 'Install Guide'}</span>
+          </button>
+        </div>
+      </div>
+
+      {companionNotice && (
+        <div className="mt-4 flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-emerald-800">
+          <div className="flex items-center gap-2">
+            <Icon name="checkCircle" size={14} />
+            <span>{companionNotice}</span>
+          </div>
+          <button type="button" onClick={() => setCompanionNotice('')} className="text-emerald-700 hover:text-emerald-900">
+            <Icon name="close" size={12} />
+          </button>
+        </div>
+      )}
+
+      {/* 3-Step Clear Visual Installation Guide for Friends */}
+      {(!extensionDetected || showCompanionGuide) && (
+        <div className="mt-4 rounded-xl border border-line/70 bg-white/90 p-4 shadow-2xs backdrop-blur-xs">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-line pb-2.5">
+            <div className="flex items-center gap-2">
+              <span className="grid size-5 place-items-center rounded bg-violet-light text-violet font-bold text-[11px]">✦</span>
+              <strong className="text-xs font-bold text-ink">3 Quick Steps for Friends (Takes 20 Seconds):</strong>
+            </div>
+            <span className="text-[11px] text-muted">No Web Store account needed · Free & Local</span>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            {/* Step 1 */}
+            <div className="flex flex-col gap-1.5 rounded-lg border border-line/80 bg-paper/60 p-3">
+              <div className="flex items-center gap-2">
+                <span className="grid size-6 place-items-center rounded-md bg-violet text-white text-xs font-bold">1</span>
+                <strong className="text-xs font-bold text-ink">Download &amp; Unzip</strong>
+              </div>
+              <p className="text-[11px] text-muted leading-relaxed">
+                Click the <strong className="text-ink">📥 Download Pack (.zip)</strong> button above. Right-click the downloaded file and select <em>&quot;Extract All&quot;</em> to a folder.
+              </p>
+            </div>
+
+            {/* Step 2 */}
+            <div className="flex flex-col gap-1.5 rounded-lg border border-line/80 bg-paper/60 p-3">
+              <div className="flex items-center gap-2">
+                <span className="grid size-6 place-items-center rounded-md bg-violet text-white text-xs font-bold">2</span>
+                <strong className="text-xs font-bold text-ink">Open Extensions</strong>
+              </div>
+              <p className="text-[11px] text-muted leading-relaxed">
+                Open Chrome and go to <code className="rounded bg-white px-1 py-0.5 text-ink font-mono border border-line text-[10px]">chrome://extensions</code>. Turn ON the <strong className="text-ink">Developer mode</strong> toggle in the top-right corner.
+              </p>
+              <button
+                type="button"
+                onClick={handleCopyExtensionUrl}
+                className="mt-1 inline-flex w-fit items-center gap-1 rounded-md border border-line bg-white px-2 py-0.5 text-[10px] font-semibold text-muted hover:text-ink transition"
+              >
+                <Icon name={copiedExtensionUrl ? 'check' : 'copy'} size={11} />
+                <span>{copiedExtensionUrl ? 'Copied to clipboard!' : 'Copy chrome://extensions'}</span>
+              </button>
+            </div>
+
+            {/* Step 3 */}
+            <div className="flex flex-col gap-1.5 rounded-lg border border-line/80 bg-paper/60 p-3">
+              <div className="flex items-center gap-2">
+                <span className="grid size-6 place-items-center rounded-md bg-violet text-white text-xs font-bold">3</span>
+                <strong className="text-xs font-bold text-ink">Click &quot;Load Unpacked&quot;</strong>
+              </div>
+              <p className="text-[11px] text-muted leading-relaxed">
+                Click the top-left <strong className="text-ink">Load unpacked</strong> button and select your extracted extension folder. Uniflow detects it automatically!
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-violet/20 bg-violet-light/30 px-3.5 py-2 text-[11px] text-violet-dark">
+            <span className="flex items-center gap-1.5">
+              <Icon name="sparkles" size={13} />
+              <span><strong>New in v1.3.0:</strong> Automatic Background Auto-Renewal keeps your Google Classroom and Claude cookies fresh transparently without re-logins!</span>
+            </span>
+            <Link href="/dashboard/settings" className="font-semibold underline hover:text-ink">
+              Advanced Session Settings →
+            </Link>
+          </div>
+        </div>
+      )}
     </section>
 
     {/* 4-Agent CrewAI Live Hub Section */}
@@ -331,8 +545,19 @@ export default function DashboardOverview() {
               <div className="flex flex-wrap items-center gap-2">
                 <Icon name={classroomLoginRequired ? 'externalLink' : 'checkCircle'} size={14} />
                 <span>{turnInNotice}</span>
+                {classroomLoginRequired && extensionDetected && (
+                  <button
+                    type="button"
+                    onClick={handleSyncFromExtensionAndRetry}
+                    disabled={syncingGcrDashboard}
+                    className="ml-1 inline-flex items-center gap-1 rounded-md bg-violet px-2.5 py-1 text-[11px] font-bold text-white shadow-xs hover:bg-violet-dark disabled:opacity-50"
+                  >
+                    <Icon name="upload" size={12} />
+                    <span>{syncingGcrDashboard ? 'Syncing…' : '⚡ 1-Click Sync from Profile'}</span>
+                  </button>
+                )}
                 {classroomViewerUrl && (
-                  <a href={classroomViewerUrl} target="_blank" rel="noopener noreferrer" className="underline">
+                  <a href={classroomViewerUrl} target="_blank" rel="noopener noreferrer" className="underline ml-1">
                     Open private sign-in browser
                   </a>
                 )}
