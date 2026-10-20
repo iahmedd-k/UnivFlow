@@ -111,6 +111,15 @@ class BrowserSessionClient:
         state = self.status(user_id)
         port = state.get("cdp_port")
         if not state.get("active") or not port:
+            # Auto-boot private browser session if not currently active
+            try:
+                self.open(user_id)
+                state = self.status(user_id)
+                port = state.get("cdp_port")
+            except Exception:
+                pass
+
+        if not state.get("active") or not port:
             raise RuntimeError(f"Your private {self.display_name} browser is not running. Connect it from settings and retry.")
         host = settings.browser_cdp_host
         try:

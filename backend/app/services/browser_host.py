@@ -13,7 +13,7 @@ import subprocess
 import threading
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -62,6 +62,7 @@ class BrowserSession:
     cdp_port: int
     vnc_port: int
     processes: list[subprocess.Popen]
+    last_accessed: float = field(default_factory=time.time)
 
 
 class SessionStart(BaseModel):
@@ -165,14 +166,25 @@ class BrowserSessionHost:
             raise HTTPException(status_code=400, detail="Browser sign-in is restricted to Claude, Google Accounts, and Google Classroom.")
 
         with self.lock:
+            # 1. Prune dead sessions where CDP is no longer responding
+            dead_keys = [k for k, s in self.sessions.items() if not self._cdp_is_ready(s.cdp_port)]
+            for k in dead_keys:
+                self._stop(self.sessions[k])
+                self.sessions.pop(k, None)
+
             active = self.sessions.get(key)
             if active and self._cdp_is_ready(active.cdp_port):
+                active.last_accessed = time.time()
                 return {"cdp_port": active.cdp_port, "active": True, "profile_exists": (PROFILE_ROOT / key).is_dir()}
             if active:
                 self._stop(active)
                 self.sessions.pop(key, None)
-            if len(self.sessions) >= MAX_BROWSER_SESSIONS:
-                raise HTTPException(status_code=503, detail="The hosted browser is at its session capacity.")
+
+            # 2. If at capacity, gracefully evict the oldest session
+            if len(self.sessions) >= MAX_BROWSER_SESSIONS and self.sessions:
+                oldest_key = min(self.sessions.keys(), key=lambda k: getattr(self.sessions[k], "last_accessed", 0))
+                self._stop(self.sessions[oldest_key])
+                self.sessions.pop(oldest_key, None)
 
             display = next(
                 (number for number in range(100, 3000)
@@ -321,6 +333,11 @@ class BrowserSessionHost:
         with self.lock:
             session = self.sessions.get(key)
             active = bool(session and self._cdp_is_ready(session.cdp_port))
+            if session and not active:
+                self._stop(session)
+                self.sessions.pop(key, None)
+            elif session and active:
+                session.last_accessed = time.time()
             return {
                 "active": active,
                 "cdp_port": session.cdp_port if active and session else None,
