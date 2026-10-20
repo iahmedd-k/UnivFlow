@@ -3,12 +3,12 @@
 (function () {
   // Mark DOM so the web app can immediately detect the extension
   document.documentElement.dataset.uniflowCompanionInstalled = "true";
-  document.documentElement.dataset.uniflowCompanionVersion = "1.3.0";
+  document.documentElement.dataset.uniflowCompanionVersion = "1.3.1";
 
   // Dispatch custom event for immediate frontend detection
   window.dispatchEvent(
     new CustomEvent("uniflow-companion-ready", {
-      detail: { version: "1.3.0" },
+      detail: { version: "1.3.1" },
     })
   );
 

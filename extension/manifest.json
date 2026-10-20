@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Uniflow Academic Companion",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "1-Click session synchronization & auto-turn-in companion for Claude.ai, Google Classroom, and University Portal.",
   "permissions": [
     "cookies",
@@ -17,6 +17,7 @@
     "http://localhost:8000/*",
     "http://localhost:3000/*",
     "https://*.azure.com/*",
+    "https://*.cloudapp.azure.com/*",
     "https://*.vercel.app/*",
     "https://*/*"
   ],
@@ -33,7 +34,9 @@
       "matches": [
         "http://localhost:3000/*",
         "https://*.vercel.app/*",
-        "https://univ-flow-bt12.vercel.app/*"
+        "https://univ-flow-bt12.vercel.app/*",
+        "https://*.cloudapp.azure.com/*",
+        "https://univlfow.koreacentral.cloudapp.azure.com/*"
       ],
       "js": ["content.js"],
       "run_at": "document_start"

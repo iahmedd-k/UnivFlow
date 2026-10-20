@@ -286,6 +286,20 @@ export default function SettingsPage() {
     }
   };
 
+  const [tokenCopied, setTokenCopied] = useState(false);
+  const handleCopyAuthToken = async () => {
+    try {
+      const token = await getToken();
+      if (!token) throw new Error('Could not retrieve active session token. Please re-login.');
+      await navigator.clipboard.writeText(token);
+      setTokenCopied(true);
+      setSuccess('📋 Fresh Uniflow Auth Token copied to clipboard! (You can paste it directly into the extension popup)');
+      setTimeout(() => setTokenCopied(false), 3500);
+    } catch (err) {
+      setError('Could not copy token: ' + (err.message || 'Unknown error'));
+    }
+  };
+
   const handleConnectGoogle = async () => {
     setGoogleBusy(true);
     setError('');
@@ -1196,6 +1210,15 @@ export default function SettingsPage() {
                   >
                     <Icon name="externalLink" size={13} />
                     <span>{extensionSyncBusy ? 'Auto-Visiting…' : '🚀 Auto-Visit & Extract'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCopyAuthToken}
+                    className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink hover:bg-paper"
+                    title="Copy a fresh, active Clerk session token to paste into the Companion Extension popup"
+                  >
+                    <Icon name="copy" size={13} />
+                    <span>{tokenCopied ? '✓ Copied Token!' : '📋 Copy Fresh Token'}</span>
                   </button>
                 </div>
 

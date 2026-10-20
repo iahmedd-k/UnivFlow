@@ -331,11 +331,24 @@
   <div class="card" style="margin-top: 10px;">
     <div class="field">
       <label for="apiUrl">Uniflow Backend URL:</label>
-      <input type="text" id="apiUrl" value="http://localhost:8000" placeholder="https://api.yourdomain.com">
+      <input type="text" id="apiUrl" value="https://univlfow.koreacentral.cloudapp.azure.com/api/v1" placeholder="https://api.yourdomain.com">
     </div>
     <div class="field">
-      <label for="authToken">Auth Token (auto-detected if Uniflow open):</label>
-      <input type="password" id="authToken" placeholder="Bearer token or leave blank for auto-detect">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <label for="authToken" style="margin-bottom: 0;">Auth Token:</label>
+          <span id="tokenExpiryStatus" class="badge badge-warn" style="font-size: 9px; padding: 1px 5px;">Checking…</span>
+        </div>
+        <button type="button" id="refreshAuthBtn" style="background: none; border: none; color: #6657d9; font-size: 11px; font-weight: 600; cursor: pointer; text-decoration: underline; padding: 0;">🔄 Auto-Detect</button>
+      </div>
+      <div style="position: relative;">
+        <input type="password" id="authToken" placeholder="Auto-detected from active Uniflow tab or paste token" style="padding-right: 50px;">
+        <button type="button" id="toggleAuthVisibilityBtn" style="position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: none; font-size: 11px; color: #636779; cursor: pointer; padding: 2px 4px;">Show</button>
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; font-size: 10px; color: #878a99;">
+        <span>Clerk sessions expire every 60s.</span>
+        <a href="https://univlfow.koreacentral.cloudapp.azure.com/dashboard/settings" id="openSettingsLink" target="_blank" style="color: #6657d9; text-decoration: underline; font-weight: 500;">Open Settings & Sync ↗</a>
+      </div>
     </div>
   </div>
 

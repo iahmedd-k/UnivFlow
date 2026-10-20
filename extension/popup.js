@@ -31,6 +31,9 @@ const autoVisitAllBtn = document.getElementById("autoVisitAllBtn");
 const noticeBox = document.getElementById("noticeBox");
 const apiUrlInput = document.getElementById("apiUrl");
 const authTokenInput = document.getElementById("authToken");
+const refreshAuthBtn = document.getElementById("refreshAuthBtn");
+const tokenExpiryStatus = document.getElementById("tokenExpiryStatus");
+const toggleAuthVisibilityBtn = document.getElementById("toggleAuthVisibilityBtn");
 
 function showNotice(text, type = "ok") {
   noticeBox.style.display = "block";
@@ -38,12 +41,101 @@ function showNotice(text, type = "ok") {
   noticeBox.textContent = text;
 }
 
+function isTokenExpired(token) {
+  if (!token || typeof token !== "string") return true;
+  try {
+    const raw = token.startsWith("Bearer ") ? token.slice(7).trim() : token.trim();
+    const parts = raw.split(".");
+    if (parts.length < 2) return true;
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split("")
+        .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+        .join("")
+    );
+    const payload = JSON.parse(jsonPayload);
+    if (!payload.exp) return false;
+    return payload.exp * 1000 <= Date.now() + 10000;
+  } catch (e) {
+    return true;
+  }
+}
+
+function updateTokenBadge(token) {
+  if (!tokenExpiryStatus) return;
+  if (!token || !token.trim()) {
+    tokenExpiryStatus.textContent = "Needed";
+    tokenExpiryStatus.className = "badge badge-info";
+  } else if (isTokenExpired(token)) {
+    tokenExpiryStatus.textContent = "Expired";
+    tokenExpiryStatus.className = "badge badge-warn";
+  } else {
+    tokenExpiryStatus.textContent = "Active";
+    tokenExpiryStatus.className = "badge badge-ok";
+  }
+}
+
+if (toggleAuthVisibilityBtn && authTokenInput) {
+  toggleAuthVisibilityBtn.addEventListener("click", () => {
+    if (authTokenInput.type === "password") {
+      authTokenInput.type = "text";
+      toggleAuthVisibilityBtn.textContent = "Hide";
+    } else {
+      authTokenInput.type = "password";
+      toggleAuthVisibilityBtn.textContent = "Show";
+    }
+  });
+}
+
+if (authTokenInput) {
+  authTokenInput.addEventListener("input", () => {
+    const val = authTokenInput.value.trim();
+    updateTokenBadge(val);
+    chrome.storage.local.set({ uniflowAuthToken: val });
+  });
+}
+
+function autoDetectAuthToken(interactive = false) {
+  if (refreshAuthBtn) refreshAuthBtn.textContent = "⏳ Detecting…";
+  chrome.runtime.sendMessage(
+    { action: "DETECT_AUTH_TOKEN", payload: { apiUrl: apiUrlInput.value.trim() } },
+    (res) => {
+      if (refreshAuthBtn) refreshAuthBtn.textContent = "🔄 Auto-Detect";
+      if (res?.success && res.token && !isTokenExpired(res.token)) {
+        authTokenInput.value = res.token;
+        updateTokenBadge(res.token);
+        chrome.storage.local.set({ uniflowAuthToken: res.token });
+        if (interactive) {
+          showNotice("✅ Fresh Uniflow Auth Token auto-detected!", "ok");
+        }
+      } else if (interactive) {
+        updateTokenBadge(authTokenInput.value);
+        showNotice("⚠️ No active session found. Please open or refresh your Uniflow web dashboard.", "err");
+      }
+    }
+  );
+}
+
+if (refreshAuthBtn) {
+  refreshAuthBtn.addEventListener("click", () => autoDetectAuthToken(true));
+}
+
 // 1. Load saved preferences and connection history
 chrome.storage.local.get(
   ["uniflowApiUrl", "uniflowAuthToken", "claudeConnected", "portalConnected", "gcrConnected"],
   (data) => {
     if (data.uniflowApiUrl) apiUrlInput.value = data.uniflowApiUrl;
-    if (data.uniflowAuthToken) authTokenInput.value = data.uniflowAuthToken;
+
+    const storedToken = data.uniflowAuthToken || "";
+    if (storedToken && !isTokenExpired(storedToken)) {
+      authTokenInput.value = storedToken;
+      updateTokenBadge(storedToken);
+    } else {
+      updateTokenBadge("");
+      // Stored token is missing or expired, automatically fetch fresh token from browser
+      autoDetectAuthToken(false);
+    }
 
     // Rule: Claude & Portal are only fetched if NOT connected before
     if (data.claudeConnected) {

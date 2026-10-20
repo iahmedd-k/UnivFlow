@@ -98,23 +98,108 @@ async function autoVisitAndExtract(service, maxWaitMs = 15000) {
   return { success: false, error: `Timed out waiting for ${service} login cookies`, tabId: tab.id };
 }
 
-// 5. Send synced cookies to Uniflow backend
+// Helper: Verify if a Clerk JWT token has expired
+function isTokenExpired(token) {
+  if (!token || typeof token !== "string") return true;
+  try {
+    const raw = token.startsWith("Bearer ") ? token.slice(7).trim() : token.trim();
+    const parts = raw.split(".");
+    if (parts.length < 2) return true;
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split("")
+        .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+        .join("")
+    );
+    const payload = JSON.parse(jsonPayload);
+    if (!payload.exp) return false;
+    // Expired or expiring within 10 seconds
+    return payload.exp * 1000 <= Date.now() + 10000;
+  } catch (e) {
+    return true;
+  }
+}
+
+// Helper: Auto-detect fresh, non-expired Clerk JWT session token from browser cookies
+async function detectFreshAuthToken(baseUrl) {
+  try {
+    // 1. Check exact baseUrl domain for __session cookie
+    if (baseUrl) {
+      try {
+        const u = new URL(baseUrl);
+        const cookie = await chrome.cookies.get({ url: u.origin, name: "__session" });
+        if (cookie && cookie.value && !isTokenExpired(cookie.value)) {
+          return cookie.value;
+        }
+      } catch (_) {}
+    }
+
+    // 2. Query all __session cookies across all domains
+    const sessionCookies = await chrome.cookies.getAll({ name: "__session" });
+    if (sessionCookies && sessionCookies.length > 0) {
+      // Filter out any expired tokens
+      const validCookies = sessionCookies.filter((c) => c.value && !isTokenExpired(c.value));
+      if (validCookies.length > 0) {
+        let targetHost = "";
+        try { targetHost = new URL(baseUrl).hostname; } catch (_) {}
+        const best = validCookies.find((c) => targetHost && c.domain && c.domain.includes(targetHost))
+          || validCookies.find((c) => c.domain && (c.domain.includes("cloudapp.azure.com") || c.domain.includes("univlfow") || c.domain.includes("vercel.app") || c.domain.includes("localhost")))
+          || validCookies[0];
+        if (best && best.value) return best.value;
+      }
+    }
+  } catch (e) {
+    console.debug("detectFreshAuthToken error:", e);
+  }
+  return null;
+}
+
+// 5. Send synced cookies to Uniflow backend with auto-token detection and 401 retry
 async function sendToBackend(endpoint, payload, baseUrl, token) {
   if (!baseUrl) throw new Error("Uniflow Backend URL not configured.");
   const cleanBase = baseUrl.replace(/\/+$/, "");
-  const headers = { "Content-Type": "application/json" };
-  if (token) {
-    headers["Authorization"] = token.startsWith("Bearer ") ? token : `Bearer ${token}`;
+
+  let activeToken = token;
+  // If no token or provided token is expired, auto-detect a fresh one!
+  if (!activeToken || isTokenExpired(activeToken)) {
+    const detected = await detectFreshAuthToken(baseUrl);
+    if (detected) activeToken = detected;
   }
 
-  const resp = await fetch(`${cleanBase}${endpoint}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  });
+  const makeRequest = async (tok) => {
+    const headers = { "Content-Type": "application/json" };
+    if (tok) {
+      headers["Authorization"] = tok.startsWith("Bearer ") ? tok : `Bearer ${tok}`;
+    }
+    return fetch(`${cleanBase}${endpoint}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+  };
+
+  let resp = await makeRequest(activeToken);
+
+  // If 401 Unauthorized (e.g. token expired), try to auto-detect a fresh token and retry once
+  if (resp.status === 401) {
+    const freshToken = await detectFreshAuthToken(baseUrl);
+    if (freshToken && freshToken !== activeToken) {
+      activeToken = freshToken;
+      resp = await makeRequest(freshToken);
+      if (resp.ok) {
+        await setStoredState({ uniflowAuthToken: freshToken });
+      }
+    }
+  }
 
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
+    if (resp.status === 401) {
+      throw new Error(
+        "Authentication token has expired. Please open or refresh your Uniflow web dashboard, or click '1-Click Sync' from Settings."
+      );
+    }
     throw new Error(err.detail || `Server error ${resp.status}`);
   }
   return resp.json();
@@ -131,7 +216,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const token = payload?.token || state.uniflowAuthToken || "";
 
       if (action === "PING") {
-        sendResponse({ success: true, version: "1.3.0" });
+        sendResponse({ success: true, version: "1.3.1" });
+      } else if (action === "DETECT_AUTH_TOKEN") {
+        const detected = await detectFreshAuthToken(payload?.apiUrl || apiUrl);
+        if (detected) {
+          await setStoredState({ uniflowAuthToken: detected });
+          sendResponse({ success: true, token: detected });
+        } else {
+          sendResponse({ success: false, error: "No active Uniflow __session cookie found in browser." });
+        }
       } else if (action === "SET_CONFIG") {
         await setStoredState({
           ...(payload?.apiUrl ? { uniflowApiUrl: payload.apiUrl } : {}),
