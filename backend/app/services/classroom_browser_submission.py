@@ -437,35 +437,75 @@ def submit_drive_files(
                     )
                 logger.info("Assignment has no attachment control but 'Turn in' / 'Mark as done' is available.")
             else:
-                add_button.click(force=True)
-                page.wait_for_timeout(800)
-
-                # Click Google Drive option in dropdown menu
+                # Robust dropdown opener: Click 'Add or create' and poll for menu with retries
                 drive_option = None
-                for sel in [
-                    '[role="menuitem"]:has-text("Google Drive")',
-                    'li[role="menuitem"]:has-text("Google Drive")',
-                    'li:has-text("Google Drive")',
-                    '[aria-label*="Google Drive" i]',
-                    'text="Google Drive"',
-                ]:
-                    loc = page.locator(sel)
-                    count = loc.count()
-                    for i in range(count):
-                        cand = loc.nth(i)
-                        if cand.is_visible():
-                            drive_option = cand
+                menu_deadline = time.monotonic() + 15.0
+                last_click = 0.0
+                click_attempt = 0
+
+                while time.monotonic() < menu_deadline:
+                    # 1. Search for Google Drive option in dropdown menu using all variants
+                    for sel in [
+                        '[data-type="2"]',
+                        'li[data-type="2"]',
+                        '[role="menuitem"][data-type="2"]',
+                        '[role="menuitem"]:has-text("Google Drive")',
+                        'li[role="menuitem"]:has-text("Google Drive")',
+                        'li:has-text("Google Drive")',
+                        '[role="menuitem"]:has-text("Drive")',
+                        'li[role="menuitem"]:has-text("Drive")',
+                        'li:has-text("Drive")',
+                        '[aria-label*="Google Drive" i]',
+                        '[aria-label*="Drive" i]',
+                        '[role="menu"] [role="menuitem"]:first-child',
+                        'div[role="menu"] li:first-child',
+                    ]:
+                        try:
+                            loc = page.locator(sel)
+                            for i in range(loc.count()):
+                                cand = loc.nth(i)
+                                if cand.is_visible():
+                                    drive_option = cand
+                                    break
+                        except Exception:
+                            pass
+                        if drive_option:
                             break
+
                     if drive_option:
                         break
 
+                    # If menu hasn't appeared yet, re-click add_button every 1.5s
+                    if time.monotonic() - last_click > 1.5:
+                        logger.info("Clicking 'Add or create' button (attempt %d)...", click_attempt + 1)
+                        try:
+                            add_button.click(force=True)
+                        except Exception:
+                            add_button.evaluate("el => el.click()")
+                        last_click = time.monotonic()
+                        click_attempt += 1
+
+                    page.wait_for_timeout(350)
+
                 if not drive_option:
+                    logger.warning("Classroom dropdown failed to expose Drive option. Current page text: %r", body_text[:400])
                     raise ClassroomBrowserSubmissionError("Classroom did not show 'Google Drive' in the attachment dropdown.")
 
+                # Click Drive option (targeting the menuitem / li to avoid pointer interception)
+                logger.info("Found Google Drive option in dropdown. Clicking...")
+                clicked_drive = False
                 try:
-                    drive_option.click(force=True, timeout=5000)
-                except Exception:
-                    drive_option.evaluate("el => el.closest('[role=\"menuitem\"]')?.click() || el.click()")
+                    drive_option.click(force=True, timeout=3000)
+                    clicked_drive = True
+                except Exception as e:
+                    logger.debug("Standard click on Drive option failed (%s), trying JS click...", e)
+
+                if not clicked_drive:
+                    try:
+                        drive_option.evaluate("el => (el.closest('[role=\"menuitem\"], li') || el).click()")
+                        clicked_drive = True
+                    except Exception as je:
+                        logger.warning("JS click on Drive option failed: %s", je)
 
                 picker = _wait_for_picker_frame(page)
                 for item in valid_files:
