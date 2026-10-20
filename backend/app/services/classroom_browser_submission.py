@@ -22,6 +22,17 @@ class ClassroomBrowserSubmissionError(RuntimeError):
     """The Classroom UI could not safely complete the requested submission."""
 
 
+def _to_gcr_base64_id(raw_id: str) -> str:
+    """Google Classroom web URLs encode 64-bit integer IDs as URL-safe Base64."""
+    raw = str(raw_id).strip()
+    if not raw:
+        return raw
+    if raw.isdigit():
+        import base64
+        return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+    return raw
+
+
 def _wait_for_picker_frame(page, timeout_seconds: float = 25.0):
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -42,22 +53,27 @@ def _select_drive_file(frame, file_id: str, display_name: str) -> None:
     deadline = time.monotonic() + 18.0
     while time.monotonic() < deadline:
         try:
-            if options.count() == 1:
+            if options.count() >= 1:
                 break
         except Exception:
             pass
         time.sleep(0.25)
-    if options.count() != 1:
+    if options.count() == 0:
         # Some Drive picker versions treat a pasted URL as a title search.
-        # Retry with the expected name, then fail closed if it remains ambiguous.
+        # Retry with the expected name.
         search.fill(display_name)
         search.press("Enter")
         deadline = time.monotonic() + 12.0
         while time.monotonic() < deadline:
-            if options.count() == 1:
+            if options.count() >= 1:
                 break
             time.sleep(0.25)
-    if options.count() != 1:
+    if options.count() == 0:
+        # Check Recent list directly for the filename
+        recent_item = frame.locator(f'[role="option"]:has-text("{display_name}"), div[role="row"]:has-text("{display_name}")')
+        if recent_item.count() >= 1:
+            recent_item.first.click()
+            return
         raise ClassroomBrowserSubmissionError(
             f"Could not uniquely identify {display_name} in the user's Drive."
         )
@@ -69,6 +85,8 @@ def submit_drive_files(
     course_id: str,
     coursework_id: str,
     files: list[dict[str, str]],
+    assignment_url: str | None = None,
+    assignment_title: str | None = None,
     expected_email: str | None = None,
     cookies: list[dict[str, Any]] | None = None,
     user_agent: str | None = None,
@@ -79,12 +97,26 @@ def submit_drive_files(
 
     from playwright.sync_api import sync_playwright
 
-    assignment_url = (
-        f"https://classroom.google.com/c/{quote(str(course_id), safe='')}"
-        f"/a/{quote(str(coursework_id), safe='')}/details"
-    )
-    if expected_email and "authuser=" not in assignment_url:
-        assignment_url += f"?authuser={quote(expected_email)}"
+    b64_course = _to_gcr_base64_id(course_id)
+    b64_work = _to_gcr_base64_id(coursework_id)
+
+    target_url = assignment_url
+    if not target_url:
+        target_url = (
+            f"https://classroom.google.com/c/{quote(str(b64_course), safe='')}"
+            f"/a/{quote(str(b64_work), safe='')}/details"
+        )
+    else:
+        # If the provided URL had raw numeric IDs, normalize them to base64
+        if str(course_id) in target_url and str(course_id).isdigit():
+            target_url = target_url.replace(f"/c/{course_id}", f"/c/{b64_course}")
+        if str(coursework_id) in target_url and str(coursework_id).isdigit():
+            target_url = target_url.replace(f"/a/{coursework_id}", f"/a/{b64_work}")
+            target_url = target_url.replace(f"/sa/{coursework_id}", f"/sa/{b64_work}")
+
+    if expected_email and "authuser=" not in target_url:
+        sep = "&" if "?" in target_url else "?"
+        target_url += f"{sep}authuser={quote(expected_email)}"
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.connect_over_cdp(endpoint, timeout=15_000)
@@ -123,8 +155,8 @@ def submit_drive_files(
             None,
         ) or context.new_page()
 
-        logger.info("Navigating Classroom browser for user %s to: %s", user_id, assignment_url)
-        page.goto(assignment_url, wait_until="domcontentloaded", timeout=35_000)
+        logger.info("Navigating Classroom browser for user %s to: %s", user_id, target_url)
+        page.goto(target_url, wait_until="domcontentloaded", timeout=35_000)
 
         # Wait for the student work panel to render
         deadline = time.monotonic() + 12.0
@@ -149,6 +181,26 @@ def submit_drive_files(
                     "Google Classroom account mismatch. You are signed into a Google account that does not belong to this class."
                 )
             raise ClassroomBrowserSubmissionError("This coursework or class could not be found in Google Classroom for this account.")
+
+        # Smart Recovery: If "Your work" or submission status is not immediately visible,
+        # check if we are on the stream or classwork list and navigate into the assignment
+        has_work_panel = any(k in body_text for k in ["Your work", "Add or create", "Turn in", "Mark as done", "Unsubmit", "Turned in", "Submitted", "Handed in"])
+        if not has_work_panel:
+            logger.info("Classroom page did not immediately show 'Your work'. Checking for assignment links or 'View assignment'...")
+            candidate_links = page.locator(f'a[href*="{b64_work}"], [data-item-id*="{b64_work}"]')
+            if candidate_links.count() == 0 and assignment_title:
+                candidate_links = page.locator(f'a:has-text("{assignment_title}"), div[role="button"]:has-text("{assignment_title}")')
+
+            if candidate_links.count() > 0:
+                candidate_links.first.click()
+                page.wait_for_timeout(1000)
+
+                view_btn = page.locator('a:has-text("View assignment"), a:has-text("View instructions"), a[href*="/details"]')
+                if view_btn.count() > 0:
+                    view_btn.first.click()
+                    page.wait_for_timeout(1500)
+
+                body_text = page.locator("body").inner_text()
 
         # Verify Google Account if expected email was provided
         if expected_email:

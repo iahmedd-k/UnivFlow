@@ -1459,6 +1459,31 @@ def _finish_quick_turn_in_in_classroom_browser(
         Setting.key == f"google_connected_email_{user_id}"
     ).first()
     expected_email = email_row.value.strip() if email_row and email_row.value else None
+
+    # Resolve authoritative Google Classroom web URL for this coursework
+    target_assignment_url = getattr(assignment, "url", None)
+    if not target_assignment_url or "classroom.google.com" not in target_assignment_url:
+        try:
+            work_obj = classroom_service.courses().courseWork().get(
+                courseId=course.external_id,
+                id=assignment.external_id,
+            ).execute()
+            target_assignment_url = work_obj.get("alternateLink") or target_assignment_url
+        except Exception as e:
+            logger.warning("Could not fetch alternateLink from Google Classroom API: %s", e)
+
+    try:
+        sub_list = classroom_service.courses().courseWork().studentSubmissions().list(
+            courseId=course.external_id,
+            courseWorkId=assignment.external_id,
+            userId="me",
+            pageSize=1,
+        ).execute().get("studentSubmissions", [])
+        if sub_list and sub_list[0].get("alternateLink"):
+            target_assignment_url = sub_list[0]["alternateLink"]
+    except Exception as e:
+        logger.warning("Could not fetch student submission alternateLink: %s", e)
+
     try:
         browser_result = submit_drive_files(
             user_id=user_id,
@@ -1468,6 +1493,8 @@ def _finish_quick_turn_in_in_classroom_browser(
                 {"id": google_doc_id, "name": google_doc_name},
                 {"id": zip_file_id, "name": zip_filename},
             ],
+            assignment_url=target_assignment_url,
+            assignment_title=assignment.title,
             expected_email=expected_email,
             cookies=google_cookies,
             user_agent=google_ua,
