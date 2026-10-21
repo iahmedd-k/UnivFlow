@@ -435,6 +435,10 @@ def submit_drive_files(
         if not browser.contexts:
             raise ClassroomBrowserSubmissionError("The saved Classroom browser profile is unavailable.")
         context = browser.contexts[0]
+        try:
+            context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+        except Exception:
+            pass
 
         if cookies:
             try:
