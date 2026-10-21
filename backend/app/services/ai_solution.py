@@ -2,6 +2,7 @@ import json
 import base64
 import re
 import zipfile
+import time
 from io import BytesIO
 import httpx
 from datetime import datetime, timezone
@@ -1704,6 +1705,7 @@ def export_solution_to_google_doc(
                 # Separate tasks cleanly
                 if idx < len(deliverables["files"]) - 1:
                     docs_service.insert_page_break(doc_id)
+                    time.sleep(0.5)
 
             # 6. Post-task sections (Viva questions, Conclusion, Lab Summary)
             post_task_sections = extract_post_task_sections_from_markdown(solution_content)

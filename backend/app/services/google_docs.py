@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from typing import Optional, List, Dict, Any, Tuple
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -57,12 +58,35 @@ class GoogleDocsService:
             logger.error(f"Failed to initialize Google Docs/Drive: {e}")
             return False
 
+    def _execute_with_retry(self, request, max_retries: int = 6, initial_backoff: float = 3.0) -> Any:
+        """
+        Execute Google Docs or Drive API request with exponential backoff on 429 Rate Limit
+        (WriteRequestsPerMinutePerUser) or transient 500/502/503 errors.
+        """
+        for attempt in range(max_retries):
+            try:
+                return request.execute()
+            except HttpError as err:
+                status = getattr(err.resp, "status", None)
+                if status in (429, 500, 502, 503) and attempt < max_retries - 1:
+                    sleep_sec = max(initial_backoff * (2 ** attempt), 8.0 * (attempt + 1))
+                    logger.warning(
+                        "Google API rate limit / transient error (%s). Backing off for %.1fs (attempt %d/%d)...",
+                        status,
+                        sleep_sec,
+                        attempt + 1,
+                        max_retries,
+                    )
+                    time.sleep(sleep_sec)
+                else:
+                    raise
+
     # ===== Google Docs =====
 
     def get_document(self, document_id: str) -> Optional[Dict]:
         """Get document content and metadata"""
         try:
-            doc = self.docs_service.documents().get(documentId=document_id).execute()
+            doc = self._execute_with_retry(self.docs_service.documents().get(documentId=document_id))
             return doc
         except HttpError as e:
             logger.error(f"Error getting document {document_id}: {e}")
@@ -127,7 +151,7 @@ class GoogleDocsService:
     def create_document(self, title: str, content: str = "") -> Optional[Dict]:
         """Create a new Google Doc"""
         try:
-            doc = self.docs_service.documents().create(body={"title": title}).execute()
+            doc = self._execute_with_retry(self.docs_service.documents().create(body={"title": title}))
             doc_id = doc.get("documentId")
             
             if content:
@@ -279,10 +303,12 @@ class GoogleDocsService:
                     "text": clean_text
                 }
             }]
-            self.docs_service.documents().batchUpdate(
-                documentId=document_id,
-                body={"requests": requests}
-            ).execute()
+            self._execute_with_retry(
+                self.docs_service.documents().batchUpdate(
+                    documentId=document_id,
+                    body={"requests": requests}
+                )
+            )
             return True
         except HttpError as e:
             logger.error(f"Error appending text: {e}")
@@ -297,10 +323,12 @@ class GoogleDocsService:
                     "location": {"index": target_index}
                 }
             }]
-            self.docs_service.documents().batchUpdate(
-                documentId=document_id,
-                body={"requests": requests}
-            ).execute()
+            self._execute_with_retry(
+                self.docs_service.documents().batchUpdate(
+                    documentId=document_id,
+                    body={"requests": requests}
+                )
+            )
             return True
         except Exception as e:
             logger.warning(f"Error inserting page break into doc {document_id}: {e}")
@@ -490,10 +518,12 @@ class GoogleDocsService:
                         }
                     })
 
-            self.docs_service.documents().batchUpdate(
-                documentId=document_id,
-                body={"requests": requests}
-            ).execute()
+            self._execute_with_retry(
+                self.docs_service.documents().batchUpdate(
+                    documentId=document_id,
+                    body={"requests": requests}
+                )
+            )
             return True
         except Exception as e:
             logger.warning(f"Failed to append styled block: {e}")
@@ -532,10 +562,12 @@ class GoogleDocsService:
                     "location": {"index": target_index}
                 }
             }
-            self.docs_service.documents().batchUpdate(
-                documentId=document_id,
-                body={"requests": [insert_table_req]}
-            ).execute()
+            self._execute_with_retry(
+                self.docs_service.documents().batchUpdate(
+                    documentId=document_id,
+                    body={"requests": [insert_table_req]}
+                )
+            )
 
             # 2. Retrieve document to locate the new table cells
             doc = self.get_document(document_id)
@@ -603,10 +635,12 @@ class GoogleDocsService:
                         })
 
             if cell_requests:
-                self.docs_service.documents().batchUpdate(
-                    documentId=document_id,
-                    body={"requests": cell_requests}
-                ).execute()
+                self._execute_with_retry(
+                    self.docs_service.documents().batchUpdate(
+                        documentId=document_id,
+                        body={"requests": cell_requests}
+                    )
+                )
 
             # Append trailing spacing after table
             self.append_styled_block(document_id, "\n", style_type="NORMAL", space_above=4, space_below=8)
@@ -826,17 +860,21 @@ class GoogleDocsService:
 
             # Make reader accessible so Docs API can fetch the image URL
             try:
-                self.drive_service.permissions().create(
-                    fileId=file_id,
-                    body={"role": "reader", "type": "anyone"}
-                ).execute()
+                self._execute_with_retry(
+                    self.drive_service.permissions().create(
+                        fileId=file_id,
+                        body={"role": "reader", "type": "anyone"}
+                    )
+                )
             except Exception as perm_err:
                 logger.warning(f"Could not set 'anyone' public permissions on drive file {file_id}: {perm_err}")
                 try:
-                    self.drive_service.permissions().create(
-                        fileId=file_id,
-                        body={"role": "reader", "type": "anyone", "allowFileDiscovery": False}
-                    ).execute()
+                    self._execute_with_retry(
+                        self.drive_service.permissions().create(
+                            fileId=file_id,
+                            body={"role": "reader", "type": "anyone", "allowFileDiscovery": False}
+                        )
+                    )
                 except Exception:
                     pass
 
@@ -879,10 +917,12 @@ class GoogleDocsService:
                     }
                 })
 
-            self.docs_service.documents().batchUpdate(
-                documentId=document_id,
-                body={"requests": requests}
-            ).execute()
+            self._execute_with_retry(
+                self.docs_service.documents().batchUpdate(
+                    documentId=document_id,
+                    body={"requests": requests}
+                )
+            )
             if alignment:
                 try:
                     updated_doc = self.get_document(document_id)
@@ -904,19 +944,21 @@ class GoogleDocsService:
                         if space_below is not None:
                             paragraph_style["spaceBelow"] = {"magnitude": space_below, "unit": "PT"}
                             paragraph_fields.append("spaceBelow")
-                        self.docs_service.documents().batchUpdate(
-                            documentId=document_id,
-                            body={"requests": [{
-                                "updateParagraphStyle": {
-                                    "range": {
-                                        "startIndex": block.get("startIndex", target_index),
-                                        "endIndex": block.get("endIndex", target_index + 2),
-                                    },
-                                    "paragraphStyle": paragraph_style,
-                                    "fields": ",".join(paragraph_fields),
-                                }
-                            }]}
-                        ).execute()
+                        self._execute_with_retry(
+                            self.docs_service.documents().batchUpdate(
+                                documentId=document_id,
+                                body={"requests": [{
+                                    "updateParagraphStyle": {
+                                        "range": {
+                                            "startIndex": block.get("startIndex", target_index),
+                                            "endIndex": block.get("endIndex", target_index + 2),
+                                        },
+                                        "paragraphStyle": paragraph_style,
+                                        "fields": ",".join(paragraph_fields),
+                                    }
+                                }]}
+                            )
+                        )
                         break
                 except Exception as alignment_err:
                     logger.warning("Could not apply paragraph alignment to image %s: %s", filename, alignment_err)
@@ -940,10 +982,12 @@ class GoogleDocsService:
                     "replaceText": replace
                 }
             }]
-            self.docs_service.documents().batchUpdate(
-                documentId=document_id,
-                body={"requests": requests}
-            ).execute()
+            self._execute_with_retry(
+                self.docs_service.documents().batchUpdate(
+                    documentId=document_id,
+                    body={"requests": requests}
+                )
+            )
             return True
         except HttpError as e:
             logger.error(f"Error replacing text: {e}")
@@ -1038,11 +1082,13 @@ class GoogleDocsService:
                 metadata["parents"] = [folder_id]
             
             media = MediaIoBaseUpload(io.BytesIO(content), mimetype=mime_type, resumable=True)
-            file = self.drive_service.files().create(
-                body=metadata,
-                media_body=media,
-                fields="id, name, mimeType, size, webViewLink"
-            ).execute()
+            file = self._execute_with_retry(
+                self.drive_service.files().create(
+                    body=metadata,
+                    media_body=media,
+                    fields="id, name, mimeType, size, webViewLink"
+                )
+            )
             return file
         except HttpError as e:
             logger.error(f"Error uploading file: {e}")
@@ -1058,10 +1104,12 @@ class GoogleDocsService:
             if parent_id:
                 metadata["parents"] = [parent_id]
             
-            folder = self.drive_service.files().create(
-                body=metadata,
-                fields="id, name, webViewLink"
-            ).execute()
+            folder = self._execute_with_retry(
+                self.drive_service.files().create(
+                    body=metadata,
+                    fields="id, name, webViewLink"
+                )
+            )
             return folder
         except HttpError as e:
             logger.error(f"Error creating folder: {e}")
