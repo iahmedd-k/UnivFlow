@@ -393,6 +393,12 @@ def submit_drive_files(
             f"/a/{quote(str(b64_work), safe='')}/details"
         )
     else:
+        # Strip teacher grading view paths if present
+        if "/submissions/" in target_url:
+            target_url = target_url.split("/submissions/")[0] + "/details"
+        elif not target_url.endswith("/details") and "/a/" in target_url:
+            target_url = target_url.rstrip("/") + "/details"
+
         # If the provided URL had raw numeric IDs, normalize them to base64
         if str(course_id) in target_url and str(course_id).isdigit():
             target_url = target_url.replace(f"/c/{course_id}", f"/c/{b64_course}")
@@ -526,7 +532,12 @@ def submit_drive_files(
                     view_btn.first.click()
                     page.wait_for_timeout(1500)
 
-                body_text = page.locator("body").inner_text()
+        # Ensure browser is strictly on assignment details view
+        if "/details" not in (page.url or "") and target_url:
+            logger.info("Classroom page at %s is not on details view; navigating directly to: %s", page.url, target_url)
+            page.goto(target_url, wait_until="domcontentloaded", timeout=25_000)
+            page.wait_for_timeout(2000)
+            body_text = page.locator("body").inner_text()
 
         # Verify Google Account if expected email was provided
         if expected_email:
@@ -561,7 +572,7 @@ def submit_drive_files(
         if all_attached and valid_files:
             attached_count = len(valid_files)
         elif valid_files:
-            # Look for the Add/Create button using multiple robust selectors
+            # Look for the Add/Create button using multiple robust, scoped selectors
             add_button = None
             for sel in [
                 'button:has-text("Add or create")',
@@ -570,8 +581,8 @@ def submit_drive_files(
                 'button:has-text("Add work")',
                 '[role="button"]:has-text("Add work")',
                 '[aria-label*="Add work" i]',
-                'button:has-text("+ Add")',
-                'button:has-text("Add")',
+                'div[aria-label*="Your work" i] button:has-text("Add")',
+                'section:has-text("Your work") button:has-text("Add")',
             ]:
                 loc = page.locator(sel)
                 count = loc.count()

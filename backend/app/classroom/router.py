@@ -1472,17 +1472,11 @@ def _finish_quick_turn_in_in_classroom_browser(
         except Exception as e:
             logger.warning("Could not fetch alternateLink from Google Classroom API: %s", e)
 
-    try:
-        sub_list = classroom_service.courses().courseWork().studentSubmissions().list(
-            courseId=course.external_id,
-            courseWorkId=assignment.external_id,
-            userId="me",
-            pageSize=1,
-        ).execute().get("studentSubmissions", [])
-        if sub_list and sub_list[0].get("alternateLink"):
-            target_assignment_url = sub_list[0]["alternateLink"]
-    except Exception as e:
-        logger.warning("Could not fetch student submission alternateLink: %s", e)
+    # Ensure the URL points to student assignment details, never teacher grading view
+    if target_assignment_url and "/submissions/" in target_assignment_url:
+        target_assignment_url = target_assignment_url.split("/submissions/")[0] + "/details"
+    elif target_assignment_url and not target_assignment_url.endswith("/details") and "/a/" in target_assignment_url:
+        target_assignment_url = target_assignment_url.rstrip("/") + "/details"
 
     try:
         browser_result = submit_drive_files(
