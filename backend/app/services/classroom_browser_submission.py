@@ -45,25 +45,6 @@ def _wait_for_picker_frame(page, timeout_seconds: float = 25.0):
                     if "picker" in (child.url or "").lower():
                         target = child
                         break
-                # If picker has rendered interactive items, it is ready
-                try:
-                    if target.locator('[role="tab"], [role="grid"], [role="option"], [role="row"], div[data-id], .picker-dataview-item, input[type="text"], input[type="search"]').count() > 0:
-                        return target
-                except Exception:
-                    pass
-
-                # Check if a sign-in prompt is actually visible (and not just hidden noscript/markup)
-                try:
-                    sign_in_el = target.locator('a[href*="accounts.google.com"], button:has-text("Sign in")')
-                    if sign_in_el.count() > 0 and sign_in_el.first.is_visible():
-                        logger.warning("Google Drive picker requires sign-in: sign-in element visible")
-                        raise ClassroomBrowserLoginRequired(
-                            "Your Google Classroom / Google Drive session has expired or requires sign-in. Use the Uniflow extension popup to re-sync your Classroom session."
-                        )
-                except ClassroomBrowserLoginRequired:
-                    raise
-                except Exception:
-                    pass
                 return target
 
         # 2. Check DOM iframe elements
@@ -74,25 +55,7 @@ def _wait_for_picker_frame(page, timeout_seconds: float = 25.0):
                 if f:
                     url = (f.url or "").lower()
                     if "picker" in url or "drive.google.com" in url:
-                        try:
-                            if f.locator('[role="tab"], [role="grid"], [role="option"], [role="row"], div[data-id], .picker-dataview-item, input[type="text"], input[type="search"]').count() > 0:
-                                return f
-                        except Exception:
-                            pass
-                        try:
-                            sign_in_el = f.locator('a[href*="accounts.google.com"], button:has-text("Sign in")')
-                            if sign_in_el.count() > 0 and sign_in_el.first.is_visible():
-                                logger.warning("Google Drive picker iframe requires sign-in: sign-in element visible")
-                                raise ClassroomBrowserLoginRequired(
-                                    "Your Google Classroom / Google Drive session has expired or requires sign-in. Use the Uniflow extension popup to re-sync your Classroom session."
-                                )
-                        except ClassroomBrowserLoginRequired:
-                            raise
-                        except Exception:
-                            pass
                         return f
-        except ClassroomBrowserLoginRequired:
-            raise
         except Exception:
             pass
 
@@ -110,7 +73,7 @@ def _select_drive_file(frame, file_id: str, display_name: str) -> None:
     base_name = clean_name.rsplit(".", 1)[0] if "." in clean_name else clean_name
 
     # Give the picker iframe a few seconds to populate its items
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + 8.0
     while time.monotonic() < deadline:
         try:
             if frame.locator('[role="option"], [role="gridcell"], [role="row"], div[data-id], .picker-dataview-item').count() > 0:
@@ -240,6 +203,19 @@ def _select_drive_file(frame, file_id: str, display_name: str) -> None:
             first_option.click(force=True)
             logger.info("Selected top available item in Drive picker as fallback.")
             return
+    except Exception:
+        pass
+
+    # Check if picker explicitly has a visible "Sign in to access this content" error
+    try:
+        body_text = frame.locator("body").inner_text()
+        if any(k in body_text for k in ["Sign in to access this content", "Sign in to your Google Account", "You must sign in"]):
+            logger.warning("Google Drive picker requires sign-in: %r", body_text[:200])
+            raise ClassroomBrowserLoginRequired(
+                "Your Google Classroom / Google Drive session has expired or requires sign-in. Use the Uniflow extension popup to re-sync your Classroom session."
+            )
+    except ClassroomBrowserLoginRequired:
+        raise
     except Exception:
         pass
 
