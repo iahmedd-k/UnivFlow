@@ -5,7 +5,7 @@ import zipfile
 from io import BytesIO
 import httpx
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from sqlalchemy.orm import Session
 
 from app.auth.ownership import user_owner_ids
