@@ -33,7 +33,7 @@ def _to_gcr_base64_id(raw_id: str) -> str:
     return raw
 
 
-def _wait_for_picker_frame(page, timeout_seconds: float = 25.0):
+def _wait_for_picker_frame(page, timeout_seconds: float = 35.0):
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         # 1. Search page frames
@@ -45,6 +45,26 @@ def _wait_for_picker_frame(page, timeout_seconds: float = 25.0):
                     if "picker" in (child.url or "").lower():
                         target = child
                         break
+
+                # Check if picker frame requires Sign in
+                try:
+                    sign_in_btn = target.locator('button:has-text("Sign in"), a:has-text("Sign in"), [role="button"]:has-text("Sign in")')
+                    if sign_in_btn.count() > 0 and sign_in_btn.first.is_visible():
+                        logger.info("Drive picker requires sign-in. Clicking 'Sign in' button inside picker frame...")
+                        context = page.context
+                        try:
+                            with context.expect_page(timeout=6000) as new_page_info:
+                                sign_in_btn.first.click()
+                            popup = new_page_info.value
+                            logger.info("Drive picker sign-in popup opened (%s); waiting for automatic Google session resolution...", popup.url)
+                            popup.wait_for_timeout(3000)
+                            if not popup.is_closed():
+                                popup.wait_for_timeout(2000)
+                        except Exception as pop_err:
+                            logger.debug("Picker sign-in popup handling completed/timed out: %s", pop_err)
+                except Exception:
+                    pass
+
                 return target
 
         # 2. Check DOM iframe elements
@@ -59,7 +79,7 @@ def _wait_for_picker_frame(page, timeout_seconds: float = 25.0):
         except Exception:
             pass
 
-        page.wait_for_timeout(250)
+        page.wait_for_timeout(350)
     raise ClassroomBrowserSubmissionError("Google Drive picker did not open in Classroom.")
 
 
@@ -426,6 +446,8 @@ def submit_drive_files(
                         cookie_dict["sameSite"] = "None"
                     elif s_site == "strict":
                         cookie_dict["sameSite"] = "Strict"
+                    elif cookie_dict.get("secure"):
+                        cookie_dict["sameSite"] = "None"
                     else:
                         cookie_dict["sameSite"] = "Lax"
 
@@ -625,11 +647,30 @@ def submit_drive_files(
 
                     while time.monotonic() < menu_deadline:
                         if time.monotonic() - last_click > 1.5:
-                            logger.info("Clicking 'Add or create' button (attempt %d)...", click_attempt + 1)
-                            try:
-                                add_button.click(force=True)
-                            except Exception:
-                                add_button.evaluate("el => el.click()")
+                            logger.info("Clicking visible 'Add or create' button (attempt %d)...", click_attempt + 1)
+                            clicked_add = False
+                            for sel in [
+                                'button:has-text("Add or create")',
+                                '[role="button"]:has-text("Add or create")',
+                                '[aria-label*="Add or create" i]',
+                                'button:has-text("Add work")',
+                                '[role="button"]:has-text("Add work")',
+                                'section:has-text("Your work") button:has-text("Add")',
+                                'div[aria-label*="Your work" i] button:has-text("Add")',
+                            ]:
+                                loc = page.locator(sel)
+                                for i in range(loc.count()):
+                                    cand = loc.nth(i)
+                                    try:
+                                        if cand.is_visible():
+                                            cand.scroll_into_view_if_needed()
+                                            cand.click()
+                                            clicked_add = True
+                                            break
+                                    except Exception:
+                                        pass
+                                if clicked_add:
+                                    break
                             last_click = time.monotonic()
                             click_attempt += 1
 
@@ -647,8 +688,7 @@ def submit_drive_files(
                             'li:has-text("Drive")',
                             '[role="menu"] [role="menuitem"][data-type="2"]',
                             'li[role="menuitem"][data-type="2"]',
-                            '[role="menu"] [role="menuitem"]:first-child',
-                            'div[role="menu"] li:first-child',
+                            '[data-type="2"]',
                         ]:
                             try:
                                 loc = page.locator(sel)
@@ -670,21 +710,31 @@ def submit_drive_files(
                         raise ClassroomBrowserSubmissionError("Classroom did not show 'Google Drive' in the attachment dropdown.")
 
                     logger.info("Found Google Drive option in dropdown. Clicking...")
+                    try:
+                        drive_option.hover()
+                        page.wait_for_timeout(200)
+                    except Exception:
+                        pass
+
                     clicked_drive = False
                     try:
-                        drive_option.click(force=True, timeout=3000)
+                        drive_option.click(timeout=3000)
                         clicked_drive = True
                     except Exception as e:
-                        logger.debug("Standard click on Drive option failed (%s), trying JS click...", e)
+                        logger.debug("Standard click on Drive option failed (%s), trying force/JS click...", e)
 
                     if not clicked_drive:
                         try:
-                            drive_option.evaluate("el => (el.closest('[role=\"menuitem\"], li') || el).click()")
+                            drive_option.click(force=True, timeout=3000)
                             clicked_drive = True
-                        except Exception as je:
-                            logger.warning("JS click on Drive option failed: %s", je)
+                        except Exception:
+                            try:
+                                drive_option.evaluate("el => (el.closest('[role=\"menuitem\"], li') || el).click()")
+                                clicked_drive = True
+                            except Exception as je:
+                                logger.warning("JS click on Drive option failed: %s", je)
 
-                    return _wait_for_picker_frame(page)
+                    return _wait_for_picker_frame(page, timeout_seconds=35.0)
 
                 for item in valid_files:
                     # Check if file is already attached in student's work card

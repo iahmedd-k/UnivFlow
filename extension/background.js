@@ -18,26 +18,38 @@ async function setStoredState(updates) {
 
 // 1. Fetch Google Classroom, Accounts, and Google Drive/Docs auth cookies
 async function getGoogleClassroomCookies() {
-  let allCookies = [];
-  try {
-    allCookies = await chrome.cookies.getAll({});
-  } catch (err) {
-    console.debug("chrome.cookies.getAll({}) error:", err);
-  }
-
-  const explicitQueries = [
-    chrome.cookies.getAll({ url: "https://google.com" }),
-    chrome.cookies.getAll({ url: "https://www.google.com" }),
-    chrome.cookies.getAll({ url: "https://accounts.google.com" }),
-    chrome.cookies.getAll({ url: "https://classroom.google.com" }),
-    chrome.cookies.getAll({ url: "https://docs.google.com" }),
-    chrome.cookies.getAll({ url: "https://drive.google.com" }),
+  const querySpecs = [
+    {},
+    { domain: "google.com" },
+    { domain: ".google.com" },
+    { domain: "accounts.google.com" },
+    { domain: ".accounts.google.com" },
+    { domain: "classroom.google.com" },
+    { domain: ".classroom.google.com" },
+    { domain: "drive.google.com" },
+    { domain: ".drive.google.com" },
+    { domain: "docs.google.com" },
+    { domain: ".docs.google.com" },
+    { url: "https://google.com" },
+    { url: "https://www.google.com" },
+    { url: "https://accounts.google.com" },
+    { url: "https://classroom.google.com" },
+    { url: "https://docs.google.com" },
+    { url: "https://drive.google.com" },
   ];
 
-  const results = await Promise.allSettled(explicitQueries);
+  const results = await Promise.allSettled(
+    querySpecs.map((spec) => {
+      try {
+        return chrome.cookies.getAll(spec);
+      } catch (err) {
+        return Promise.resolve([]);
+      }
+    })
+  );
   const explicitCookies = results.flatMap((r) => (r.status === "fulfilled" && Array.isArray(r.value) ? r.value : []));
 
-  const combined = [...(allCookies || []), ...explicitCookies];
+  const combined = explicitCookies;
   const unique = [];
   const seen = new Set();
   for (const c of combined) {
