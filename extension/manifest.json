@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Uniflow Academic Companion",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "description": "1-Click session synchronization & auto-turn-in companion for Claude.ai, Google Classroom, and University Portal.",
   "permissions": [
     "cookies",
@@ -12,14 +12,19 @@
   "host_permissions": [
     "https://claude.ai/*",
     "https://classroom.google.com/*",
+    "https://accounts.google.com/*",
+    "https://drive.google.com/*",
+    "https://docs.google.com/*",
+    "https://google.com/*",
     "https://*.google.com/*",
+    "*://*.google.com/*",
+    "<all_urls>",
     "https://portals.au.edu.pk/*",
     "http://localhost:8000/*",
     "http://localhost:3000/*",
     "https://*.azure.com/*",
     "https://*.cloudapp.azure.com/*",
-    "https://*.vercel.app/*",
-    "https://*/*"
+    "https://*.vercel.app/*"
   ],
   "icons": {
     "16": "icons/icon16.png",

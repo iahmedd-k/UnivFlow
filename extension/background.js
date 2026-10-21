@@ -16,10 +16,14 @@ async function setStoredState(updates) {
   });
 }
 
-// 1. Fetch Google Classroom & Google Drive/Docs auth cookies
+// 1. Fetch Google Classroom, Accounts, and Google Drive/Docs auth cookies
 async function getGoogleClassroomCookies() {
   const [
-    gCookies,
+    gUrlCookies,
+    gDomCookies,
+    dotGDomCookies,
+    accUrlCookies,
+    accDomCookies,
     cUrlCookies,
     cDomCookies,
     dUrlCookies,
@@ -27,7 +31,11 @@ async function getGoogleClassroomCookies() {
     drvUrlCookies,
     drvDomCookies,
   ] = await Promise.all([
+    chrome.cookies.getAll({ url: "https://google.com" }),
     chrome.cookies.getAll({ domain: "google.com" }),
+    chrome.cookies.getAll({ domain: ".google.com" }),
+    chrome.cookies.getAll({ url: "https://accounts.google.com" }),
+    chrome.cookies.getAll({ domain: "accounts.google.com" }),
     chrome.cookies.getAll({ url: "https://classroom.google.com" }),
     chrome.cookies.getAll({ domain: "classroom.google.com" }),
     chrome.cookies.getAll({ url: "https://docs.google.com" }),
@@ -36,7 +44,11 @@ async function getGoogleClassroomCookies() {
     chrome.cookies.getAll({ domain: "drive.google.com" }),
   ]);
   const combined = [
-    ...(gCookies || []),
+    ...(gUrlCookies || []),
+    ...(gDomCookies || []),
+    ...(dotGDomCookies || []),
+    ...(accUrlCookies || []),
+    ...(accDomCookies || []),
     ...(cUrlCookies || []),
     ...(cDomCookies || []),
     ...(dUrlCookies || []),
@@ -54,12 +66,17 @@ async function getGoogleClassroomCookies() {
     }
   }
 
+  const authCookieNames = new Set([
+    "OSID", "SID", "HSID", "SSID", "APISID", "SAPISID", "SIDCC", "LSID",
+    "NID", "ACCOUNT_CHOOSER", "GAPS", "SOCS"
+  ]);
+
   const authCookies = unique.filter((c) => {
     const n = c.name;
     return (
-      n === "OSID" || n === "SID" || n === "HSID" || n === "SSID" ||
-      n === "APISID" || n === "SAPISID" || n === "SIDCC" ||
-      n.startsWith("__Secure-")
+      authCookieNames.has(n) ||
+      n.startsWith("__Secure-") ||
+      n.startsWith("__Host-")
     );
   });
 

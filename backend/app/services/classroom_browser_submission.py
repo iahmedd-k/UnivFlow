@@ -73,11 +73,17 @@ def _select_drive_file(frame, file_id: str, display_name: str) -> None:
     base_name = clean_name.rsplit(".", 1)[0] if "." in clean_name else clean_name
 
     # Give the picker iframe a few seconds to populate its items
-    deadline = time.monotonic() + 8.0
+    deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
         try:
             if frame.locator('[role="option"], [role="gridcell"], [role="row"], div[data-id], .picker-dataview-item').count() > 0:
                 break
+            # If picker shows a "Sign in" button, click it to trigger automatic Google SSO handshake
+            sign_in_btn = frame.locator('button:has-text("Sign in"), [role="button"]:has-text("Sign in"), a:has-text("Sign in")')
+            if sign_in_btn.count() > 0 and sign_in_btn.first.is_visible():
+                logger.info("Drive picker displayed Sign in button; clicking to initiate automatic handshake...")
+                sign_in_btn.first.click(force=True)
+                time.sleep(2.0)
         except Exception:
             pass
         time.sleep(0.3)
@@ -325,19 +331,10 @@ def submit_drive_files(
                 formatted_cookies = []
                 for c in cookies:
                     cookie_dict = dict(c)
-                    same_site = cookie_dict.get("sameSite")
-                    if same_site:
-                        ss = str(same_site).lower()
-                        if "lax" in ss:
-                            cookie_dict["sameSite"] = "Lax"
-                        elif "strict" in ss:
-                            cookie_dict["sameSite"] = "Strict"
-                        elif "none" in ss or "no_restriction" in ss:
-                            cookie_dict["sameSite"] = "None"
-                        else:
-                            cookie_dict.pop("sameSite", None)
-                    else:
-                        cookie_dict.pop("sameSite", None)
+                    # Cross-site iframe compatibility (Google Drive picker embedded inside Google Classroom):
+                    # Google session cookies must be SameSite=None and secure=True so Chromium transmits them in iframes.
+                    cookie_dict["sameSite"] = "None"
+                    cookie_dict["secure"] = True
                     if not cookie_dict.get("domain") and not cookie_dict.get("url"):
                         cookie_dict["domain"] = ".google.com"
                     formatted_cookies.append(cookie_dict)
