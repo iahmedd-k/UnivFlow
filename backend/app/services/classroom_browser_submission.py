@@ -358,15 +358,16 @@ def submit_drive_files(
             except Exception as ce:
                 logger.warning("Could not inject Google Classroom cookies for user %s: %s", user_id, ce)
 
-        # Pre-warm Docs / Drive session top-level so Google mints OSID cookies
-        try:
-            warm_page = context.new_page()
-            warm_page.goto("https://docs.google.com", wait_until="domcontentloaded", timeout=12_000)
-            warm_page.wait_for_timeout(1000)
-            warm_page.close()
-            logger.info("Pre-warmed docs.google.com top-level session for user %s", user_id)
-        except Exception as warm_err:
-            logger.debug("Docs pre-warm skipped/failed: %s", warm_err)
+        # Pre-warm Docs and Drive session top-level so Google mints OSID cookies
+        for warm_url in ("https://docs.google.com", "https://drive.google.com"):
+            try:
+                warm_page = context.new_page()
+                warm_page.goto(warm_url, wait_until="domcontentloaded", timeout=12_000)
+                warm_page.wait_for_timeout(1000)
+                warm_page.close()
+                logger.info("Pre-warmed %s top-level session for user %s", warm_url, user_id)
+            except Exception as warm_err:
+                logger.debug("%s pre-warm skipped/failed: %s", warm_url, warm_err)
 
         page = next(
             (candidate for candidate in context.pages if "classroom.google.com" in (candidate.url or "")),
@@ -375,6 +376,15 @@ def submit_drive_files(
 
         logger.info("Navigating Classroom browser for user %s to: %s", user_id, target_url)
         page.goto(target_url, wait_until="domcontentloaded", timeout=35_000)
+
+        # If Google is doing an automatic SSO / CheckCookie handshake through accounts.google.com,
+        # wait up to 6 seconds for it to bounce back to classroom.google.com
+        if "accounts.google.com" in (page.url or ""):
+            logger.info("Encountered accounts.google.com redirect; waiting for automatic session handshake...")
+            for _ in range(12):
+                page.wait_for_timeout(500)
+                if "accounts.google.com" not in (page.url or ""):
+                    break
 
         # Wait for the student work panel to render
         deadline = time.monotonic() + 12.0
@@ -387,8 +397,16 @@ def submit_drive_files(
         current_url = page.url or ""
         body_text = page.locator("body").inner_text()
 
-        # Check for authentication requirement
-        if "accounts.google.com" in current_url or page.get_by_text("Sign in", exact=True).count():
+        # Check for actual authentication requirement (only if on Google login input form)
+        is_login_page = (
+            "accounts.google.com" in current_url
+            and (
+                page.locator('input[type="email"], input[name="identifier"], input[type="password"]').count() > 0
+                or "Sign in with your Google Account" in body_text
+                or "Choose an account" in body_text
+            )
+        )
+        if is_login_page:
             raise ClassroomBrowserLoginRequired("Sign in to your Google Classroom account in the hosted browser, then retry.")
 
         # Check for class not found or account mismatch

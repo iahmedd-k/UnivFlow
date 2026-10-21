@@ -18,17 +18,31 @@ async function setStoredState(updates) {
 
 // 1. Fetch Google Classroom & Google Drive/Docs auth cookies
 async function getGoogleClassroomCookies() {
-  const [gCookies, cCookies, dCookies, drvCookies] = await Promise.all([
+  const [
+    gCookies,
+    cUrlCookies,
+    cDomCookies,
+    dUrlCookies,
+    dDomCookies,
+    drvUrlCookies,
+    drvDomCookies,
+  ] = await Promise.all([
     chrome.cookies.getAll({ domain: "google.com" }),
     chrome.cookies.getAll({ url: "https://classroom.google.com" }),
+    chrome.cookies.getAll({ domain: "classroom.google.com" }),
     chrome.cookies.getAll({ url: "https://docs.google.com" }),
+    chrome.cookies.getAll({ domain: "docs.google.com" }),
     chrome.cookies.getAll({ url: "https://drive.google.com" }),
+    chrome.cookies.getAll({ domain: "drive.google.com" }),
   ]);
   const combined = [
     ...(gCookies || []),
-    ...(cCookies || []),
-    ...(dCookies || []),
-    ...(drvCookies || []),
+    ...(cUrlCookies || []),
+    ...(cDomCookies || []),
+    ...(dUrlCookies || []),
+    ...(dDomCookies || []),
+    ...(drvUrlCookies || []),
+    ...(drvDomCookies || []),
   ];
   const unique = [];
   const seen = new Set();
