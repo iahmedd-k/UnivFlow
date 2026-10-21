@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Uniflow Academic Companion",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "description": "1-Click session synchronization & auto-turn-in companion for Claude.ai, Google Classroom, and University Portal.",
   "permissions": [
     "cookies",

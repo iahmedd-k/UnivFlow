@@ -3,7 +3,7 @@
  * Enables seamless, 1-click consent & session synchronization from web app to Chrome extension.
  */
 
-export const EXTENSION_VERSION = '1.3.4';
+export const EXTENSION_VERSION = '1.3.5';
 
 export function isExtensionInstalled() {
   if (typeof window === 'undefined') return false;

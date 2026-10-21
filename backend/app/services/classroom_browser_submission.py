@@ -67,10 +67,16 @@ def _select_drive_file(frame, file_id: str, display_name: str) -> None:
     """Select the requested Drive file inside the Google Drive picker dialog.
     
     Prefers matching directly against the 'Recent' tab items (open by default, where
-    the newly generated submission file appears immediately) before falling back to search.
+    the newly generated submission file appears immediately) with automatic container
+    scrolling across multiple passes before falling back to search or My Drive tab.
     """
     clean_name = (display_name or "").strip()
     base_name = clean_name.rsplit(".", 1)[0] if "." in clean_name else clean_name
+    space_name = clean_name.replace("_", " ").replace("-", " ")
+
+    # Extract key tokens (e.g. ['ahmed', 'khan', 'lab', 'task', '05', '232530'])
+    raw_tokens = re.findall(r"[A-Za-z0-9]+", clean_name)
+    key_tokens = [t.lower() for t in raw_tokens if len(t) >= 2]
 
     # Give the picker iframe a few seconds to populate its items
     deadline = time.monotonic() + 10.0
@@ -78,7 +84,6 @@ def _select_drive_file(frame, file_id: str, display_name: str) -> None:
         try:
             if frame.locator('[role="option"], [role="gridcell"], [role="row"], div[data-id], .picker-dataview-item').count() > 0:
                 break
-            # If picker shows a "Sign in" button, click it to trigger automatic Google SSO handshake
             sign_in_btn = frame.locator('button:has-text("Sign in"), [role="button"]:has-text("Sign in"), a:has-text("Sign in")')
             if sign_in_btn.count() > 0 and sign_in_btn.first.is_visible():
                 logger.info("Drive picker displayed Sign in button; clicking to initiate automatic handshake...")
@@ -88,56 +93,173 @@ def _select_drive_file(frame, file_id: str, display_name: str) -> None:
             pass
         time.sleep(0.3)
 
-    # 1. Check for Drive file ID match in item attributes (data-id, data-item-id)
-    if file_id:
+    # Helper JS script to find, scroll into view, and click the matching element
+    def _try_js_select(f_id: str, c_name: str, b_name: str, sp_name: str, tokens: list[str]) -> bool:
         try:
-            id_loc = frame.locator(f'[data-id="{file_id}"], [data-item-id="{file_id}"]')
-            if id_loc.count() > 0 and id_loc.first.is_visible():
-                id_loc.first.click(force=True)
-                logger.info("Selected Drive file by ID %s in picker.", file_id)
-                return
-        except Exception as e:
-            logger.debug("Drive ID selection check: %s", e)
+            matched = frame.evaluate("""([fId, cName, bName, spName, tokens]) => {
+                const cleanLower = (cName || '').toLowerCase();
+                const baseLower = (bName || '').toLowerCase();
+                const spaceLower = (spName || '').toLowerCase();
+                const fIdStr = (fId || '').trim();
 
-    # 2. Check if the file is visible in the 'Recent' list (default tab)
+                const candidates = Array.from(document.querySelectorAll(
+                    '[role="option"], [role="gridcell"], [role="row"], .picker-dataview-item, div[data-id], div[data-target-id]'
+                ));
+
+                let bestMatch = null;
+                let bestScore = 0;
+
+                for (const el of candidates) {
+                    const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+                    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                    const title = (el.getAttribute('title') || '').toLowerCase();
+                    const elId = (el.getAttribute('data-id') || el.getAttribute('data-item-id') || el.getAttribute('data-target-id') || el.id || '');
+
+                    // 1. Exact Google Drive File ID match (highest priority)
+                    if (fIdStr && elId && (elId === fIdStr || elId.includes(fIdStr) || fIdStr.includes(elId))) {
+                        bestMatch = el;
+                        bestScore = 1000;
+                        break;
+                    }
+
+                    let score = 0;
+                    const combined = `${text} ${aria} ${title}`;
+
+                    // 2. Full exact clean name
+                    if (cleanLower && combined.includes(cleanLower)) score += 500;
+                    // 3. Base name without extension
+                    if (baseLower && baseLower.length > 3 && combined.includes(baseLower)) score += 300;
+                    // 4. Space separated name
+                    if (spaceLower && spaceLower.length > 3 && combined.includes(spaceLower)) score += 200;
+
+                    // 5. Key tokens matching
+                    if (tokens && tokens.length > 0) {
+                        let matchedTokens = 0;
+                        for (const tok of tokens) {
+                            if (combined.includes(tok)) matchedTokens++;
+                        }
+                        if (matchedTokens === tokens.length) {
+                            score += 250;
+                        } else if (matchedTokens >= 2) {
+                            score += matchedTokens * 35;
+                        }
+                    }
+
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestMatch = el;
+                    }
+                }
+
+                if (bestMatch && bestScore >= 100) {
+                    // Bring element into the center of the viewport
+                    bestMatch.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+                    
+                    // Dispatch synthetic mouse events to trigger selection
+                    bestMatch.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+                    bestMatch.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+                    bestMatch.click();
+                    return true;
+                }
+                return false;
+            }""", [f_id, c_name, b_name, sp_name, tokens])
+            return bool(matched)
+        except Exception as e:
+            logger.debug("JS select evaluation error: %s", e)
+            return False
+
+    # Helper JS to scroll the picker view container down
+    def _scroll_picker_container(direction: str = "down", amount: int = 350) -> bool:
+        try:
+            return bool(frame.evaluate("""([dir, px]) => {
+                const scrollables = Array.from(document.querySelectorAll('*')).filter(el => {
+                    const style = window.getComputedStyle(el);
+                    const overflowY = style.overflowY;
+                    const isScrollable = (overflowY === 'auto' || overflowY === 'scroll') && el.scrollHeight > el.clientHeight;
+                    return isScrollable || el.classList.contains('picker-dataview-content') || el.getAttribute('role') === 'listbox' || el.getAttribute('role') === 'grid';
+                });
+                if (scrollables.length > 0) {
+                    const target = scrollables[0];
+                    if (dir === 'down') {
+                        target.scrollTop += px;
+                    } else if (dir === 'top') {
+                        target.scrollTop = 0;
+                    }
+                    return true;
+                }
+                // Fallback to window scroll
+                if (dir === 'down') window.scrollBy(0, px);
+                else window.scrollTo(0, 0);
+                return true;
+            }""", [direction, amount]))
+        except Exception:
+            return False
+
+    # 1. Multi-pass search across Recent files with progressive scrolling
+    logger.info("Searching Drive picker for file '%s' (ID: %s)...", clean_name, file_id)
+    for pass_num in range(7):
+        if _try_js_select(file_id, clean_name, base_name, space_name, key_tokens):
+            logger.info("Successfully selected Drive file '%s' in picker (pass %d).", clean_name, pass_num + 1)
+            time.sleep(0.5)
+            return
+        
+        # Scroll container down and wait for items to render
+        _scroll_picker_container("down", 350)
+        time.sleep(0.4)
+
+    # Scroll back to top before trying Playwright locators or tab switches
+    _scroll_picker_container("top", 0)
+    time.sleep(0.3)
+
+    # 2. Try standard Playwright locator selectors
     recent_selectors = [
+        f'[data-id="{file_id}"]' if file_id else None,
+        f'[data-item-id="{file_id}"]' if file_id else None,
         f'[role="option"]:has-text("{clean_name}")',
         f'[role="gridcell"]:has-text("{clean_name}")',
         f'[role="row"]:has-text("{clean_name}")',
         f'.picker-dataview-item:has-text("{clean_name}")',
         f'div[title*="{clean_name}" i]',
         f'div[aria-label*="{clean_name}" i]',
+        f'[role="option"]:has-text("{base_name}")' if base_name != clean_name else None,
+        f'div[title*="{base_name}" i]' if base_name != clean_name else None,
+        f'[role="option"]:has-text("{space_name}")' if space_name != clean_name else None,
     ]
-    if base_name and base_name != clean_name and len(base_name) > 3:
-        recent_selectors.extend([
-            f'[role="option"]:has-text("{base_name}")',
-            f'[role="gridcell"]:has-text("{base_name}")',
-            f'[role="row"]:has-text("{base_name}")',
-            f'div[title*="{base_name}" i]',
-            f'div[aria-label*="{base_name}" i]',
-        ])
-
-    for sel in recent_selectors:
+    for sel in [s for s in recent_selectors if s]:
         try:
             cand = frame.locator(sel)
-            if cand.count() > 0 and cand.first.is_visible():
-                cand.first.click(force=True)
-                logger.info("Found and selected Drive file '%s' directly in Recent list via %s.", clean_name, sel)
+            if cand.count() > 0:
+                target_cand = cand.first
+                try:
+                    target_cand.scroll_into_view_if_needed(timeout=2000)
+                except Exception:
+                    pass
+                target_cand.click(force=True)
+                logger.info("Found and selected Drive file '%s' via Playwright locator %s.", clean_name, sel)
+                time.sleep(0.5)
                 return
         except Exception:
             continue
 
-    # 3. Direct text match
+    # 3. Try switching to 'My Drive' tab in the left sidebar if present
+    logger.info("File '%s' not in visible Recent items; attempting 'My Drive' tab fallback...", clean_name)
     try:
-        text_loc = frame.get_by_text(clean_name, exact=False)
-        if text_loc.count() > 0 and text_loc.first.is_visible():
-            text_loc.first.click(force=True)
-            logger.info("Selected Drive file '%s' via text match in picker.", clean_name)
-            return
-    except Exception:
-        pass
+        my_drive_tab = frame.locator('div[role="tab"]:has-text("My Drive"), span:has-text("My Drive"), [aria-label*="My Drive" i]')
+        if my_drive_tab.count() > 0 and my_drive_tab.first.is_visible():
+            my_drive_tab.first.click(force=True)
+            time.sleep(1.5)
+            # Re-try matching on My Drive
+            for pass_num in range(5):
+                if _try_js_select(file_id, clean_name, base_name, space_name, key_tokens):
+                    logger.info("Selected Drive file '%s' from 'My Drive' tab (pass %d).", clean_name, pass_num + 1)
+                    time.sleep(0.5)
+                    return
+                _scroll_picker_container("down", 350)
+                time.sleep(0.4)
+    except Exception as tab_err:
+        logger.debug("'My Drive' tab switch failed: %s", tab_err)
 
-    # 4. Search input fallback (with rapid detection, never hanging 30s)
+    # 4. Search input fallback
     search_input = None
     for sel in [
         'input[aria-label*="Search" i]',
@@ -159,28 +281,6 @@ def _select_drive_file(frame, file_id: str, display_name: str) -> None:
         if search_input:
             break
 
-    # If search input is hidden behind a search toggle button
-    if not search_input:
-        for icon_sel in [
-            'button[aria-label*="Search" i]',
-            '[role="button"][aria-label*="Search" i]',
-            '.picker-search-icon',
-        ]:
-            try:
-                icon = frame.locator(icon_sel)
-                if icon.count() > 0 and icon.first.is_visible():
-                    icon.first.click(force=True)
-                    time.sleep(0.4)
-                    for sel in ['input[aria-label*="Search" i]', 'input[placeholder*="Search" i]', 'input[type="text"]']:
-                        cand = frame.locator(sel)
-                        if cand.count() > 0 and cand.first.is_visible():
-                            search_input = cand.first
-                            break
-            except Exception:
-                pass
-            if search_input:
-                break
-
     if search_input:
         query = clean_name or base_name
         logger.info("Searching Drive picker for: %s", query)
@@ -188,29 +288,13 @@ def _select_drive_file(frame, file_id: str, display_name: str) -> None:
             search_input.click(force=True)
             search_input.fill(query)
             search_input.press("Enter")
-            time.sleep(1.0)
+            time.sleep(1.5)
 
-            search_deadline = time.monotonic() + 6.0
-            while time.monotonic() < search_deadline:
-                for sel in recent_selectors + ['[role="option"]', '[role="gridcell"]', '[role="row"]', '.picker-dataview-item']:
-                    cand = frame.locator(sel)
-                    if cand.count() > 0 and cand.first.is_visible():
-                        cand.first.click(force=True)
-                        logger.info("Selected Drive file '%s' from search results.", clean_name)
-                        return
-                time.sleep(0.3)
+            if _try_js_select(file_id, clean_name, base_name, space_name, key_tokens):
+                logger.info("Selected Drive file '%s' from search results.", clean_name)
+                return
         except Exception as se:
             logger.warning("Drive search in picker failed: %s", se)
-
-    # 5. Last resort: select first visible option if only one available
-    try:
-        first_option = frame.locator('[role="option"], [role="gridcell"], [role="row"]').first
-        if first_option.count() > 0 and first_option.is_visible():
-            first_option.click(force=True)
-            logger.info("Selected top available item in Drive picker as fallback.")
-            return
-    except Exception:
-        pass
 
     # Check if picker explicitly has a visible "Sign in to access this content" error
     try:
@@ -331,12 +415,18 @@ def submit_drive_files(
                 formatted_cookies = []
                 for c in cookies:
                     cookie_dict = dict(c)
-                    # Cross-site iframe compatibility (Google Drive picker embedded inside Google Classroom):
-                    # Google session cookies must be SameSite=None and secure=True so Chromium transmits them in iframes.
-                    cookie_dict["sameSite"] = "None"
-                    cookie_dict["secure"] = True
+                    s_site = str(cookie_dict.get("sameSite", "")).lower()
+                    if s_site in ["no_restriction", "none"]:
+                        cookie_dict["sameSite"] = "None"
+                    elif s_site == "strict":
+                        cookie_dict["sameSite"] = "Strict"
+                    else:
+                        cookie_dict["sameSite"] = "Lax"
+
                     if not cookie_dict.get("domain") and not cookie_dict.get("url"):
                         cookie_dict["domain"] = ".google.com"
+                    if not cookie_dict.get("path"):
+                        cookie_dict["path"] = "/"
                     formatted_cookies.append(cookie_dict)
 
                 try:
@@ -356,7 +446,10 @@ def submit_drive_files(
                 logger.warning("Could not inject Google Classroom cookies for user %s: %s", user_id, ce)
 
         # Pre-warm Docs and Drive session top-level so Google mints OSID cookies
-        for warm_url in ("https://docs.google.com", "https://drive.google.com"):
+        warm_urls = ["https://docs.google.com", "https://drive.google.com"]
+        if expected_email:
+            warm_urls.append(f"https://drive.google.com/drive/u/0/my-drive?authuser={quote(expected_email)}")
+        for warm_url in warm_urls:
             try:
                 warm_page = context.new_page()
                 warm_page.goto(warm_url, wait_until="domcontentloaded", timeout=12_000)
@@ -502,26 +595,24 @@ def submit_drive_files(
                     )
                 logger.info("Assignment has no attachment control but 'Turn in' / 'Mark as done' is available.")
             else:
-                # 1. First check if Google Drive picker is already open
-                picker = None
-                try:
-                    for frame in page.frames:
-                        url = (frame.url or "").lower()
-                        if "picker" in url and "drive.google.com" in url:
-                            picker = _wait_for_picker_frame(page, timeout_seconds=3.0)
-                            break
-                except Exception:
-                    picker = None
+                def _ensure_drive_picker():
+                    # 1. First check if Google Drive picker is already open and valid
+                    try:
+                        for frame in page.frames:
+                            url = (frame.url or "").lower()
+                            if "picker" in url and "drive.google.com" in url:
+                                if frame.locator("body").count() > 0:
+                                    return frame
+                    except Exception:
+                        pass
 
-                if not picker:
-                    # Robust dropdown opener: Click 'Add or create' and poll for menu with retries
+                    # 2. Re-open 'Add or create' menu and select Google Drive
                     drive_option = None
                     menu_deadline = time.monotonic() + 15.0
                     last_click = 0.0
                     click_attempt = 0
 
                     while time.monotonic() < menu_deadline:
-                        # Re-click add_button if menu has not rendered
                         if time.monotonic() - last_click > 1.5:
                             logger.info("Clicking 'Add or create' button (attempt %d)...", click_attempt + 1)
                             try:
@@ -533,7 +624,6 @@ def submit_drive_files(
 
                         page.wait_for_timeout(350)
 
-                        # Search for Google Drive option in dropdown menu (scoped strictly to menu items)
                         for sel in [
                             '[role="menu"] [role="menuitem"]:has-text("Google Drive")',
                             '[role="menuitem"]:has-text("Google Drive")',
@@ -568,7 +658,6 @@ def submit_drive_files(
                         logger.warning("Classroom dropdown failed to expose Drive option. Current page text: %r", body_text[:400])
                         raise ClassroomBrowserSubmissionError("Classroom did not show 'Google Drive' in the attachment dropdown.")
 
-                    # Click Drive option (targeting the menuitem / li to avoid pointer interception)
                     logger.info("Found Google Drive option in dropdown. Clicking...")
                     clicked_drive = False
                     try:
@@ -584,10 +673,19 @@ def submit_drive_files(
                         except Exception as je:
                             logger.warning("JS click on Drive option failed: %s", je)
 
-                    picker = _wait_for_picker_frame(page)
+                    return _wait_for_picker_frame(page)
+
                 for item in valid_files:
+                    # Check if file is already attached in student's work card
+                    current_work_text = page.locator("body").inner_text()
+                    if _is_file_in_text(item["name"], current_work_text):
+                        logger.info("File '%s' is already attached in Classroom.", item["name"])
+                        continue
+
+                    picker = _ensure_drive_picker()
                     _select_drive_file(picker, item["id"], item["name"])
-                _confirm_picker_selection(picker)
+                    _confirm_picker_selection(picker)
+                    page.wait_for_timeout(1500)
 
                 # Wait for files to appear in student's work list
                 deadline = time.monotonic() + 12.0

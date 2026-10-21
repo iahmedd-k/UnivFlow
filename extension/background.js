@@ -18,76 +18,55 @@ async function setStoredState(updates) {
 
 // 1. Fetch Google Classroom, Accounts, and Google Drive/Docs auth cookies
 async function getGoogleClassroomCookies() {
-  const [
-    gUrlCookies,
-    gDomCookies,
-    dotGDomCookies,
-    accUrlCookies,
-    accDomCookies,
-    cUrlCookies,
-    cDomCookies,
-    dUrlCookies,
-    dDomCookies,
-    drvUrlCookies,
-    drvDomCookies,
-  ] = await Promise.all([
+  let allCookies = [];
+  try {
+    allCookies = await chrome.cookies.getAll({});
+  } catch (err) {
+    console.debug("chrome.cookies.getAll({}) error:", err);
+  }
+
+  const explicitQueries = [
     chrome.cookies.getAll({ url: "https://google.com" }),
-    chrome.cookies.getAll({ domain: "google.com" }),
-    chrome.cookies.getAll({ domain: ".google.com" }),
+    chrome.cookies.getAll({ url: "https://www.google.com" }),
     chrome.cookies.getAll({ url: "https://accounts.google.com" }),
-    chrome.cookies.getAll({ domain: "accounts.google.com" }),
     chrome.cookies.getAll({ url: "https://classroom.google.com" }),
-    chrome.cookies.getAll({ domain: "classroom.google.com" }),
     chrome.cookies.getAll({ url: "https://docs.google.com" }),
-    chrome.cookies.getAll({ domain: "docs.google.com" }),
     chrome.cookies.getAll({ url: "https://drive.google.com" }),
-    chrome.cookies.getAll({ domain: "drive.google.com" }),
-  ]);
-  const combined = [
-    ...(gUrlCookies || []),
-    ...(gDomCookies || []),
-    ...(dotGDomCookies || []),
-    ...(accUrlCookies || []),
-    ...(accDomCookies || []),
-    ...(cUrlCookies || []),
-    ...(cDomCookies || []),
-    ...(dUrlCookies || []),
-    ...(dDomCookies || []),
-    ...(drvUrlCookies || []),
-    ...(drvDomCookies || []),
   ];
+
+  const results = await Promise.allSettled(explicitQueries);
+  const explicitCookies = results.flatMap((r) => (r.status === "fulfilled" && Array.isArray(r.value) ? r.value : []));
+
+  const combined = [...(allCookies || []), ...explicitCookies];
   const unique = [];
   const seen = new Set();
   for (const c of combined) {
-    const key = `${c.name}@${c.domain}`;
+    if (!c || !c.name || !c.domain) continue;
+    const key = `${c.name}@${c.domain}${c.path || ""}`;
     if (!seen.has(key)) {
       seen.add(key);
       unique.push(c);
     }
   }
 
-  const authCookieNames = new Set([
-    "OSID", "SID", "HSID", "SSID", "APISID", "SAPISID", "SIDCC", "LSID",
-    "NID", "ACCOUNT_CHOOSER", "GAPS", "SOCS"
-  ]);
-
-  const authCookies = unique.filter((c) => {
-    const n = c.name;
+  // Filter to all Google-related domains (Classroom, Drive, Docs, Accounts, top-level Google)
+  const googleCookies = unique.filter((c) => {
+    const dom = (c.domain || "").toLowerCase();
     return (
-      authCookieNames.has(n) ||
-      n.startsWith("__Secure-") ||
-      n.startsWith("__Host-")
+      dom === "google.com" ||
+      dom === ".google.com" ||
+      dom.endsWith(".google.com")
     );
   });
 
-  return authCookies.map((c) => ({
+  return googleCookies.map((c) => ({
     name: c.name,
     value: c.value,
     domain: c.domain,
-    path: c.path,
-    secure: c.secure,
-    httpOnly: c.httpOnly,
-    sameSite: c.sameSite,
+    path: c.path || "/",
+    secure: Boolean(c.secure),
+    httpOnly: Boolean(c.httpOnly),
+    sameSite: c.sameSite || "unspecified",
   }));
 }
 
