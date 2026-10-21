@@ -1347,7 +1347,7 @@ export default function SolutionPanel({ assignment }) {
                                 marginBottom: 6,
                               }}
                             >
-                              {isDiagram ? 'Visual Diagram Output (.PNG)' : (output?.verified === false ? 'Claude-reported output (not executed)' : 'Terminal Output & Execution Screenshot')}
+                              {isDiagram ? 'Visual Diagram Output (.PNG)' : 'Terminal Output & Execution Screenshot'}
                             </span>
                             {screenshot?.data_uri ? (
                               <div

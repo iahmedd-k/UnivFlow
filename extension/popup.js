@@ -165,19 +165,28 @@ chrome.cookies.get({ url: "https://claude.ai", name: "sessionKey" }, (cookie) =>
   }
 });
 
-// 3. Check Google Classroom cookies
-chrome.cookies.getAll({ domain: "google.com" }, (gCookies) => {
-  chrome.cookies.getAll({ url: "https://classroom.google.com" }, (cCookies) => {
-    const combined = [...(gCookies || []), ...(cCookies || [])];
-    const unique = [];
-    const seen = new Set();
-    for (const c of combined) {
-      const key = `${c.name}@${c.domain}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        unique.push(c);
-      }
+// 3. Check Google Classroom & Drive/Docs cookies
+Promise.all([
+  chrome.cookies.getAll({ domain: "google.com" }),
+  chrome.cookies.getAll({ url: "https://classroom.google.com" }),
+  chrome.cookies.getAll({ url: "https://docs.google.com" }),
+  chrome.cookies.getAll({ url: "https://drive.google.com" }),
+]).then(([gCookies, cCookies, dCookies, drvCookies]) => {
+  const combined = [
+    ...(gCookies || []),
+    ...(cCookies || []),
+    ...(dCookies || []),
+    ...(drvCookies || []),
+  ];
+  const unique = [];
+  const seen = new Set();
+  for (const c of combined) {
+    const key = `${c.name}@${c.domain}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(c);
     }
+  }
 
     const authCookies = unique.filter((c) => {
       const n = c.name;
@@ -212,7 +221,6 @@ chrome.cookies.getAll({ domain: "google.com" }, (gCookies) => {
       syncGcrBtn.disabled = true;
     }
   });
-});
 
 // 4. Check University Portal cookies
 chrome.cookies.getAll({ domain: "portals.au.edu.pk" }, (cookies) => {

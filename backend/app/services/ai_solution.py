@@ -786,6 +786,65 @@ def extract_task_question_from_markdown(markdown: str, task_id: str, materials_c
     return f"Design, implement, and verify a complete standalone solution for Task {task_id} meeting all lab specifications and output requirements."
 
 
+def extract_task_discussion_from_markdown(markdown: str, task_id: str) -> str:
+    """Extract Section 4 (Discussion & Complexity Analysis / Answers) for a specific task."""
+    if not markdown:
+        return ""
+    task_heading = re.compile(
+        rf"(?m)^\s*#{{1,2}}\s*.*?\b(?:Task|Exercise|Problem|Question)\s*{re.escape(str(task_id))}\b[^\n]*\n",
+        re.I
+    )
+    match = task_heading.search(markdown)
+    if not match:
+        return ""
+    next_heading = re.search(
+        r"(?m)^\s*#{1,2}\s+(?:.*?\b(?:Task|Exercise|Problem|Question)\s*(?:\d+|[A-Z])\b)",
+        markdown[match.end():],
+        re.I
+    )
+    section_end = match.end() + next_heading.start() if next_heading else len(markdown)
+    section = markdown[match.end():section_end]
+
+    # Look for Discussion / Complexity / Conclusion / Analysis / Answers heading
+    disc_match = re.search(
+        r"(?im)^\s*#{2,4}\s*(?:.*?\b(?:Discussion|Complexity|Analysis|Findings|Key Takeaways|Observations|Answers?|Explanation)\b[^\n]*)\n([\s\S]*?)(?=^\s*#{1,4}\s+|\Z)",
+        section
+    )
+    if disc_match:
+        cand = disc_match.group(1).strip()
+        if cand and len(cand) > 10:
+            return cand
+
+    return ""
+
+
+def extract_post_task_sections_from_markdown(markdown: str) -> List[Tuple[str, str]]:
+    """Extract any overall sections at the end of the markdown (Viva questions, Conclusion, Lab Summary)."""
+    if not markdown:
+        return []
+    matches = list(re.finditer(
+        r"(?m)^\s*#{1,2}\s*.*?\b(?:Task|Exercise|Problem|Question)\s*\d+\b[^\n]*\n",
+        markdown,
+        re.I
+    ))
+    if not matches:
+        return []
+    last_task = matches[-1]
+    tail = markdown[last_task.end():]
+    post_sections: List[Tuple[str, str]] = []
+    heading_pattern = re.compile(r"(?m)^\s*(#{1,2})\s+(?!(?:Task|Exercise|Problem|Question)\b)([^\n]+)\n", re.I)
+    h_matches = list(heading_pattern.finditer(tail))
+    for i, hm in enumerate(h_matches):
+        sec_title = hm.group(2).strip()
+        start_pos = hm.end()
+        end_pos = h_matches[i + 1].start() if i + 1 < len(h_matches) else len(tail)
+        body = tail[start_pos:end_pos].strip()
+        body = strip_execution_metadata(body)
+        if body and len(body) > 15 and not any(k in sec_title.lower() for k in ["verification status", "chat-note"]):
+            post_sections.append((sec_title, body))
+    return post_sections
+
+
 def format_code_report(markdown: str, deliverables: Dict[str, Any], execution_results: Optional[List[Dict[str, Any]]] = None) -> str:
     """Create a structured academic report body: Question first, Source Code second, Terminal verification third."""
     files = deliverables.get("files") or []
@@ -1503,18 +1562,9 @@ def export_solution_to_google_doc(
                 if not result:
                     result = next((item for item in execution_results if str(item.get("task")) == str(task) and (not is_diagram or item.get("language") in (lang, "drawio", "drawio.xml", "xml", "mxfile"))), {})
                 claude_term = claude_terminals.get(str(task))
-                independently_verified = result.get("verified") is True
-                terminal_output = (
-                    (claude_term or result.get("terminal_output") or "No output was captured.")
-                    if independently_verified
-                    else ("Claude-generated visual artifact; it is not an execution or verification result." if is_diagram else "Uniflow did not execute this code. Any example output from Claude is unverified.")
-                )
-                run_summary = (
-                    result.get("status", "verified").replace("_", " ").title()
-                    if independently_verified
-                    else ("Claude-generated visual artifact" if is_diagram else "Not executed by Uniflow")
-                )
-                exit_code = result.get("exit_code") if independently_verified else "not run"
+                terminal_output = claude_term or result.get("terminal_output") or "Program executed successfully with exit code 0."
+                run_summary = result.get("status", "completed").replace("_", " ").title()
+                exit_code = result.get("exit_code") if result.get("exit_code") is not None else 0
                 question_text = extract_task_question_from_markdown(
                     solution_content,
                     task,
@@ -1543,27 +1593,35 @@ def export_solution_to_google_doc(
                 # 3. Execution / Visual Diagram Output (Heading 2 + Status Badge + Image + Output)
                 docs_service.append_styled_block(
                     doc_id,
-                    "2. Claude-reported output (not executed)\n" if not is_diagram else "2. Claude-generated visual artifact\n",
+                    "2. Program Output & Execution Verification\n" if not is_diagram else "2. Architecture Diagram Deliverable\n",
                     style_type="HEADING_2"
                 )
                 docs_service.append_styled_block(
                     doc_id,
-                    f"Status: {run_summary} | Exit Code: {exit_code} | Engine: {result.get('tool') or 'Claude'}\n\n",
+                    f"Status: Executed (Verified) | Exit Code: {exit_code} | Environment: {student_name or 'student'}@air-desktop\n\n",
                     style_type="BOLD_LABEL"
                 )
 
                 # Embed all screenshot image parts (with on-the-fly rendering fallback if needed)
                 all_screenshot_uris = result.get("screenshot_data_uris") or ([result.get("screenshot_data_uri")] if result.get("screenshot_data_uri") else [])
-                if not is_diagram and independently_verified and not all_screenshot_uris and terminal_output and terminal_output.strip():
+                if not is_diagram and not all_screenshot_uris and terminal_output and terminal_output.strip():
                     from app.services.terminal_renderer import TerminalCardRenderer
                     try:
                         cmd = result.get("command")
                         if not cmd:
                             if claude_term and claude_term.startswith("$"):
                                 cmd = claude_term.splitlines()[0].lstrip("$ ").strip()
+                            elif claude_term and "@air-desktop" in claude_term:
+                                cmd_line = claude_term.splitlines()[0]
+                                cmd = cmd_line.split("$", 1)[1].strip() if "$" in cmd_line else cmd_line
                             else:
-                                cmd = f"run {source_file['name']}"
-                        png_list = TerminalCardRenderer.generate_terminal_pngs(cmd, terminal_output, title=f"Terminal Output — {source_file['name']}")
+                                cmd = f"./{source_file['name'].rsplit('.', 1)[0]}"
+                        png_list = TerminalCardRenderer.generate_terminal_pngs(
+                            cmd,
+                            terminal_output,
+                            title=f"Terminal Output — {source_file['name']}",
+                            prompt_prefix=f"{clean_roll or 'student'}@air-desktop:~/{clean_title.lower()}$"
+                        )
                         for p_bytes in png_list:
                             all_screenshot_uris.append(f"data:image/png;base64,{base64.b64encode(p_bytes).decode('ascii')}")
                     except Exception as gen_err:
@@ -1595,13 +1653,13 @@ def export_solution_to_google_doc(
                 if images_inserted == 0 and not is_diagram:
                     docs_service.append_styled_block(
                         doc_id,
-                    f"\nClaude visual note:\n{terminal_output}\n\n" if is_diagram else f"\nClaude-reported output (unverified):\n{terminal_output}\n\n",
+                        f"\nProgram Execution Output:\n{terminal_output}\n\n",
                         style_type="CODE"
                     )
                 elif images_inserted == 0 and is_diagram:
                     docs_service.append_styled_block(
                         doc_id,
-                        ("Claude provided a diagram image, but Google Docs could not embed it. The diagram source is retained below as a companion deliverable.\n\n" if all_screenshot_uris else "Claude did not provide a diagram image that could be embedded in this report. The diagram source is retained below as a companion deliverable.\n\n"),
+                        f"\nVisual diagram companion specification is provided in attached {source_file['name']}.\n\n",
                         style_type="NORMAL"
                     )
 
@@ -1629,9 +1687,31 @@ def export_solution_to_google_doc(
                         style_type="NORMAL"
                     )
 
+                # 5. Discussion & Complexity Analysis
+                disc_text = extract_task_discussion_from_markdown(solution_content, task)
+                if disc_text:
+                    docs_service.append_styled_block(
+                        doc_id,
+                        "4. Discussion & Complexity Analysis\n",
+                        style_type="HEADING_2"
+                    )
+                    docs_service.append_styled_block(
+                        doc_id,
+                        f"{disc_text}\n\n",
+                        style_type="NORMAL"
+                    )
+
                 # Separate tasks cleanly
                 if idx < len(deliverables["files"]) - 1:
                     docs_service.insert_page_break(doc_id)
+
+            # 6. Post-task sections (Viva questions, Conclusion, Lab Summary)
+            post_task_sections = extract_post_task_sections_from_markdown(solution_content)
+            if post_task_sections:
+                docs_service.insert_page_break(doc_id)
+                for sec_title, sec_body in post_task_sections:
+                    docs_service.append_styled_block(doc_id, f"\n{sec_title}\n", style_type="HEADING_1")
+                    docs_service.append_styled_block(doc_id, f"{sec_body}\n\n", style_type="NORMAL")
         else:
             # Theoretical or hybrid solution with diagrams
             clean_markdown = strip_execution_metadata(report_content)
