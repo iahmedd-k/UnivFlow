@@ -5,7 +5,7 @@ import { useAuth, useUser } from '@clerk/nextjs';
 import Link from 'next/link';
 import { api } from '@/app/lib/api';
 import Icon from '@/app/dashboard/Icon';
-import { isExtensionInstalled, syncGcrViaExtension } from '@/app/lib/extensionBridge';
+import { isExtensionInstalled, syncGcrViaExtension, EXTENSION_VERSION } from '@/app/lib/extensionBridge';
 
 function formatDate(value, options = { month: 'short', day: 'numeric' }) {
   if (!value) return 'Date TBC';
@@ -294,7 +294,7 @@ export default function DashboardOverview() {
           </div>
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-sm font-bold tracking-tight text-ink">Uniflow Academic Companion (v1.3.0)</h2>
+              <h2 className="text-sm font-bold tracking-tight text-ink">Uniflow Academic Companion (v{EXTENSION_VERSION})</h2>
               {extensionDetected ? (
                 <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800">
                   <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -418,7 +418,7 @@ export default function DashboardOverview() {
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-violet/20 bg-violet-light/30 px-3.5 py-2 text-[11px] text-violet-dark">
             <span className="flex items-center gap-1.5">
               <Icon name="sparkles" size={13} />
-              <span><strong>New in v1.3.0:</strong> Automatic Background Auto-Renewal keeps your Google Classroom and Claude cookies fresh transparently without re-logins!</span>
+              <span><strong>New in v{EXTENSION_VERSION}:</strong> Automatic Background Auto-Renewal keeps your Google Classroom and Claude cookies fresh transparently without re-logins!</span>
             </span>
             <Link href="/dashboard/settings" className="font-semibold underline hover:text-ink">
               Advanced Session Settings →

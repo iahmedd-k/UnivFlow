@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from app.db.database import get_db
 from app.db.repositories import NotificationRepository
 from app.db.models import Notification, NotificationStatus, Setting
-from app.services.email import send_email
+from app.services.email import format_email_subject, send_email
 from app.core.config import settings
 from app.core.logging import logger
 from app.auth.clerk_auth import get_current_user_optional
@@ -240,7 +240,7 @@ def get_notification_stats(db: Session = Depends(get_db), clerk_user: Optional[d
 
 def _build_email_content(notification: Notification) -> tuple[str, str]:
     """Build HTML and text content from notification with executive styling"""
-    subject = notification.subject or "Uniflow Notification"
+    subject = format_email_subject(notification.subject or "Notification")
     payload = notification.payload or ""
     notification_type = (notification.notification_type or "general").upper()
     sent_time_str = datetime.now().strftime("%B %d, %Y at %I:%M %p")
@@ -576,7 +576,7 @@ def send_test_email(
     if not target_email:
         raise HTTPException(status_code=400, detail="No notification email found. Please configure an alert email in Settings.")
 
-    subject = "[Uniflow] Test Alert: Email Delivery Verified"
+    subject = "Uniflow | Test Alert: Email Delivery Verified"
     html = f"""<!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>

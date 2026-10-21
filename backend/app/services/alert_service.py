@@ -165,7 +165,10 @@ def _render_uniflow_email_shell(
     accent_gradient: str = "linear-gradient(90deg, #4f46e5 0%, #6366f1 50%, #818cf8 100%)",
 ) -> str:
     """Render a bulletproof, modern executive transactional email with high-end typography and mobile responsiveness."""
-    footer_content = "<br>".join(footer_lines)
+    footer_content = "<br>".join(
+        line for line in footer_lines
+        if not re.search(r"(?:google classroom integration|\bgcr\b|sync|synchroniz)", line, re.IGNORECASE)
+    )
     return f"""<!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
@@ -501,7 +504,7 @@ def build_attendance_warning_email(
     )
 
     clean_recovery_note = recovery_note.replace("<strong>", "").replace("</strong>", "")
-    text = f"""[Uniflow Academic Advisory] LOW ATTENDANCE WARNING
+    text = f"""Low Attendance Advisory: {course_name}
 
 Course: {course_name}
 Current Attendance: {percentage:.1f}% ({attended}/{total} classes attended)
@@ -582,7 +585,7 @@ def build_timetable_reminder_email(
         accent_gradient="linear-gradient(90deg, #4338ca 0%, #6366f1 50%, #818cf8 100%)",
     )
 
-    text = f"""[Uniflow Schedule Notice] CLASS STARTING IN ~{minutes_left} MINUTES
+    text = f"""Class Starts in ~{minutes_left} Minutes: {course_name}
 
 Course: {course_name}
 Time: {start_time} - {end_time}
@@ -647,13 +650,13 @@ def build_assignment_deadline_email(
     """
 
     footer_lines = [
-        "Uniflow Academic Suite · Google Classroom Integration.",
+        "Uniflow Academic Suite · Coursework Notifications.",
         "To submit, turn in your completed files via Google Classroom or the Uniflow Assignment Portal.",
     ]
 
     html = _render_uniflow_email_shell(
         preheader=preheader,
-        brand_title="Uniflow Academic Suite · Google Classroom Sync",
+        brand_title="Uniflow Academic Suite · Coursework Notifications",
         header_title="Coursework Deadline Reminder",
         status_badge_html=status_badge_html,
         body_html=body_html,
@@ -661,7 +664,7 @@ def build_assignment_deadline_email(
         accent_gradient="linear-gradient(90deg, #d97706 0%, #f59e0b 50%, #fbbf24 100%)",
     )
 
-    text = f"""[Uniflow Deadline Notice] COURSEWORK DUE IN {time_remaining_str.upper()}
+    text = f"""Coursework Deadline Reminder: {assignment_title}
 
 Task Title: {assignment_title}
 Course: {course_name}
@@ -864,7 +867,7 @@ def build_daily_morning_digest_email(
     )
 
     text_lines = [
-        f"[Uniflow Morning Briefing] {date_str}",
+        f"Daily Academic Briefing: {date_str}",
         "",
         f"Classes Today: {classes_count} | Attendance Advisories: {advisories_count} | Active Tasks: {tasks_count}",
         "",
@@ -960,12 +963,12 @@ def build_new_assignment_email(
 
     footer_lines = [
         "Dispatched strictly once upon new coursework arrival by Uniflow Academic Suite.",
-        "Air University Student Google Classroom Sync.",
+        "Air University Student Coursework Notifications.",
     ]
 
     html = _render_uniflow_email_shell(
         preheader=preheader,
-        brand_title="Uniflow Academic Suite · Google Classroom Sync",
+        brand_title="Uniflow Academic Suite · Coursework Notifications",
         header_title="New Coursework Posted",
         status_badge_html=status_badge_html,
         body_html=body_html,
@@ -973,7 +976,7 @@ def build_new_assignment_email(
         accent_gradient="linear-gradient(90deg, #0284c7 0%, #2563eb 50%, #4f46e5 100%)",
     )
 
-    text = f"""[Uniflow New Coursework] {assignment_title} ({course_name})
+    text = f"""New Coursework: {assignment_title} ({course_name})
 
 Course: {course_name}
 Task: {assignment_title}
@@ -1072,7 +1075,7 @@ def build_daily_class_list_email(
     )
 
     text_lines = [
-        f"[Uniflow] Today's Class Schedule ({date_str})",
+        f"Today's Class Schedule: {date_str}",
         "",
         f"Good morning, {student_name}! Here is your class schedule for {day_of_week}, {date_str}.",
         "",

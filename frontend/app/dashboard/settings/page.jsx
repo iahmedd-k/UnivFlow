@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAuth, useUser } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 import Icon from '@/app/dashboard/Icon';
-import { isExtensionInstalled, syncGcrViaExtension, autoVisitAndSyncGcr, syncSelectedViaExtension } from '@/app/lib/extensionBridge';
+import { isExtensionInstalled, syncGcrViaExtension, autoVisitAndSyncGcr, syncSelectedViaExtension, EXTENSION_VERSION } from '@/app/lib/extensionBridge';
 
 export default function SettingsPage() {
   const { getToken } = useAuth();
@@ -1334,7 +1334,7 @@ export default function SettingsPage() {
             <div>
               <div className="flex items-center gap-2">
                 <p className="text-xs font-semibold uppercase tracking-[.12em] text-violet">CHROME COMPANION</p>
-                <span className="rounded-full bg-violet-light px-2 py-0.5 text-[10px] font-bold text-violet">v1.3.1</span>
+                <span className="rounded-full bg-violet-light px-2 py-0.5 text-[10px] font-bold text-violet">v{EXTENSION_VERSION}</span>
               </div>
               <h2 className="text-[14px] font-semibold text-[#343746]">Uniflow Academic Companion Extension</h2>
             </div>

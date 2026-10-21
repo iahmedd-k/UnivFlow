@@ -21,6 +21,7 @@ from app.services.alert_service import (
     build_timetable_reminder_email,
     build_assignment_deadline_email,
 )
+from app.services.email import format_email_subject
 
 
 @pytest.fixture
@@ -313,7 +314,8 @@ def test_email_builders_clean_typography():
     # Zero cheap tacky emojis in text
     assert "⚠️" not in text_att
     assert "🔔" not in text_att
-    assert "[Uniflow Academic Advisory]" in text_att
+    assert text_att.startswith("Low Attendance Advisory:")
+    assert "Google Classroom Sync" not in html_att
 
     html_tt, text_tt = build_timetable_reminder_email(
         course_name="Software Design and Architecture",
@@ -327,7 +329,7 @@ def test_email_builders_clean_typography():
     assert "Dr. Bilal Ahmad" in html_tt
     assert "⏱️" not in text_tt
     assert "📍" not in text_tt
-    assert "[Uniflow Schedule Notice]" in text_tt
+    assert text_tt.startswith("Class Starts in ~10 Minutes:")
 
     html_gcr, text_gcr = build_assignment_deadline_email(
         assignment_title="Lab 4: Binary Search Trees",
@@ -340,7 +342,18 @@ def test_email_builders_clean_typography():
     assert "Lab 4: Binary Search Trees" in html_gcr
     assert "Data Structures" in html_gcr
     assert "View in Google Classroom" in html_gcr
-    assert "[Uniflow Deadline Notice]" in text_gcr
+    assert text_gcr.startswith("Coursework Deadline Reminder:")
+    assert "Google Classroom Sync" not in html_gcr
+    assert "Google Classroom Integration" not in html_gcr
+
+
+def test_email_subjects_use_professional_uniflow_format():
+    assert format_email_subject("[Uniflow] CLASS IN 20 MINUTES: DATABASE SYSTEMS") == (
+        "Uniflow | Class In 20 Minutes: Database Systems"
+    )
+    assert format_email_subject("Uniflow private access approval request") == (
+        "Uniflow | Private Access Approval Request"
+    )
 
 
 @patch("app.services.alert_service.send_email", return_value=True)
@@ -464,4 +477,3 @@ def test_new_assignment_notification_and_deduplication(mock_send, db_session):
     res2 = service.notify_new_assignment(assignment, user_id="dev_student_user", send_immediately=True)
     assert res2 is None
     mock_send.assert_not_called()
-

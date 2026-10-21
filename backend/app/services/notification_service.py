@@ -11,7 +11,7 @@ from app.db.models import (
     NotificationStatus,
 )
 from app.db.repositories.notifications import NotificationRepository, NotificationPreferenceRepository
-from app.services.email import send_email, send_template_email
+from app.services.email import format_email_subject, send_email, send_template_email
 from app.core.config import settings
 from app.core.logging import logger
 
@@ -207,7 +207,7 @@ class NotificationService:
         # If payload is raw text or a snippet without full HTML layout, wrap with executive styling
         if html_content and not ("<html" in html_content.lower() or "<!doctype" in html_content.lower()):
             from html import escape
-            subject_esc = escape(notification.subject or "Uniflow Notification")
+            subject_esc = escape(format_email_subject(notification.subject or "Notification"))
             type_esc = escape((notification.notification_type or "general").upper())
             body_esc = escape(html_content).replace("\n", "<br>")
             html_content = f"""<!DOCTYPE html>

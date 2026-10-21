@@ -2,10 +2,21 @@ import sendgrid
 from sendgrid.helpers.mail import Mail, Email, To, Content, Header
 from app.core.config import settings
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
 sg_client = None
+
+
+def format_email_subject(subject: str) -> str:
+    """Give outbound email subjects a consistent, professional Uniflow format."""
+    title = re.sub(r"^\[Uniflow(?: [^\]]*)?\]\s*", "", (subject or "").strip(), flags=re.IGNORECASE)
+    title = re.sub(r"^Uniflow(?:\s*[|:—-]\s*|\s+)", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"\s+", " ", title).strip()
+    if title.isupper() or title.islower():
+        title = title.title()
+    return f"Uniflow | {title or 'Notification'}"
 
 
 def get_sendgrid_client():
@@ -30,6 +41,7 @@ def send_email(
     custom_args: dict = None,
 ) -> bool:
     """Send email via SendGrid API with spam-reduction best practices"""
+    subject = format_email_subject(subject)
     from_email = from_email or settings.sendgrid_from_email or settings.email_from or "noreply@basarat.live"
     from_name = from_name or "Uniflow"
 
@@ -146,6 +158,9 @@ def send_template_email(
 
     from_email = from_email or settings.sendgrid_from_email or settings.email_from
     from_name = from_name or "Uniflow"
+    dynamic_template_data = dict(dynamic_template_data)
+    if isinstance(dynamic_template_data.get("subject"), str):
+        dynamic_template_data["subject"] = format_email_subject(dynamic_template_data["subject"])
 
     try:
         mail = Mail(
