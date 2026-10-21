@@ -247,7 +247,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const token = payload?.token || state.uniflowAuthToken || "";
 
       if (action === "PING") {
-        sendResponse({ success: true, version: "1.3.1" });
+        sendResponse({ success: true, version: chrome.runtime.getManifest()?.version || "1.3.6" });
       } else if (action === "DETECT_AUTH_TOKEN") {
         const detected = await detectFreshAuthToken(payload?.apiUrl || apiUrl);
         if (detected) {
