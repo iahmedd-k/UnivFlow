@@ -1857,8 +1857,8 @@ def solve_assignment_via_claude_browser(
                 "  Java, SQL, etc.) inside a clean code fence in the report.\n"
                 "- MANDATORY REQUIREMENT - GENERATE TERMINAL OUTPUT IMAGE & VISUAL ARTIFACT:\n"
                 "  For EVERY programming task, generate the realistic terminal execution output image / visual artifact\n"
-                "  of the code output. Show the terminal session formatted with the student's authentic directory and user prompt:\n"
-                f"  `{shell_prompt} <command>`\n"
+                "  of the code output in PNG format. Show the terminal session formatted with the student's authentic directory and user prompt:\n"
+                f"  `{shell_prompt} <command>`. Note: You do not need to execute the code. You just have to generate output image of each task in which show the output of each Task. (Note: output image should be like terminal output image and Visual Studio Code terminal like output image)\n"
                 "  Show the authentic directory, user metadata, command, printed output, registers/flags, and exit code 0.\n"
                 "  Generate the terminal execution screenshot / visual artifact for each task AND format the session\n"
                 "  inside the ```terminal fence."
@@ -1952,6 +1952,7 @@ def solve_assignment_via_claude_browser(
             "=====================================================================\n"
             "- For every programming task, provide complete, bug-free, runnable source code\n"
             "  in a language-tagged code fence (```assembly, ```python, ```cpp, ```java, ```sql, ...).\n"
+            "  For Tasks of ML & DL only where model training / pipeline etc. involves: You do not have to create multiple files of it. Just create a Google Colab notebook (.ipynb in ```colab-json) and give necessary explanations for each task, and also in the Colab file first section write student metadata information.\n"
             "- Label every file clearly:  **File:** `task<N>_<short_name>.<ext>`\n"
             "- Comment every block of code so a student can follow it.\n"
             "- Use only syntax that works in the tool named by the manual (for example\n"
@@ -1966,10 +1967,9 @@ def solve_assignment_via_claude_browser(
             "=====================================================================\n"
             "- Theory / analysis / trade-off questions: use structured Markdown tables and\n"
             "  detailed explanations. Do not include terminal output for these tasks.\n"
-            "- Diagram tasks: provide the vector diagram in a ```svg fence, the Draw.io XML\n"
-            "  in a ```drawio fence (<mxfile host=\"app.diagrams.net\">...</mxfile>), and a\n"
-            "  rendered PNG named diagram_taskN.png. Do not print Base64 or a Markdown image\n"
-            "  placeholder.\n\n"
+            "- Diagram tasks: provide the vector diagram in a ```svg fence and the Draw.io XML\n"
+            "  in a ```drawio fence (<mxfile host=\"app.diagrams.net\">...</mxfile>).\n"
+            "  For diagram: Just generate an output image of diagram by following International Standards Rules & Regulations and also give the code of the diagram in XML format too.\n\n"
         )
 
         final_checklist = (
