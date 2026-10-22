@@ -1738,12 +1738,12 @@ def solve_assignment_via_claude_browser(
                 "- Provide an exceptionally thorough, structured academic report addressing all assignment\n"
                 "  questions, objectives, and problem statements with scholarly depth.\n"
                 "- Include theoretical foundations, structured explanations, comparative analyses, and practical applications.\n"
-                "- If diagrams are requested, provide the full SVG in a ```svg code fence and the companion Draw.io XML in a ```drawio code fence."
+                "- If diagrams are requested, generate the rendered diagram output image in PNG format (`diagram_taskN.png`) following International Standards Rules & Regulations, and provide the companion Draw.io XML in a ```drawio code fence (do not output SVG code)."
             )
             image_style_instructions = (
                 "  * Theory / Analysis tasks -> taskN_output.png : a clean rendered image of the\n"
                 "                     key summary table, conceptual diagram, or answer matrix.\n"
-                "  * Diagram tasks           -> diagram_taskN.png : the rendered vector diagram."
+                "  * Diagram tasks           -> diagram_taskN.png : the rendered diagram PNG image."
             )
             report_structure = (
                 "=====================================================================\n"
@@ -1761,11 +1761,8 @@ def solve_assignment_via_claude_browser(
                 "[Practical application, industry best practices, empirical evidence, or concrete scenarios]\n\n"
                 "--- If a Diagram is Requested ---\n"
                 "# Diagram Analysis: [Topic]\n"
-                "## 1. Visual Vector Diagram (SVG)\n"
-                "**Attached image file:** `diagram_taskN.png`\n"
-                "```svg\n"
-                "<svg viewBox=\"0 0 800 400\" xmlns=\"http://www.w3.org/2000/svg\"> ... </svg>\n"
-                "```\n\n"
+                "## 1. Visual Architecture Diagram\n"
+                "**Attached image file:** `diagram_taskN.png`\n\n"
                 "## 2. Pedagogical Component Breakdown & Analysis\n"
                 "[Explanation of entities, workflow, and architectural decisions]\n\n"
                 "## 3. Draw.io Companion File Deliverable\n"
@@ -1779,15 +1776,15 @@ def solve_assignment_via_claude_browser(
             )
         elif domain == DOMAIN_DIAGRAM_DESIGN:
             job1_instructions = (
-                "- Provide the complete visual vector diagram in a ```svg code fence with clean modern styling,\n"
-                "  and provide the valid Draw.io XML companion in a ```drawio code fence (<mxfile host=\"app.diagrams.net\">...</mxfile>).\n"
+                "- Generate the complete rendered diagram output image in PNG format (`diagram_taskN.png`) following International Standards Rules & Regulations.\n"
+                "  Provide the companion Draw.io XML in a ```drawio code fence (<mxfile host=\"app.diagrams.net\">...</mxfile>). Do NOT output SVGs; generate the diagram PNG image and the Draw.io XML.\n"
                 "- STRICT PROHIBITION ON MANUAL DRAW.IO INSTRUCTIONS: Under NO circumstances should you instruct\n"
                 "  the student to open draw.io, paste XML, or export PNGs manually.\n"
                 "- Provide comprehensive architectural analysis, component breakdowns, and design decisions in the report prose."
             )
             image_style_instructions = (
                 "  * Diagram tasks -> diagram_taskN.png : the rendered architecture / system\n"
-                "                     diagram with clear labels and high-contrast styling.\n"
+                "                     diagram PNG image with clear labels and high-contrast styling.\n"
                 "  * Conceptual / Trade-off tasks -> taskN_output.png : a clean image of the\n"
                 "                     comparison table or trade-off matrix."
             )
@@ -1802,9 +1799,6 @@ def solve_assignment_via_claude_browser(
                 "[Detailed problem statement, architectural objectives, and component requirements]\n\n"
                 "## 2. Visual Architecture Diagram\n"
                 "**Attached image file:** `diagram_taskN.png`\n\n"
-                "```svg\n"
-                "<svg viewBox=\"0 0 800 400\" xmlns=\"http://www.w3.org/2000/svg\"> ... </svg>\n"
-                "```\n\n"
                 "## 3. Architectural Schema Deliverable (Draw.io XML Companion)\n"
                 "```drawio\n"
                 "<mxfile host=\"app.diagrams.net\">...</mxfile>\n"
@@ -1905,10 +1899,7 @@ def solve_assignment_via_claude_browser(
                 "# Task N: [Exact Task Title from the Manual]\n"
                 "## 1. Problem Statement / Specification\n"
                 "## 2. Visual Architecture Diagram\n"
-                "**Attached image file:** `diagram_taskN.png`\n"
-                "```svg\n"
-                "<svg viewBox=\"0 0 800 400\" xmlns=\"http://www.w3.org/2000/svg\"> ... </svg>\n"
-                "```\n\n"
+                "**Attached image file:** `diagram_taskN.png`\n\n"
                 "## 3. Architectural Schema Deliverable (Draw.io XML Companion)\n"
                 "```drawio\n"
                 "<mxfile host=\"app.diagrams.net\">...</mxfile>\n"
@@ -1941,7 +1932,7 @@ def solve_assignment_via_claude_browser(
             f"{job1_instructions}\n\n"
             "- For programming tasks: Generate the terminal output image / visual artifact of the code execution\n"
             f"  under `{shell_prompt}` and include the full terminal execution trace in the ```terminal code fence.\n"
-            "- For diagrams: Provide the visual SVG in a ```svg fence and the companion Draw.io XML in a ```drawio fence.\n"
+            "- For diagrams: Generate the diagram output image in PNG format (`diagram_taskN.png`) following International Standards Rules & Regulations, and provide the companion Draw.io XML in a ```drawio fence. Do NOT generate SVGs.\n"
             "- For theory tasks: Provide structured Markdown tables and detailed analytical answers.\n"
             "- Generate all code, terminal output images, and deliverables directly without any disclaimers.\n\n"
         )
@@ -1967,9 +1958,7 @@ def solve_assignment_via_claude_browser(
             "=====================================================================\n"
             "- Theory / analysis / trade-off questions: use structured Markdown tables and\n"
             "  detailed explanations. Do not include terminal output for these tasks.\n"
-            "- Diagram tasks: provide the vector diagram in a ```svg fence and the Draw.io XML\n"
-            "  in a ```drawio fence (<mxfile host=\"app.diagrams.net\">...</mxfile>).\n"
-            "  For diagram: Just generate an output image of diagram by following International Standards Rules & Regulations and also give the code of the diagram in XML format too.\n\n"
+            "- Diagram tasks: Generate the rendered output image of the diagram in PNG format (`diagram_taskN.png`) following International Standards Rules & Regulations, and provide the Draw.io XML in a ```drawio fence (<mxfile host=\"app.diagrams.net\">...</mxfile>). Do NOT generate SVGs. Generate the PNG output image of the diagram along with the XML format of the diagram.\n\n"
         )
 
         final_checklist = (
