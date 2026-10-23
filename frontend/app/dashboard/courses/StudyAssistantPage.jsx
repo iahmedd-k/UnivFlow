@@ -137,11 +137,14 @@ export default function StudyAssistantPage() {
         setError(result.message || 'Reconnect Google Classroom to allow course files to sync.');
         return;
       }
-      if (result?.status !== 'success') throw new Error(result?.error || 'Some course data could not be synced. Try again shortly.');
       api.clearCache();
       await loadWorkspace();
-      setSyncStatus((current) => ({ ...(current || {}), last_sync: new Date().toISOString() }));
-      setNotice(`Synced ${result.assignments_synced || 0} coursework items and ${result.materials_synced || 0} teacher materials across ${result.courses_synced || 0} courses. Extracted text is saved for chat.`);
+      if (result?.status !== 'success') {
+        setNotice(`Synced with warnings: ${result?.error || 'Some course data could not be synced.'}`);
+      } else {
+        setSyncStatus((current) => ({ ...(current || {}), last_sync: new Date().toISOString() }));
+        setNotice(`Synced ${result.assignments_synced || 0} coursework items and ${result.materials_synced || 0} teacher materials across ${result.courses_synced || 0} courses. Extracted text is saved for chat.`);
+      }
     } catch (err) { setError(err?.message || 'Could not sync course materials.'); }
     finally { setSyncing(false); }
   };

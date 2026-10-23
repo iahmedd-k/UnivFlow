@@ -105,6 +105,7 @@ function LegacyCoursesPage() {
     try {
       const token = await getToken();
       const res = await api.syncStudyMaterials(token);
+      api.clearCache();
       await load();
       if (res && (res.status === 'reconnect_required' || res.scope_missing)) {
         setScopeWarning({
