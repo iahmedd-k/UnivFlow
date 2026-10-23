@@ -48,6 +48,26 @@ export default function AssignmentsPage() {
     }
   }, [getToken, filter]);
 
+  const handleSyncClassroom = async () => {
+    setRefreshing(true);
+    setError(null);
+    try {
+      const token = await getToken();
+      const result = await api.syncStudyMaterials(token);
+      api.clearCache();
+      await loadAssignments(true);
+      if (result?.status === 'reconnect_required') {
+        setError(result.message || 'Google Classroom needs to be reconnected to sync coursework.');
+      } else if (result?.status !== 'success') {
+        setError(result?.error || 'Some coursework could not be synced.');
+      }
+    } catch (err) {
+      setError(err.message || 'Could not sync from Google Classroom.');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   useEffect(() => {
     const timer = setTimeout(() => loadAssignments(), 0);
     return () => clearTimeout(timer);
@@ -156,7 +176,7 @@ export default function AssignmentsPage() {
           </Link>
           <button
             type="button"
-            onClick={() => loadAssignments(true)}
+            onClick={handleSyncClassroom}
             disabled={refreshing || loading}
             className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-violet bg-violet px-3 text-xs font-semibold text-white hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-55"
             aria-label="Refresh assignments"

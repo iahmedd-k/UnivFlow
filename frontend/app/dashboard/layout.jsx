@@ -203,6 +203,7 @@ export default function DashboardLayout({ children }) {
     try {
       const token = getToken ? await getToken() : null;
       const result = await api.triggerSync(classroomSync?.semester_start_date || null, token);
+      api.clearCache();
       setSyncNotice(result.message || 'Google Classroom sync started.');
       await refreshConnections();
     } catch (error) {
