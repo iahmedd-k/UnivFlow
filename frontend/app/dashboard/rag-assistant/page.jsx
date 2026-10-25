@@ -42,6 +42,11 @@ import {
   ShieldCheck,
   Quote,
   ChevronDown,
+  ChevronRight,
+  GraduationCap,
+  Maximize2,
+  Minimize2,
+  ExternalLink,
   Info,
 } from "lucide-react";
 
@@ -56,6 +61,7 @@ import {
   updateConversationTitle,
   sendChat,
   getUsage,
+  syncClassroom,
 } from "@/app/lib/rag/services";
 
 /* =====================================================================
@@ -129,19 +135,47 @@ const STATUS_CONFIG = {
   queued: { label: "Queued", icon: RotateCw, dot: "bg-stone-400", text: "text-stone-500" },
 };
 
+const CATEGORY_CONFIG = {
+  slides: { label: "Lecture Slides", badge: "bg-amber-50 text-amber-700 border-amber-200" },
+  labs: { label: "Lab Assignment", badge: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+  coursework: { label: "Coursework", badge: "bg-blue-50 text-blue-700 border-blue-200" },
+  syllabus: { label: "Syllabus", badge: "bg-purple-50 text-purple-700 border-purple-200" },
+  handouts: { label: "Handout / Notes", badge: "bg-stone-100 text-stone-700 border-stone-200" },
+  announcements: { label: "Announcement", badge: "bg-indigo-50 text-indigo-700 border-indigo-200" },
+  user_upload: { label: "Uploaded File", badge: "bg-slate-100 text-slate-700 border-slate-200" },
+};
+
 function mapDocumentToFrontend(doc) {
   const ext = (doc.original_filename || "").split(".").pop().toLowerCase();
+  let displayName = doc.clean_title || doc.original_filename || "Document";
+  let courseName = doc.course_name;
+  if (!courseName) {
+    if (displayName.startsWith("[") && displayName.includes("]")) {
+      courseName = displayName.slice(1, displayName.indexOf("]")).trim();
+      displayName = displayName.slice(displayName.indexOf("]") + 1).trim();
+    } else {
+      courseName = "My Uploads";
+    }
+  } else if (displayName.startsWith("[") && displayName.includes("]")) {
+    displayName = displayName.slice(displayName.indexOf("]") + 1).trim();
+  }
+
   return {
     id: doc.id,
-    name: doc.original_filename,
+    name: displayName,
+    fullName: doc.original_filename,
+    course_id: doc.course_id || null,
+    course_name: courseName,
+    category: doc.category || "handouts",
     description: "",
     type: ext,
     size: doc.file_size,
     chunks: doc.chunk_count ?? null,
-    collectionId: "default",
+    collectionId: courseName,
     status: doc.status === "completed" ? "indexed" : doc.status,
     updated: formatRelativeTime(doc.updated_at || doc.created_at),
     created_at: doc.created_at,
+    storage_url: doc.storage_url || null,
   };
 }
 
@@ -834,7 +868,12 @@ function DocumentPicker({ files, selectedIds, onToggle, onClear, onConfirm, onUp
                   {selected && <CheckCircle2 className="w-3 h-3 text-white" />}
                 </span>
                 <FileTypeIcon type={f.type} className="w-3.5 h-3.5 text-stone-400 shrink-0" />
-                <span className="text-[12.5px] text-stone-700 truncate flex-1">{f.name}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12.5px] text-stone-700 truncate">{f.name}</div>
+                  <div className="text-[10.5px] text-stone-400 truncate">
+                    {f.course_name || "General"} · {CATEGORY_CONFIG[f.category]?.label || "Document"}
+                  </div>
+                </div>
                 <span className="text-[11px] text-stone-400 shrink-0">{f.status === "completed" ? "Indexed" : f.status}</span>
               </button>
             );
@@ -1005,11 +1044,16 @@ function ChatInboxDashboard({
     let cancelled = false;
     (async () => {
       try {
-        const conv = await createConversation(`About ${pendingDocTag.name}`, [pendingDocTag.id]);
+        const title = `About ${pendingDocTag.name}`;
+        const docIds = pendingDocTag.isCourse ? pendingDocTag.ids : [pendingDocTag.id];
+        const conv = await createConversation(title, docIds);
         if (cancelled) return;
         setConversations((prev) => [conv, ...prev]);
         setTurnsById((prev) => ({ ...prev, [conv.id]: [] }));
         openChat(conv.id);
+        if (docIds && docIds.length > 0) {
+          setScopedDocIds(docIds);
+        }
         onConsumePendingDocTag?.();
       } catch {
         // Handled silently
@@ -1520,10 +1564,12 @@ function StatusIndicator({ status }) {
 }
 
 function FileRow({ file, selected, onToggleSelect, onRetry, onRequestDelete, onChat }) {
+  const catBadge = CATEGORY_CONFIG[file.category] || { label: "Document", badge: "bg-stone-50 text-stone-600 border-stone-200" };
+
   return (
     <>
       <div
-        className={`hidden md:flex items-center gap-3 pl-4 pr-3 py-2 border-b border-stone-100 group transition-colors ${
+        className={`hidden md:flex items-center gap-3 pl-4 pr-3 py-2.5 border-b border-stone-100 group transition-colors ${
           selected ? "bg-indigo-50/50" : "hover:bg-stone-50/80"
         }`}
       >
@@ -1538,9 +1584,22 @@ function FileRow({ file, selected, onToggleSelect, onRetry, onRequestDelete, onC
           <FileTypeIcon type={file.type} className="w-3.5 h-3.5 text-stone-500" />
         </div>
 
-        <div className="flex-1 min-w-0">
-          <div className="flex items-baseline gap-1.5 min-w-0">
-            <span className="text-[13px] font-medium text-stone-800 truncate shrink-0 max-w-[45%]">{file.name}</span>
+        <div className="flex-1 min-w-0 pr-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="text-[13px] font-medium text-stone-800 truncate" title={file.name}>
+              {file.name}
+            </span>
+            {file.storage_url && (
+              <a
+                href={file.storage_url}
+                target="_blank"
+                rel="noreferrer"
+                title="Open in Google Classroom / Drive"
+                className="text-stone-400 hover:text-indigo-600 transition-colors shrink-0 p-0.5"
+              >
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            )}
           </div>
           {file.status === "failed" && file.error && <p className="text-[11px] text-rose-500 truncate">{file.error}</p>}
           {(file.status === "processing" || file.status === "uploaded") && (
@@ -1550,28 +1609,34 @@ function FileRow({ file, selected, onToggleSelect, onRetry, onRequestDelete, onC
           )}
         </div>
 
-        <div style={{ width: 100 }} className="shrink-0">
+        <div style={{ width: 130 }} className="shrink-0">
+          <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${catBadge.badge}`}>
+            {catBadge.label}
+          </span>
+        </div>
+
+        <div style={{ width: 90 }} className="shrink-0">
           <StatusIndicator status={file.status} />
         </div>
-        <div style={{ width: 90 }} className="shrink-0 text-[12px] text-stone-500 tabular-nums text-right">
+        <div style={{ width: 85 }} className="shrink-0 text-[12px] text-stone-500 tabular-nums text-right">
           {formatBytes(file.size)}
         </div>
-        <div style={{ width: 80 }} className="shrink-0 text-[11.5px] text-stone-400 text-right whitespace-nowrap">
+        <div style={{ width: 75 }} className="shrink-0 text-[11.5px] text-stone-400 text-right whitespace-nowrap">
           {file.updated}
         </div>
 
-        <div style={{ width: 138 }} className="shrink-0 flex items-center justify-end gap-1">
+        <div style={{ width: 110 }} className="shrink-0 flex items-center justify-end gap-1">
           {file.status === "indexed" || file.status === "completed" ? (
             <button
               onClick={() => onChat(file)}
               title={`Chat about ${file.name}`}
-              className="flex items-center gap-1 text-[11.5px] font-medium text-indigo-600 hover:bg-indigo-50 rounded-md px-1.5 py-1 whitespace-nowrap cursor-pointer"
+              className="flex items-center gap-1 text-[11.5px] font-medium text-indigo-600 hover:bg-indigo-50 rounded-md px-2 py-1 whitespace-nowrap cursor-pointer transition-colors"
             >
               <MessageSquare className="w-3.5 h-3.5" />
               Chat
             </button>
           ) : (
-            <span style={{ width: 54 }} className="shrink-0" />
+            <span style={{ width: 50 }} className="shrink-0" />
           )}
           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
             {file.status === "failed" && (
@@ -1610,7 +1675,12 @@ function FileRow({ file, selected, onToggleSelect, onRetry, onRequestDelete, onC
             <div className="w-7 h-7 rounded-md bg-stone-100 flex items-center justify-center shrink-0">
               <FileTypeIcon type={file.type} className="w-4 h-4 text-stone-600" />
             </div>
-            <span className="text-[13.5px] font-medium text-stone-900 truncate flex-1">{file.name}</span>
+            <div className="min-w-0 flex-1">
+              <div className="text-[13.5px] font-medium text-stone-900 truncate">{file.name}</div>
+              <span className={`inline-block mt-0.5 px-1.5 py-0.2 rounded text-[10.5px] font-medium border ${catBadge.badge}`}>
+                {catBadge.label}
+              </span>
+            </div>
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
@@ -1650,6 +1720,134 @@ function FileRow({ file, selected, onToggleSelect, onRetry, onRequestDelete, onC
         </div>
       </div>
     </>
+  );
+}
+
+function CourseGroupCard({
+  group,
+  selectedIds,
+  onToggleSelect,
+  onToggleCourseSelect,
+  onRetry,
+  onRequestDelete,
+  onChat,
+  onChatCourse,
+  isExpanded,
+  onToggleExpand,
+}) {
+  const { courseName, files, total, slidesCnt, labsCnt, asgCnt } = group;
+  const isCourseSelected = files.length > 0 && files.every((f) => selectedIds.has(f.id));
+  const hasSomeSelected = files.some((f) => selectedIds.has(f.id)) && !isCourseSelected;
+
+  return (
+    <div className="border border-stone-200 rounded-xl overflow-hidden bg-white mb-3.5 shadow-2xs transition-all">
+      {/* Course Line Header */}
+      <div className="flex items-center justify-between gap-3 px-3.5 sm:px-4 py-2.5 sm:py-3 bg-stone-50/90 border-b border-stone-100 hover:bg-stone-100/70 transition-colors">
+        <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+          <input
+            type="checkbox"
+            checked={isCourseSelected}
+            ref={(el) => {
+              if (el) el.indeterminate = hasSomeSelected;
+            }}
+            onChange={() => onToggleCourseSelect(courseName, files)}
+            className="w-4 h-4 rounded border-stone-300 text-indigo-600 focus:ring-indigo-400 cursor-pointer shrink-0"
+            title={`Select all files in ${courseName}`}
+          />
+          <button
+            type="button"
+            onClick={() => onToggleExpand(courseName)}
+            className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1 text-left cursor-pointer group"
+          >
+            <div className="w-7 h-7 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600 flex items-center justify-center shrink-0 group-hover:bg-indigo-100 transition-colors">
+              <GraduationCap className="w-4 h-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                <span className="text-[13.5px] sm:text-[14px] font-semibold text-stone-900 group-hover:text-indigo-600 transition-colors truncate">
+                  {courseName}
+                </span>
+                <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-stone-200/70 text-stone-600 shrink-0">
+                  {total} {total === 1 ? "file" : "files"}
+                </span>
+                {slidesCnt > 0 && (
+                  <span className="text-[10.5px] font-medium px-1.5 sm:px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200/60 shrink-0">
+                    {slidesCnt} {slidesCnt === 1 ? "Slide" : "Slides"}
+                  </span>
+                )}
+                {labsCnt > 0 && (
+                  <span className="text-[10.5px] font-medium px-1.5 sm:px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/60 shrink-0">
+                    {labsCnt} {labsCnt === 1 ? "Lab" : "Labs"}
+                  </span>
+                )}
+                {asgCnt > 0 && (
+                  <span className="text-[10.5px] font-medium px-1.5 sm:px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200/60 shrink-0">
+                    {asgCnt} {asgCnt === 1 ? "Task" : "Tasks"}
+                  </span>
+                )}
+              </div>
+            </div>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => onChatCourse(files, courseName)}
+            title={`Start chat scoped to ${courseName}`}
+            className="hidden sm:inline-flex items-center gap-1.5 text-[11.5px] font-medium text-indigo-600 hover:text-indigo-700 bg-white hover:bg-indigo-50/80 border border-indigo-200 rounded-lg px-2.5 py-1.5 transition-colors cursor-pointer"
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            <span>Chat Course</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onToggleExpand(courseName)}
+            title={isExpanded ? "Collapse course view" : "Maximize course to view all materials"}
+            className="flex items-center gap-1 text-[11.5px] font-medium text-stone-600 hover:text-stone-900 bg-white hover:bg-stone-100 border border-stone-200 rounded-lg px-2.5 py-1.5 transition-colors cursor-pointer"
+          >
+            {isExpanded ? (
+              <>
+                <Minimize2 className="w-3.5 h-3.5 text-stone-500" />
+                <span className="hidden md:inline">Collapse</span>
+              </>
+            ) : (
+              <>
+                <Maximize2 className="w-3.5 h-3.5 text-indigo-600" />
+                <span className="hidden md:inline text-indigo-600 font-semibold">Maximize</span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Expanded Course Materials Table */}
+      {isExpanded && (
+        <div>
+          <div className="hidden md:flex items-center gap-3 pl-4 pr-3 py-1.5 bg-stone-50/40 text-[10.5px] font-medium text-stone-400 uppercase tracking-wide border-b border-stone-100">
+            <div style={{ width: 14 }} className="shrink-0" />
+            <div style={{ width: 24 }} className="shrink-0" />
+            <div className="flex-1 min-w-0">Document & Material Title</div>
+            <div style={{ width: 130 }} className="shrink-0">Category</div>
+            <div style={{ width: 90 }} className="shrink-0">Status</div>
+            <div style={{ width: 85 }} className="shrink-0 text-right">Size</div>
+            <div style={{ width: 75 }} className="shrink-0 text-right">Updated</div>
+            <div style={{ width: 110 }} className="shrink-0 text-right">Actions</div>
+          </div>
+          {files.map((file) => (
+            <FileRow
+              key={file.id}
+              file={file}
+              selected={selectedIds.has(file.id)}
+              onToggleSelect={onToggleSelect}
+              onRetry={onRetry}
+              onRequestDelete={onRequestDelete}
+              onChat={onChat}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1795,9 +1993,27 @@ function RagFileManager({
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [syncingGcr, setSyncingGcr] = useState(false);
+  const [expandedCourses, setExpandedCourses] = useState({});
   const pollingRef = useRef({});
   const inputRef = useRef(null);
   const mounted = useMountedFade();
+
+  const handleSyncClassroom = async () => {
+    setSyncingGcr(true);
+    try {
+      const res = await syncClassroom();
+      if (refreshFiles) refreshFiles();
+      if (refreshUsage) refreshUsage();
+      const count = res?.total_materials ?? res?.synced_courses ?? 0;
+      alert(`Google Classroom sync complete: ${count} materials updated.`);
+    } catch (err) {
+      console.error("GCR sync failed:", err);
+      alert(err?.message || "Failed to sync Google Classroom. Please ensure your Google account is connected.");
+    } finally {
+      setSyncingGcr(false);
+    }
+  };
 
   const pollDocumentStatus = useCallback(
     (docId) => {
@@ -1914,6 +2130,34 @@ function RagFileManager({
     });
   };
 
+  const toggleCourseExpand = (courseName) => {
+    setExpandedCourses((prev) => ({
+      ...prev,
+      [courseName]: !prev[courseName],
+    }));
+  };
+
+  const toggleCourseSelect = (courseName, courseFiles) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const allSelected = courseFiles.every((f) => prev.has(f.id));
+      if (allSelected) {
+        courseFiles.forEach((f) => next.delete(f.id));
+      } else {
+        courseFiles.forEach((f) => next.add(f.id));
+      }
+      return next;
+    });
+  };
+
+  const setAllExpanded = (expandState) => {
+    const updated = {};
+    groupedCourses.forEach((g) => {
+      updated[g.courseName] = expandState;
+    });
+    setExpandedCourses(updated);
+  };
+
   const requestDelete = (fileOrFiles) => setDeleteTarget(fileOrFiles);
   const cancelDelete = () => setDeleteTarget(null);
 
@@ -1936,19 +2180,70 @@ function RagFileManager({
     }
   };
 
-  const filtered = files.filter((f) => {
-    const matchesQuery = f.name.toLowerCase().includes(query.toLowerCase());
-    const matchesStatus = statusFilter === "all" || f.status === statusFilter;
-    return matchesQuery && matchesStatus;
-  });
+  const filtered = useMemo(() => {
+    return files.filter((f) => {
+      const q = query.trim().toLowerCase();
+      const matchesQuery =
+        !q ||
+        (f.name && f.name.toLowerCase().includes(q)) ||
+        (f.clean_title && f.clean_title.toLowerCase().includes(q)) ||
+        (f.course_name && f.course_name.toLowerCase().includes(q)) ||
+        (f.category && f.category.toLowerCase().includes(q));
 
-  const statusCounts = files.reduce((acc, f) => {
-    acc[f.status] = (acc[f.status] || 0) + 1;
-    return acc;
-  }, {});
+      if (!matchesQuery) return false;
+
+      if (statusFilter === "all") return true;
+      if (["slides", "labs", "coursework", "syllabus", "handouts"].includes(statusFilter)) {
+        return f.category === statusFilter;
+      }
+      return f.status === statusFilter;
+    });
+  }, [files, query, statusFilter]);
+
+  const groupedCourses = useMemo(() => {
+    const map = new Map();
+    filtered.forEach((file) => {
+      const course = file.course_name || "General Documents";
+      if (!map.has(course)) {
+        map.set(course, []);
+      }
+      map.get(course).push(file);
+    });
+
+    return Array.from(map.entries())
+      .map(([courseName, courseFiles]) => ({
+        courseName,
+        files: courseFiles,
+      }))
+      .sort((a, b) => {
+        if (a.courseName === "General Documents" || a.courseName === "My Uploads") return 1;
+        if (b.courseName === "General Documents" || b.courseName === "My Uploads") return -1;
+        return a.courseName.localeCompare(b.courseName);
+      });
+  }, [filtered]);
+
+  const statusCounts = useMemo(() => {
+    return files.reduce((acc, f) => {
+      acc[f.status] = (acc[f.status] || 0) + 1;
+      if (f.category) {
+        acc[f.category] = (acc[f.category] || 0) + 1;
+      }
+      return acc;
+    }, {});
+  }, [files]);
 
   const uploadLimit = (PLANS[plan] || PLANS.free).uploadLimit;
   const uploadLimitReached = false;
+
+  const FILTER_TABS = [
+    { id: "all", label: "All Sources" },
+    { id: "slides", label: "Slides" },
+    { id: "labs", label: "Labs" },
+    { id: "coursework", label: "Coursework" },
+    { id: "handouts", label: "Handouts" },
+    { id: "indexed", label: "Indexed" },
+    { id: "processing", label: "Processing" },
+  ];
 
   return (
     <div className={`h-full w-full bg-white text-stone-900 flex transition-opacity duration-200 ${mounted ? "opacity-100" : "opacity-0"}`}>
@@ -1958,7 +2253,7 @@ function RagFileManager({
             <div>
               <h1 className="text-[17px] sm:text-[18px] font-semibold tracking-tight">Knowledge Sources</h1>
               <p className="text-[12.5px] sm:text-[13px] text-stone-500 mt-0.5 mb-3 sm:mb-4">
-                Upload documents to extract, OCR, index with pgvector + FTS, and enable verified retrieval.
+                Google Classroom coursework, lecture slides, lab manuals, and uploaded documents indexed for verified retrieval.
               </p>
             </div>
           </div>
@@ -2007,104 +2302,157 @@ function RagFileManager({
                     ref={inputRef}
                     type="file"
                     multiple
-                    accept=".pdf,.csv,.xlsx,.xls,.docx,.json"
+                    accept=".pdf,.csv,.xlsx,.xls,.docx,.json,.pptx"
                     className="hidden"
                     onChange={(e) => e.target.files?.length && addFiles(e.target.files)}
                   />
                   <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-indigo-50 flex items-center justify-center mb-3 shrink-0">
-                    {uploading ? (
+                    {uploading || syncingGcr ? (
                       <Loader2 className="w-5 h-5 text-indigo-500 animate-spin" />
                     ) : (
                       <UploadCloud className="w-5 h-5 text-indigo-500" />
                     )}
                   </div>
                   <p className="text-[13.5px] sm:text-[14px] font-medium text-stone-700">
-                    {uploading ? "Uploading and indexing files…" : "Drop files to add to the knowledge base"}
+                    {uploading
+                      ? "Uploading and indexing files…"
+                      : syncingGcr
+                      ? "Fetching and indexing Google Classroom materials…"
+                      : "Add materials or sync Google Classroom directly"}
                   </p>
-                  <p className="text-[12px] sm:text-[12.5px] text-stone-400 mt-1 mb-3 sm:mb-4">PDF, DOCX, CSV, Excel, or JSON · up to 10 MB each</p>
+                  <p className="text-[12px] sm:text-[12.5px] text-stone-400 mt-1 mb-3 sm:mb-4">
+                    PDF, DOCX, PPTX, CSV, Excel, or JSON · synced automatically or uploaded locally
+                  </p>
 
-                  <button
-                    onClick={() => inputRef.current?.click()}
-                    disabled={uploading}
-                    className="text-[12.5px] font-medium bg-stone-900 text-white rounded-lg px-3.5 py-1.5 hover:bg-stone-800 cursor-pointer disabled:opacity-50"
-                  >
-                    Browse files
-                  </button>
+                  <div className="flex items-center gap-2.5 flex-wrap justify-center">
+                    <button
+                      type="button"
+                      onClick={() => inputRef.current?.click()}
+                      disabled={uploading || syncingGcr}
+                      className="text-[12.5px] font-medium bg-stone-900 text-white rounded-lg px-3.5 py-1.5 hover:bg-stone-800 cursor-pointer disabled:opacity-50 transition-colors shadow-2xs"
+                    >
+                      Browse files
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSyncClassroom}
+                      disabled={uploading || syncingGcr}
+                      className="inline-flex items-center gap-1.5 text-[12.5px] font-medium bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg px-3.5 py-1.5 cursor-pointer disabled:opacity-50 transition-colors shadow-2xs"
+                    >
+                      {syncingGcr ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <GraduationCap className="w-3.5 h-3.5 text-indigo-600" />
+                      )}
+                      <span>{syncingGcr ? "Syncing GCR…" : "Sync Google Classroom"}</span>
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
 
-            <div className="px-4 sm:px-8 pb-3 flex flex-wrap sm:flex-nowrap items-center gap-2 shrink-0">
+            <div className="px-4 sm:px-8 pb-3 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-2 bg-stone-100 rounded-lg px-3 py-1.5 sm:py-2 flex-1 sm:w-64 min-w-[160px]">
                 <Search className="w-4 h-4 text-stone-400 shrink-0" />
                 <input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search files"
+                  placeholder="Search courses, slides, labs, docs…"
                   className="bg-transparent text-[13px] outline-none w-full placeholder:text-stone-400"
                 />
               </div>
-              <div className="flex items-center gap-1.5 overflow-x-auto max-w-full pb-1 sm:pb-0 shrink-0">
-                {["all", "indexed", "processing", "failed"].map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => setStatusFilter(s)}
-                    className={`text-[12px] sm:text-[12.5px] font-medium px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-full border transition-colors cursor-pointer whitespace-nowrap ${
-                      statusFilter === s ? "bg-stone-900 text-white border-stone-900" : "border-stone-200 text-stone-500 hover:bg-stone-50"
-                    }`}
-                  >
-                    {s === "all" ? "All" : STATUS_CONFIG[s]?.label || s}
-                    {s !== "all" && statusCounts[s] ? ` (${statusCounts[s]})` : ""}
-                  </button>
-                ))}
+
+              <div className="flex items-center gap-2 overflow-x-auto max-w-full pb-1 sm:pb-0 shrink-0">
+                <div className="flex items-center gap-1.5">
+                  {FILTER_TABS.map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setStatusFilter(tab.id)}
+                      className={`text-[12px] sm:text-[12.5px] font-medium px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-full border transition-colors cursor-pointer whitespace-nowrap ${
+                        statusFilter === tab.id ? "bg-stone-900 text-white border-stone-900" : "border-stone-200 text-stone-500 hover:bg-stone-50"
+                      }`}
+                    >
+                      {tab.label}
+                      {tab.id !== "all" && statusCounts[tab.id] ? ` (${statusCounts[tab.id]})` : ""}
+                    </button>
+                  ))}
+                </div>
+
+                {groupedCourses.length > 0 && (
+                  <div className="hidden sm:flex items-center gap-1 border-l border-stone-200 pl-2">
+                    <button
+                      type="button"
+                      onClick={() => setAllExpanded(true)}
+                      className="text-[11.5px] text-stone-500 hover:text-stone-800 px-2 py-1 rounded hover:bg-stone-100 cursor-pointer whitespace-nowrap font-medium"
+                    >
+                      Expand All
+                    </button>
+                    <span className="text-stone-300">·</span>
+                    <button
+                      type="button"
+                      onClick={() => setAllExpanded(false)}
+                      className="text-[11.5px] text-stone-500 hover:text-stone-800 px-2 py-1 rounded hover:bg-stone-100 cursor-pointer whitespace-nowrap font-medium"
+                    >
+                      Collapse All
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 
             <div className="flex-1 overflow-y-auto px-4 sm:px-8 pb-24 relative">
-              <div className="border border-stone-200 rounded-xl overflow-hidden bg-white">
-                <div className="hidden md:flex items-center gap-3 pl-4 pr-3 py-2 bg-stone-50 text-[11px] font-medium text-stone-500 uppercase tracking-wide border-b border-stone-100">
-                  <input
-                    type="checkbox"
-                    checked={filtered.length > 0 && filtered.every((f) => selectedIds.has(f.id))}
-                    onChange={() => toggleSelectAll(filtered)}
-                    className="w-3.5 h-3.5 rounded border-stone-300 text-indigo-600 focus:ring-indigo-400 cursor-pointer shrink-0"
-                  />
-                  <div style={{ width: 24 }} className="shrink-0" />
-                  <div className="flex-1 min-w-0">Source</div>
-                  <div style={{ width: 100 }} className="shrink-0">Status</div>
-                  <div style={{ width: 90 }} className="shrink-0 text-right">Size</div>
-                  <div style={{ width: 80 }} className="shrink-0 text-right">Updated</div>
-                  <div style={{ width: 138 }} className="shrink-0 text-right">Actions</div>
+              {groupedCourses.length === 0 ? (
+                <div className="border border-stone-200 rounded-xl bg-white p-12 text-center text-[13px] text-stone-400">
+                  {files.length === 0
+                    ? "No files or Classroom materials available yet. Sync Google Classroom or upload files above."
+                    : "No materials match this filter."}
                 </div>
-                {filtered.length === 0 ? (
-                  <div className="py-14 text-center text-[13px] text-stone-400">
-                    {files.length === 0 ? "No files uploaded yet. Drop a file above to get started." : "No files match this filter."}
-                  </div>
-                ) : (
-                  filtered.map((file) => (
-                    <FileRow
-                      key={file.id}
-                      file={file}
-                      selected={selectedIds.has(file.id)}
-                      onToggleSelect={toggleSelect}
-                      onRetry={onRetry}
-                      onRequestDelete={requestDelete}
-                      onChat={onTagDoc}
-                    />
-                  ))
-                )}
-              </div>
+              ) : (
+                groupedCourses.map(({ courseName, files: courseFiles }) => (
+                  <CourseGroupCard
+                    key={courseName}
+                    courseName={courseName}
+                    files={courseFiles}
+                    isExpanded={query.trim().length > 0 ? true : !!expandedCourses[courseName]}
+                    selectedIds={selectedIds}
+                    onToggleExpand={toggleCourseExpand}
+                    onToggleCourseSelect={toggleCourseSelect}
+                    onToggleSelect={toggleSelect}
+                    onRetry={onRetry}
+                    onRequestDelete={requestDelete}
+                    onChat={onTagDoc}
+                    onChatCourse={(cFiles, cName) => {
+                      if (onTagDoc && cFiles.length > 0) {
+                        onTagDoc(cFiles[0]);
+                      }
+                    }}
+                  />
+                ))
+              )}
             </div>
 
             {selectedIds.size > 0 && (
               <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-stone-900 text-white rounded-full pl-4 pr-2 py-2 flex items-center gap-3 shadow-xl z-10 animate-slide-up">
                 <span className="text-[13px] font-medium">{selectedIds.size} selected</span>
                 <button
+                  type="button"
+                  onClick={() => {
+                    const selectedList = files.filter((f) => selectedIds.has(f.id));
+                    if (selectedList.length > 0 && onTagDoc) {
+                      onTagDoc(selectedList[0]);
+                    }
+                  }}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white text-[12px] font-medium px-3 py-1 rounded-full cursor-pointer transition-colors flex items-center gap-1.5 shadow-xs"
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  Chat Selected
+                </button>
+                <button
                   onClick={() => {
                     const toDelete = files.filter((f) => selectedIds.has(f.id));
                     requestDelete(toDelete);
                   }}
-                  className="bg-rose-600 hover:bg-rose-700 text-white text-[12px] font-medium px-3 py-1 rounded-full cursor-pointer transition-colors flex items-center gap-1"
+                  className="bg-rose-600 hover:bg-rose-700 text-white text-[12px] font-medium px-3 py-1 rounded-full cursor-pointer transition-colors flex items-center gap-1 shadow-xs"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   Delete

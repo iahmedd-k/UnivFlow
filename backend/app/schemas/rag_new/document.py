@@ -10,6 +10,7 @@ class DocumentResponse(BaseModel):
     id: Union[int, str]
     user_id: Optional[Union[int, str]] = None
     original_filename: str
+    clean_title: Optional[str] = None
     storage_key: Optional[str] = None
     storage_url: Optional[str] = None
     mime_type: Optional[str] = None

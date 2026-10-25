@@ -68,25 +68,34 @@ def _classify_material(material_title: str, assignment_title: str, work_type: st
     t = f"{material_title or ''} {assignment_title or ''}".lower()
     m = (mime_type or "").lower()
 
-    # 1. Direct presentation / slides / lecture / readings / notes / syllabus priority
+    # 1. Presentations & Slides
     if (
         "presentation" in m or "powerpoint" in m
         or any(t.endswith(ext) for ext in [".ppt", ".pptx", ".key"])
-        or any(k in t for k in ["slide", "lecture", "handout", "reading", "notes", "chapter", "unit", "syllabus", "textbook", "presentation"])
+        or any(k in t for k in ["slide", "presentation", "ppt", "keynote", "lecture"])
     ):
-        return "material", "Slides & Handouts", "book"
+        return "slides", "Lecture Slides", "presentation"
 
-    # 2. Announcements
+    # 2. Syllabus
+    if any(k in t for k in ["syllabus", "course outline", "grading policy", "course policy"]):
+        return "syllabus", "Course Syllabus", "book-open"
+
+    # 3. Labs
+    if any(k in t for k in ["lab ", "lab-", "lab#", "manual", "experiment", "practical", "lab task"]):
+        return "labs", "Lab Assignments", "flask"
+
+    # 4. Announcements
     if wt in ("ANNOUNCEMENT", "POST") or mt == "announcement" or "announcement" in t:
-        return "announcement", "Announcements & Notes", "bell"
+        return "announcements", "Class Announcements", "bell"
 
-    # 3. Labs & Assignments
+    # 5. Coursework & Homework
     if (
         wt in ("ASSIGNMENT", "SHORT_ANSWER_QUESTION", "MULTIPLE_CHOICE_QUESTION")
-    ) or any(k in t for k in ["lab ", "lab-", "lab#", "manual", "task", "assignment", "hw", "homework", "quiz", "midterm", "final", "exam"]):
-        return "assignment", "Labs & Assignments", "flask"
+    ) or any(k in t for k in ["task", "assignment", "hw", "homework", "quiz", "midterm", "final", "exam", "project"]):
+        return "coursework", "Coursework & Tasks", "file-text"
 
-    return "material", "Slides & Handouts", "book"
+    # 6. Handouts, readings, notes
+    return "handouts", "Handouts & Readings", "book"
 
 
 def _classify_file_type(mime_type: str, title: str, category: str):

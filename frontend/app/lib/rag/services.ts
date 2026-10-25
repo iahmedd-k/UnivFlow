@@ -11,19 +11,27 @@ import {
   updateRagConversation,
   deleteRagConversation,
   getRagUsage,
+  syncRagClassroom,
+  triggerSync,
 } from "@/app/lib/api";
 
 export type Document = {
-  id: number;
+  id: number | string;
   original_filename: string;
-  file_size: number;
+  clean_title?: string;
+  file_size?: number;
   status: string;
+  course_id?: number | null;
+  course_name?: string | null;
+  category?: string | null;
+  storage_url?: string;
+  chunk_count?: number;
   created_at: string;
   updated_at: string;
 };
 
 export type DocumentStatusResponse = {
-  document_id: number;
+  document_id: number | string;
   status: string;
 };
 
@@ -31,7 +39,7 @@ export type Conversation = {
   id: number;
   user_id: number;
   title: string;
-  document_ids: number[] | null;
+  document_ids: (number | string)[] | null;
   created_at: string;
   updated_at: string;
 };
@@ -40,7 +48,7 @@ export type ConversationDetail = {
   id: number;
   user_id: number;
   title: string;
-  document_ids: number[] | null;
+  document_ids: (number | string)[] | null;
   created_at: string;
   updated_at: string;
   messages: Array<{
@@ -146,7 +154,7 @@ export async function deleteConversation(conversationId: number): Promise<void> 
 export interface ChatRequest {
   query: string;
   conversation_id?: number | null;
-  document_ids?: number[] | null;
+  document_ids?: (number | string)[] | null;
   top_k?: number;
 }
 
@@ -158,4 +166,20 @@ export async function sendChat(request: ChatRequest): Promise<RagResponse> {
 export async function getUsage(): Promise<UsageResponse> {
   const res = await getRagUsage();
   return res?.data ?? res;
+}
+
+export async function syncClassroom(): Promise<{
+  success: boolean;
+  message: string;
+  count?: number;
+  total_materials?: number;
+  synced_courses?: number;
+}> {
+  try {
+    const res = await syncRagClassroom();
+    return res?.data ?? res;
+  } catch {
+    const res = await triggerSync();
+    return res?.data ?? res;
+  }
 }

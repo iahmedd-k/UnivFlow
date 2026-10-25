@@ -16,17 +16,21 @@ export interface TokenResponse {
 }
 
 export interface Document {
-  id: number;
-  user_id: number;
+  id: number | string;
+  user_id?: number | string;
   original_filename: string;
-  storage_key: string;
-  storage_url: string;
-  mime_type: string;
-  file_size: number;
-  status: "uploaded" | "processing" | "completed" | "failed";
+  clean_title?: string;
+  storage_key?: string;
+  storage_url?: string;
+  mime_type?: string;
+  file_size?: number;
+  status: "uploaded" | "processing" | "completed" | "failed" | string;
   chunk_count?: number;
-  created_at: string;
-  updated_at: string;
+  course_id?: number | null;
+  course_name?: string | null;
+  category?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface DocumentStatusResponse {

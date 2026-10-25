@@ -236,6 +236,7 @@ def get_classroom_as_documents(db: Session, clerk_user_id: str) -> list[Document
                 id=f"mat_{material.id}",
                 user_id=material.user_id,
                 original_filename=filename,
+                clean_title=clean_title,
                 storage_key=material.storage_key or material.drive_file_id or f"mat_{material.id}",
                 storage_url=material.url or assignment.url or "",
                 mime_type=material.mime_type or "application/pdf",
@@ -249,8 +250,7 @@ def get_classroom_as_documents(db: Session, clerk_user_id: str) -> list[Document
             )
         )
 
-    # Also include assignments & lab tasks that have descriptions/instructions
-    seen_assignment_ids = {m.assignment_id for m, _, _ in rows}
+    # Also include coursework and lab assignments as study reference documents
     q_asg = (
         db.query(Assignment, Course)
         .join(Course, Course.id == Assignment.course_id)
@@ -259,9 +259,7 @@ def get_classroom_as_documents(db: Session, clerk_user_id: str) -> list[Document
             Course.user_id.in_(owners),
         )
     )
-    if seen_assignment_ids:
-        q_asg = q_asg.filter(Assignment.id.notin_(seen_assignment_ids))
-    extra_asgs = q_asg.order_by(Assignment.created_at.desc(), Assignment.id.desc()).limit(150).all()
+    extra_asgs = q_asg.order_by(Assignment.created_at.desc(), Assignment.id.desc()).limit(250).all()
 
     for assignment, course in extra_asgs:
         unique_key = f"asg_{assignment.id}"
@@ -285,6 +283,7 @@ def get_classroom_as_documents(db: Session, clerk_user_id: str) -> list[Document
                 id=unique_key,
                 user_id=assignment.user_id,
                 original_filename=filename,
+                clean_title=clean_title,
                 storage_key=unique_key,
                 storage_url=assignment.url or "",
                 mime_type="application/pdf",
@@ -379,12 +378,16 @@ def list_documents(
             id=d.id,
             user_id=d.user_id,
             original_filename=d.original_filename,
+            clean_title=d.original_filename,
             storage_key=d.storage_key,
             storage_url=d.storage_url,
             mime_type=d.mime_type,
             file_size=d.file_size,
             status=d.status,
             chunk_count=getattr(d, "chunk_count", None),
+            course_id=None,
+            course_name="My Uploads",
+            category="user_upload",
             created_at=d.created_at,
             updated_at=d.updated_at,
         )
@@ -400,6 +403,33 @@ def list_documents(
         data=all_docs,
         message=f"Found {len(all_docs)} document(s).",
     )
+
+
+@router.post(
+    "/sync-classroom",
+    response_model=ApiResponse[dict],
+    summary="Trigger immediate Google Classroom synchronization for study materials",
+)
+def sync_classroom_materials(
+    current_user: dict = Depends(require_current_user),
+    db: Session = Depends(get_db),
+):
+    """Sync all Google Classroom courses, coursework, materials, and announcements on demand."""
+    from app.services.classroom_sync import get_classroom_service
+    _, clerk_user_id = resolve_user_context(db, current_user)
+    try:
+        service = get_classroom_service(db, user_id=clerk_user_id)
+        if not service:
+            return ApiResponse(success=False, data={"synced": False}, message="Google Classroom not connected for this account.")
+        results = service.sync_all()
+        return ApiResponse(
+            success=True,
+            data=results,
+            message=f"Synced {results.get('courses', 0)} course(s), {results.get('assignments', 0)} coursework, {results.get('course_materials', 0)} materials.",
+        )
+    except Exception as e:
+        logger.error("Error in on-demand classroom sync: %s", e)
+        return ApiResponse(success=False, data={"error": str(e)}, message=f"Sync failed: {str(e)}")
 
 
 @router.get(

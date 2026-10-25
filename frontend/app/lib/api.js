@@ -401,6 +401,7 @@ export const api = {
   updateRagConversation: async (conversationId, data, token = null) => fetchFromApi(`/rag/conversations/${conversationId}`, token, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteRagConversation: async (conversationId, token = null) => fetchFromApi(`/rag/conversations/${conversationId}`, token, { method: 'DELETE' }),
   getRagUsage: async (token = null) => fetchFromApi('/rag/usage', token),
+  syncRagClassroom: async (token = null) => fetchFromApi('/rag/sync-classroom', token, { method: 'POST' }),
 
   // Assignment Templates
   getAssignmentTemplates: async (token = null) => fetchFromApi('/classroom/templates', token),
@@ -576,3 +577,5 @@ export const getRagConversation = api.getRagConversation;
 export const updateRagConversation = api.updateRagConversation;
 export const deleteRagConversation = api.deleteRagConversation;
 export const getRagUsage = api.getRagUsage;
+export const syncRagClassroom = api.syncRagClassroom;
+export const triggerSync = api.triggerSync;
