@@ -41,7 +41,7 @@ class ConversationService:
         self,
         user_id: int,
         title: str = "New Conversation",
-        document_ids: list[int] | None = None,
+        document_ids: list[Union[int, str]] | None = None,
     ) -> ConversationResponse:
         conversation = self.conversation_repo.create(
             user_id=user_id, title=title, document_ids=document_ids,

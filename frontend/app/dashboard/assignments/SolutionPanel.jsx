@@ -25,6 +25,7 @@ export default function SolutionPanel({ assignment }) {
   const [attachingDraft, setAttachingDraft] = useState(false);
   const [emailingSolution, setEmailingSolution] = useState(false);
   const [uploadedMaterials, setUploadedMaterials] = useState([]);
+  const [claudeViewerUrl, setClaudeViewerUrl] = useState('');
   const materialsList = [...(assignment?.materials || []), ...uploadedMaterials];
 
   const claudeRateLimit = solution?.claude_rate_limit || (

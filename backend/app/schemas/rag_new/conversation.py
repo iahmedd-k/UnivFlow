@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Union
 
 from pydantic import BaseModel, Field
 
@@ -9,7 +10,7 @@ class ConversationCreateRequest(BaseModel):
         max_length=255,
         description="Conversation title",
     )
-    document_ids: list[int] | None = Field(
+    document_ids: list[Union[int, str]] | None = Field(
         default=None,
         description="Optional list of document IDs to scope this conversation to",
     )
@@ -19,7 +20,7 @@ class ConversationResponse(BaseModel):
     id: int
     user_id: int
     title: str
-    document_ids: list[int] | None = None
+    document_ids: list[Union[int, str]] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -41,7 +42,7 @@ class MessageResponse(BaseModel):
 
 class MessageCitationResponse(BaseModel):
     id: int
-    document_id: int
+    document_id: Union[int, str]
     page_number: int
     snippet: str | None = None
     score: float | None = None
@@ -53,10 +54,11 @@ class ConversationDetailResponse(BaseModel):
     id: int
     user_id: int
     title: str
-    document_ids: list[int] | None = None
+    document_ids: list[Union[int, str]] | None = None
     created_at: datetime
     updated_at: datetime
     messages: list[MessageResponse] = Field(default_factory=list)
+
 
     model_config = {"from_attributes": True}
 

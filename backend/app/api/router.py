@@ -36,5 +36,7 @@ api_router.include_router(agent_router, dependencies=authenticated, tags=["Agent
 api_router.include_router(google_integrations_router, dependencies=authenticated)
 api_router.include_router(timetable_router, dependencies=authenticated)
 api_router.include_router(portal_router, dependencies=authenticated)
-api_router.include_router(rag_router, dependencies=authenticated, tags=["RAG"])
-api_router.include_router(rag_new_router, dependencies=authenticated, tags=["RAG v2"])
+api_router.include_router(rag_new_router, dependencies=authenticated, tags=["RAG"])
+api_router.include_router(rag_router, dependencies=authenticated, tags=["Study Plan & Materials"])
+
+

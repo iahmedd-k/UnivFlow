@@ -1,3 +1,4 @@
+from typing import Union
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,7 +14,7 @@ class ConversationRepository:
         self,
         user_id: int,
         title: str = "New Conversation",
-        document_ids: list[int] | None = None,
+        document_ids: list[Union[int, str]] | None = None,
     ) -> Conversation:
         conversation = Conversation(
             user_id=user_id,

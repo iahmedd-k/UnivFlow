@@ -1,3 +1,5 @@
+from typing import Union
+
 from pydantic import BaseModel, Field
 
 from app.schemas.evidence import EvidenceVerdict
@@ -37,8 +39,9 @@ class SourceCitation(BaseModel):
         ...,
         description="The text span from the answer that is being cited",
     )
-    document_id: int = Field(..., description="Source document id")
+    document_id: Union[int, str] = Field(..., description="Source document id")
     page_number: int = Field(..., description="Page number in the source document")
+
     chunk_id: int | None = Field(
         default=None,
         description="Source chunk id when available",

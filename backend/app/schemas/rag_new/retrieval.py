@@ -1,4 +1,4 @@
-from typing import Self
+from typing import Self, Union
 
 from pydantic import BaseModel, Field
 
@@ -24,7 +24,7 @@ class ChunkResult(BaseModel):
     """Internal chunk result with full provenance — used by the pipeline."""
 
     chunk_id: int
-    document_id: int
+    document_id: Union[int, str]
     content: str
     page_number: int
     page_numbers: list[int] = Field(default_factory=list)
@@ -50,11 +50,12 @@ class SearchResultItem(BaseModel):
     """A single search result trimmed for frontend display."""
 
     chunk_id: int = Field(..., description="Unique chunk identifier")
-    document_id: int = Field(..., description="Source document id")
+    document_id: Union[int, str] = Field(..., description="Source document id")
     page_number: int = Field(..., description="Page number in the source document")
     content: str = Field(..., description="Chunk text content")
     score: float = Field(..., description="Relevance score (higher = more relevant)")
     content_type: str = Field(default="text", description="Content type")
+
 
 
 class SearchApiResponse(BaseModel):

@@ -1,4 +1,4 @@
-from typing import Self
+from typing import Self, Union
 
 from pydantic import BaseModel, Field
 
@@ -21,7 +21,7 @@ class RagRequest(BaseModel):
         default=None,
         description="Optional conversation ID to continue a conversation",
     )
-    document_ids: list[int] | None = Field(
+    document_ids: list[Union[int, str]] | None = Field(
         default=None,
         description="Optional list of document IDs to scope retrieval to",
     )
@@ -69,10 +69,11 @@ class RagResponse(BaseModel):
 class SourceChunk(BaseModel):
     """A trimmed evidence chunk for frontend display."""
 
-    document_id: int = Field(..., description="Source document id")
+    document_id: Union[int, str] = Field(..., description="Source document id")
     page_number: int = Field(..., description="Page number in the source document")
     content: str = Field(..., description="Chunk text content")
     score: float = Field(..., description="Relevance score")
+
 
 
 class ChatResponse(BaseModel):
