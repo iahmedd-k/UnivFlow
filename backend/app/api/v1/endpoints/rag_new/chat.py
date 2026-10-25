@@ -81,13 +81,6 @@ def chat(
     db: Session = Depends(get_db),
     rag_service: RAGService = Depends(get_rag_service),
 ):
-    usage_service = UsageService(db)
-    if usage_service._count_queries(current_user.id) >= 7:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Demo query quota reached (7/7 queries used). You have reached the maximum allowed queries for this demo session.",
-        )
-
     conversation_service = ConversationService(db)
 
     conversation_id = request.conversation_id

@@ -925,11 +925,11 @@ def get_usage(
     result = UsageResponse(
         user_id=db_user_id,
         documents_uploaded=total_docs,
-        document_quota=500,
+        document_quota=-1,
         chunks_stored=total_docs * 10,
-        chunk_quota=50000,
+        chunk_quota=-1,
         queries_this_month=query_count,
-        query_quota=1000,
+        query_quota=-1,
     )
     return ApiResponse(success=True, data=result, message="Usage information retrieved.")
 

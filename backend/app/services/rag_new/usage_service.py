@@ -26,11 +26,11 @@ class UsageService:
         return UsageResponse(
             user_id=user_id,
             documents_uploaded=documents_uploaded,
-            document_quota=5,
+            document_quota=-1,
             chunks_stored=chunks_stored,
             chunk_quota=-1,
             queries_this_month=queries_used,
-            query_quota=7,
+            query_quota=-1,
         )
 
     def _count_documents(self, user_id: int) -> int:

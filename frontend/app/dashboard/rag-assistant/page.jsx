@@ -70,29 +70,28 @@ const NAV = [
 const PLANS = {
   free: {
     id: "free",
-    name: "Free",
+    name: "Unlimited",
     price: "$0",
     priceSub: "forever",
-    queryLimit: 7,
-    uploadLimit: 5,
-    storageLimitBytes: 500 * 1024 * 1024,
+    queryLimit: Infinity,
+    uploadLimit: Infinity,
+    storageLimitBytes: 100 * 1024 * 1024 * 1024,
     seats: 1,
-    features: ["7 queries / month", "5 indexed sources", "500 MB storage", "1 seat"],
+    features: ["Unlimited queries", "Unlimited indexed sources", "Unlimited storage", "1 seat"],
   },
   pro: {
     id: "pro",
     name: "Pro",
-    price: "$49",
-    priceSub: "/ seat / month",
+    price: "$0",
+    priceSub: "included",
     queryLimit: Infinity,
     uploadLimit: Infinity,
-    storageLimitBytes: 25 * 1024 * 1024 * 1024,
+    storageLimitBytes: 100 * 1024 * 1024 * 1024,
     seats: 10,
     features: [
       "Unlimited queries",
       "Unlimited indexed sources",
-      "25 GB storage / seat",
-      "Up to 10 seats",
+      "Unlimited storage",
       "Priority retrieval latency",
     ],
   },
@@ -188,7 +187,7 @@ function PlanBadge({ plan, onClick }) {
       className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50/70 text-indigo-700 hover:bg-indigo-100 transition-colors shrink-0 cursor-pointer"
     >
       <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
-      <span>Demo Tier · 7 Queries</span>
+      <span>Unlimited Tier</span>
     </button>
   );
 }
@@ -1039,11 +1038,11 @@ function ChatInboxDashboard({
   };
 
   const currentPlanCfg = PLANS[plan] || PLANS.free;
-  const queryLimit = currentPlanCfg.queryLimit;
+  const queryLimit = currentPlanCfg.queryLimit ?? Infinity;
   const queriesUsed =
     usageData?.queries_this_month ??
     Object.values(turnsById).reduce((sum, arr) => sum + arr.filter((t) => t.role === "user").length, 0);
-  const queryLimitReached = plan === "free" && queriesUsed >= queryLimit;
+  const queryLimitReached = false;
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -1265,7 +1264,7 @@ function ChatInboxDashboard({
           )}
         </div>
 
-        {plan === "free" && (
+        {plan === "free" && queryLimit !== Infinity && (
           <div className="px-4 py-3 border-t border-stone-200 bg-white">
             <div className="flex items-center justify-between mb-1">
               <span className="text-[11px] font-medium text-stone-400 uppercase tracking-wide">Monthly queries</span>
@@ -1712,9 +1711,9 @@ function UsageView({ files, plan, usageData }) {
   const totalChunks = usageData?.chunks_stored ?? files.reduce((sum, f) => sum + (f.chunks || 0), 0);
   const totalQueries = usageData?.queries_this_month ?? 0;
   const docsUploaded = usageData?.documents_uploaded ?? files.length;
-  const queryQuota = usageData?.query_quota ?? 7;
-  const docQuota = usageData?.document_quota ?? 5;
-  const storagePct = Math.min(100, (totalStorage / storageLimitBytes) * 100);
+  const queryQuota = usageData?.query_quota && usageData.query_quota > 0 ? usageData.query_quota : "Unlimited";
+  const docQuota = usageData?.document_quota && usageData.document_quota > 0 ? usageData.document_quota : "Unlimited";
+  const storagePct = storageLimitBytes ? Math.min(100, (totalStorage / storageLimitBytes) * 100) : 0;
 
   return (
     <div className="px-4 sm:px-8 py-5 sm:py-6 overflow-y-auto flex-1">
@@ -1722,11 +1721,11 @@ function UsageView({ files, plan, usageData }) {
         <div className="flex items-center gap-2 text-[13px]">
           <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
           <span className="text-stone-700 font-medium">
-            Demo Tier <span className="text-stone-400 font-normal">· Live Demo Environment</span>
+            Active Tier <span className="text-stone-400 font-normal">· Unlimited Access</span>
           </span>
         </div>
         <div className="text-[12px] text-stone-600 font-medium bg-white border border-stone-200 rounded-md px-2.5 py-1 shrink-0">
-          {totalQueries} / {queryQuota} queries used
+          {totalQueries} queries used · Unlimited quota
         </div>
       </div>
 
@@ -1734,13 +1733,13 @@ function UsageView({ files, plan, usageData }) {
         <SummaryCard
           icon={MessageSquare}
           label="Queries used"
-          value={`${totalQueries} / ${queryQuota}`}
+          value={typeof queryQuota === "number" ? `${totalQueries} / ${queryQuota}` : `${totalQueries} (Unlimited)`}
           sub="live RAG generations"
         />
         <SummaryCard
           icon={Gauge}
           label="Indexed documents"
-          value={`${docsUploaded} / ${docQuota}`}
+          value={typeof docQuota === "number" ? `${docsUploaded} / ${docQuota}` : `${docsUploaded} (Unlimited)`}
           sub="uploaded source files"
         />
         <SummaryCard
@@ -1753,26 +1752,24 @@ function UsageView({ files, plan, usageData }) {
           icon={Database}
           label="Storage used"
           value={formatBytes(totalStorage)}
-          sub={`${storagePct.toFixed(1)}% of 500 MB quota`}
+          sub="Unlimited storage available"
         />
       </div>
 
       <div className="w-full h-2 bg-stone-100 rounded-full overflow-hidden mb-6">
         <div
-          className={`h-full rounded-full ${
-            totalQueries >= queryQuota ? "bg-rose-500" : totalQueries >= 5 ? "bg-amber-500" : "bg-indigo-500"
-          }`}
-          style={{ width: `${Math.min(100, (totalQueries / queryQuota) * 100)}%` }}
+          className="h-full rounded-full bg-indigo-500"
+          style={{ width: "100%" }}
         />
       </div>
 
       <div className="rounded-xl border border-stone-200 bg-white p-4.5 text-[13px] text-stone-600 leading-relaxed shadow-2xs">
         <div className="flex items-center gap-2 font-semibold text-stone-900 mb-1.5">
           <Info className="w-4 h-4 text-indigo-600 shrink-0" />
-          Live Demo Quota & Architecture
+          Unlimited RAG Assistant Architecture
         </div>
         <p className="text-stone-500 text-[12.5px] leading-relaxed">
-          RAG Assistant is an enterprise hybrid search and verified document Q&A platform powered by pgvector dense retrieval, PostgreSQL full-text search, and cross-encoder reranking. Each demo account is provisioned with 7 free queries to evaluate the RAG pipeline.
+          RAG Assistant is an enterprise hybrid search and verified document Q&A platform powered by pgvector dense retrieval, PostgreSQL full-text search, and cross-encoder reranking. Usage limits are removed with unlimited queries and document indexing available.
         </p>
       </div>
     </div>
@@ -1951,7 +1948,7 @@ function RagFileManager({
   }, {});
 
   const uploadLimit = (PLANS[plan] || PLANS.free).uploadLimit;
-  const uploadLimitReached = plan === "free" && files.length >= uploadLimit;
+  const uploadLimitReached = false;
 
   return (
     <div className={`h-full w-full bg-white text-stone-900 flex transition-opacity duration-200 ${mounted ? "opacity-100" : "opacity-0"}`}>
