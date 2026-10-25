@@ -2754,6 +2754,13 @@ def solve_assignment_via_claude_browser(
         assignment.status = AssignmentStatus.READY_FOR_REVIEW
         db.commit()
 
+        # 13. Immediately deliver generated solution and deliverables to user's selected email
+        try:
+            from app.services.email import send_solution_delivery_email
+            send_solution_delivery_email(db, assignment_id, user_id)
+        except Exception as mail_err:
+            logger.warning("Could not dispatch auto-solution email for assignment %s: %s", assignment_id, mail_err)
+
         _update_solver_progress(
             db,
             assignment_id,

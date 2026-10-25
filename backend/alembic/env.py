@@ -1,30 +1,23 @@
-import os
-import sys
 from logging.config import fileConfig
-from sqlalchemy import engine_from_config, pool
-from alembic import context
 
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from alembic import context
+from sqlalchemy import engine_from_config, pool
 
 from app.core.config import settings
-from app.db.database import Base, get_database_url
-import app.db.models  # noqa: F401
+from app.db.base import Base
+from app import models  # noqa: F401  (ensure models are registered on Base.metadata)
 
 config = context.config
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
 
-def get_url():
-    return get_database_url()
 
 def run_migrations_offline() -> None:
-    url = get_url()
-    # Ensure psycopg2 driver for PostgreSQL
-    if url.startswith("postgresql://"):
-        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -35,26 +28,20 @@ def run_migrations_offline() -> None:
     with context.begin_transaction():
         context.run_migrations()
 
+
 def run_migrations_online() -> None:
-    configuration = config.get_section(config.config_ini_section)
-    url = get_url()
-    if url.startswith("postgresql://"):
-        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
-    configuration["sqlalchemy.url"] = url
     connectable = engine_from_config(
-        configuration,
+        config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-        )
+        context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
             context.run_migrations()
+
 
 if context.is_offline_mode():
     run_migrations_offline()

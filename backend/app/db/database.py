@@ -70,10 +70,47 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+def _remove_null_bytes(val):
+    """Recursively strip NUL (0x00) characters from strings/containers to satisfy PostgreSQL."""
+    if isinstance(val, str):
+        return val.replace("\x00", "")
+    elif isinstance(val, dict):
+        return {_remove_null_bytes(k): _remove_null_bytes(v) for k, v in val.items()}
+    elif isinstance(val, list):
+        return [_remove_null_bytes(item) for item in val]
+    return val
+
+
+from sqlalchemy import event
+from sqlalchemy.orm import Session
+
+@event.listens_for(Session, "before_flush")
+def _sanitize_null_bytes_before_flush(session, flush_context, instances):
+    """Globally strip NUL bytes from all model attributes before PostgreSQL flush to prevent 0x00 errors."""
+    for instance in session.new | session.dirty:
+        mapper = getattr(instance, "__mapper__", None)
+        if not mapper:
+            continue
+        for attr in mapper.column_attrs:
+            try:
+                val = getattr(instance, attr.key, None)
+                if isinstance(val, str) and "\x00" in val:
+                    setattr(instance, attr.key, val.replace("\x00", ""))
+                elif isinstance(val, (dict, list)):
+                    cleaned = _remove_null_bytes(val)
+                    if cleaned != val:
+                        setattr(instance, attr.key, cleaned)
+            except Exception:
+                pass
+
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

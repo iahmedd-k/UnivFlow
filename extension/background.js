@@ -411,6 +411,77 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
 
         sendResponse({ success: true, results });
+      } else if (action === "TURN_IN_CLASSROOM") {
+        const classroomUrl = payload?.classroom_url || payload?.url;
+        const assignmentId = payload?.assignment_id;
+        if (!classroomUrl) {
+          sendResponse({ success: false, error: "Missing classroom_url" });
+          return;
+        }
+
+        // 1. Find existing tab or create new tab with classroomUrl
+        const cleanTarget = classroomUrl.split("?")[0].replace(/\/+$/, "");
+        const tabs = await chrome.tabs.query({ url: "*://classroom.google.com/*" });
+        let targetTab = tabs.find((t) => t.url && t.url.includes(cleanTarget)) || tabs[0];
+
+        if (!targetTab) {
+          targetTab = await chrome.tabs.create({ url: classroomUrl, active: true });
+          // Wait for tab to complete loading
+          await new Promise((resolve) => {
+            const listener = (tabId, info) => {
+              if (tabId === targetTab.id && info.status === "complete") {
+                chrome.tabs.onUpdated.removeListener(listener);
+                resolve();
+              }
+            };
+            chrome.tabs.onUpdated.addListener(listener);
+            setTimeout(resolve, 8000);
+          });
+        } else {
+          await chrome.tabs.update(targetTab.id, { url: classroomUrl, active: true });
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+
+        // Small grace period for DOM rendering
+        await new Promise((r) => setTimeout(r, 1200));
+
+        // Send CLASSROOM_CLICK_TURN_IN to tab
+        let turnInResult = null;
+        try {
+          turnInResult = await chrome.tabs.sendMessage(targetTab.id, { action: "CLASSROOM_CLICK_TURN_IN" });
+        } catch (msgErr) {
+          // If content script was not injected, inject it dynamically via chrome.scripting
+          try {
+            await chrome.scripting.executeScript({
+              target: { tabId: targetTab.id },
+              files: ["classroom_content.js"],
+            });
+            await new Promise((r) => setTimeout(r, 800));
+            turnInResult = await chrome.tabs.sendMessage(targetTab.id, { action: "CLASSROOM_CLICK_TURN_IN" });
+          } catch (e) {
+            turnInResult = { success: false, error: "Could not execute turn-in on Classroom page: " + e.message };
+          }
+        }
+
+        // If turn-in was successful, notify Uniflow backend to mark assignment as SUBMITTED!
+        if (turnInResult?.success && assignmentId) {
+          try {
+            await sendToBackend(
+              `/classroom/assignments/${assignmentId}/confirm-turn-in`,
+              {},
+              apiUrl,
+              token
+            );
+          } catch (backendErr) {
+            console.warn("Could not confirm turn-in with backend:", backendErr);
+          }
+        }
+
+        sendResponse(turnInResult || { success: false, error: "Unknown turn-in error" });
+      } else if (action === "OPEN_CLASSROOM_TAB") {
+        const classroomUrl = payload?.classroom_url || payload?.url || "https://classroom.google.com";
+        const tab = await chrome.tabs.create({ url: classroomUrl, active: true });
+        sendResponse({ success: true, tabId: tab.id });
       } else {
         sendResponse({ success: false, error: `Unknown action: ${action}` });
       }

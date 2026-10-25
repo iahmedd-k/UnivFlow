@@ -1,50 +1,62 @@
 import logging
 import sys
-from loguru import logger
+
+try:
+    import psutil
+    _PSUTIL_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _PSUTIL_AVAILABLE = False
+
 from app.core.config import settings
 
+_configured = False
 
-class InterceptHandler(logging.Handler):
-    """
-    Redirect standard library `logging` records to `loguru`.
-    """
-    def emit(self, record: logging.LogRecord) -> None:
+
+def get_memory_rss_mb() -> float:
+    """Return current process resident set size in MB."""
+    if _PSUTIL_AVAILABLE:
         try:
-            level = logger.level(record.levelname).name
-        except ValueError:
-            level = record.levelno
+            return psutil.Process().memory_info().rss / (1024 * 1024)
+        except Exception:
+            pass
+    # Fallback: parse /proc/self/status (Linux)
+    try:
+        with open("/proc/self/status", "r") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    # "VmRSS:   12345 kB"
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return float(parts[1]) / 1024.0
+    except Exception:
+        pass
+    return 0.0
 
-        frame, depth = logging.currentframe(), 2
-        while frame and frame.f_code.co_filename == logging.__file__:
-            frame = frame.f_back
-            depth += 1
 
-        logger.opt(depth=depth, exception=record.exc_info).log(
-            level, record.getMessage()
+def setup_logging() -> logging.Logger:
+    global _configured
+
+    logger = logging.getLogger(settings.project_name)
+    if _configured:
+        return logger
+
+    level = logging.DEBUG if settings.debug else logging.INFO
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
         )
-
-
-def setup_logging():
-    level = getattr(settings, "log_level", "INFO").upper()
-
-    # Remove default handler
-    logger.remove()
-
-    # Modern colorized handler with formatted timestamps and call sites
-    logger.add(
-        sys.stderr,
-        level=level,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        colorize=True,
     )
 
-    # Intercept standard library logging (uvicorn, httpx, etc.)
-    logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+    logger.setLevel(level)
+    logger.addHandler(handler)
+    logger.propagate = False
 
-    for noisy_logger in ("httpx", "urllib3", "google", "botocore"):
-        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+    _configured = True
 
     return logger
 
 
-logger = setup_logging()
+logger = setup_logging()

@@ -8,7 +8,7 @@ from app.classroom.router import (
     disconnect_google_classroom_session,
     get_google_classroom_browser_status,
     GoogleClassroomCookieSyncRequest,
-    _finish_quick_turn_in_in_classroom_browser,
+    execute_quick_turn_in,
 )
 from app.db.models import Setting, Course, Assignment, Submission, SubmissionState, AssignmentStatus
 from app.core.security import decrypt_token_if_encrypted
@@ -130,81 +130,44 @@ def test_get_google_classroom_browser_status_with_synced_session():
         value="enc_cookies",
     )
 
-    fake_client = MagicMock()
-    fake_client.status.return_value = {"active": False, "profile_exists": True, "viewer_url": None}
-
-    with patch("app.classroom.router.BrowserSessionClient.classroom", return_value=fake_client):
-        res = get_google_classroom_browser_status(db=db, clerk_user=user)
-        assert res["active"] is False
-        assert res["profile_exists"] is True
-        assert res["has_synced_session"] is True
+    res = get_google_classroom_browser_status(db=db, clerk_user=user)
+    assert res["active"] is False
+    assert res["profile_exists"] is True
+    assert res["has_synced_session"] is True
+    assert res["extension_managed"] is True
 
 
-def test_finish_quick_turn_in_auto_boots_and_injects_cookies():
+def test_execute_quick_turn_in_attach_only():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from app.db.database import Base
-    from app.core.security import encrypt_token_if_needed
+    from app.db.models import AssignmentSolution
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
 
-    user_id = "test_user_auto_turn_in"
-    course = Course(id=1, external_id="course-ext-1", name="Test Course", user_id=user_id)
-    assignment = Assignment(id=1, external_id="asgn-ext-1", course_id=1, title="Lab 1", user_id=user_id)
-    submission = Submission(id=1, assignment_id=1, user_id=user_id, submission_state=SubmissionState.CREATED)
-    digest_row = Setting(key=f"quick_turn_in_digest_test_1", value="digest123")
-
-    # Stored synced Google session cookies
-    cookies_json = json.dumps([{"name": "OSID", "value": "secret_osid", "domain": "classroom.google.com"}])
-    cookie_setting = Setting(
-        key=f"classroom:{user_id}:google_session_cookies",
-        value=encrypt_token_if_needed(cookies_json),
-    )
-    db.add_all([course, assignment, submission, digest_row, cookie_setting])
+    user_id = "test_user_attach_only"
+    course = Course(id=1, external_id="c-ext-1", name="Test Course", user_id=user_id)
+    assignment = Assignment(id=1, external_id="a-ext-1", course_id=1, title="Lab 1", user_id=user_id)
+    solution = AssignmentSolution(id=1, assignment_id=1, user_id=user_id, validated_content="# Solution\n```python\nprint('hello')\n```")
+    submission = Submission(id=1, assignment_id=1, user_id=user_id, google_doc_id="doc-123")
+    db.add_all([course, assignment, solution, submission])
     db.commit()
 
-    fake_browser = MagicMock()
-    # Initially inactive; should be booted automatically
-    fake_browser.status.return_value = {"active": False, "profile_exists": False, "viewer_url": None}
-    fake_browser.open.return_value = {"active": True, "viewer_url": "https://viewer.example.com"}
-
-    mock_submit_calls = []
-
-    def mock_submit_drive_files(**kwargs):
-        mock_submit_calls.append(kwargs)
-        return {"attached": 2, "turned_in": True}
-
     fake_classroom_service = MagicMock()
-    fake_classroom_service.courses().courseWork().studentSubmissions().list().execute.return_value = {
-        "studentSubmissions": [{"id": "sub-123", "state": "TURNED_IN"}]
-    }
+    fake_docs_service = MagicMock()
+    fake_docs_service.upload_file.return_value = {"id": "zip-123"}
+    fake_docs_service.remove_public_sharing.return_value = True
+    fake_docs_service.get_file.return_value = {"name": "Solution Doc"}
 
-    with patch("app.classroom.router.BrowserSessionClient.classroom", return_value=fake_browser):
-        with patch("app.services.classroom_browser_submission.submit_drive_files", side_effect=mock_submit_drive_files):
-            res = _finish_quick_turn_in_in_classroom_browser(
-                db=db,
-                user_id=user_id,
-                assignment=assignment,
-                course=course,
-                submission=submission,
-                digest_row=digest_row,
-                content_digest="digest123",
-                google_doc_id="doc-123",
-                google_doc_name="Solution Doc",
-                zip_file_id="zip-123",
-                zip_filename="Deliverables.zip",
-                classroom_service=fake_classroom_service,
-            )
-
-            # Successfully auto-booted the browser session
-            assert fake_browser.open.called
-            # Successfully passed the decrypted cookies to submit_drive_files
-            assert len(mock_submit_calls) == 1
-            assert mock_submit_calls[0]["cookies"] == [{"name": "OSID", "value": "secret_osid", "domain": "classroom.google.com"}]
-            # Submission succeeded and turned in
-            assert res["success"] is True
-            assert res["turned_in"] is True
-            assert submission.submission_state == SubmissionState.TURNED_IN
-            assert assignment.status == AssignmentStatus.SUBMITTED
+    with patch("app.services.ai_solution.export_solution_to_google_doc", return_value={"doc_id": "doc-123"}):
+        with patch("app.classroom.router.get_classroom_service", return_value=MagicMock(service=fake_classroom_service)):
+            with patch("app.classroom.router.get_google_docs_service", return_value=fake_docs_service):
+                with patch("app.classroom.router._attach_submission_files", return_value=("sub-123", "NEW")):
+                    res = execute_quick_turn_in(db, assignment_id=1, user_id=user_id, action="attach_only")
+                    assert res["success"] is True
+                    assert res["action_taken"] == "attached_draft"
+                    assert res["turned_in"] is False
+                    assert res["classroom_submission_id"] == "sub-123"
+                    assert submission.submission_state == SubmissionState.CREATED

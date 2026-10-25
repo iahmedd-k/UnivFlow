@@ -118,3 +118,26 @@ export async function syncSelectedViaExtension({
     autoVisit,
   }, autoVisit ? 40000 : 15000);
 }
+
+/**
+ * Execute native Turn In on Google Classroom using student's authentic Chrome session
+ */
+export async function turnInViaExtension({ classroomUrl, assignmentId, apiUrl, token } = {}) {
+  const targetApiUrl = apiUrl || process.env.NEXT_PUBLIC_API_URL || '';
+  return sendExtensionMessage('TURN_IN_CLASSROOM', {
+    classroom_url: classroomUrl,
+    assignment_id: assignmentId,
+    apiUrl: targetApiUrl,
+    token: token || '',
+  }, 25000);
+}
+
+/**
+ * Open Google Classroom directly in a browser tab via extension
+ */
+export async function openClassroomTab(classroomUrl) {
+  return sendExtensionMessage('OPEN_CLASSROOM_TAB', {
+    classroom_url: classroomUrl || 'https://classroom.google.com',
+  }, 10000);
+}
+

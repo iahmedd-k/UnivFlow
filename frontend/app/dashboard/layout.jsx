@@ -15,7 +15,7 @@ const groups = [
   ] },
   { label: 'Study & coursework', items: [
     { href: '/dashboard/assignments', label: 'Assignments Studio', icon: 'listChecks' },
-    { href: '/dashboard/courses', label: 'Study assistant', icon: 'brain' },
+    { href: '/dashboard/rag-assistant', label: 'Study Assistant', icon: 'brain' },
   ] },
   { label: 'Semester', items: [
     { href: '/dashboard/timetable', label: 'Timetable', icon: 'calendar' },

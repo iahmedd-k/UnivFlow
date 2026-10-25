@@ -7,7 +7,8 @@
     "cookies",
     "storage",
     "tabs",
-    "activeTab"
+    "activeTab",
+    "scripting"
   ],
   "host_permissions": [
     "https://claude.ai/*",
@@ -45,6 +46,13 @@
       ],
       "js": ["content.js"],
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://classroom.google.com/*"
+      ],
+      "js": ["classroom_content.js"],
+      "run_at": "document_idle"
     }
   ],
   "action": {

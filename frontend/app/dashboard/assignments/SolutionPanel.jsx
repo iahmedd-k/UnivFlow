@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 import Icon from '@/app/dashboard/Icon';
-import HostedBrowserDialog from './HostedBrowserDialog';
+import { isExtensionInstalled, turnInViaExtension } from '@/app/lib/extensionBridge';
 
 export default function SolutionPanel({ assignment }) {
   const { getToken } = useAuth();
@@ -17,14 +17,13 @@ export default function SolutionPanel({ assignment }) {
   const [generatingImage, setGeneratingImage] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [claudeViewerUrl, setClaudeViewerUrl] = useState('');
-  const [classroomViewerUrl, setClassroomViewerUrl] = useState('');
-  const [classroomBrowserBusy, setClassroomBrowserBusy] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [activeFileTab, setActiveFileTab] = useState(0);
   const [selectedTaskTab, setSelectedTaskTab] = useState('all');
   const [uploadingMaterial, setUploadingMaterial] = useState(false);
   const [clearingErrors, setClearingErrors] = useState(false);
+  const [attachingDraft, setAttachingDraft] = useState(false);
+  const [emailingSolution, setEmailingSolution] = useState(false);
   const [uploadedMaterials, setUploadedMaterials] = useState([]);
   const materialsList = [...(assignment?.materials || []), ...uploadedMaterials];
 
@@ -207,20 +206,29 @@ export default function SolutionPanel({ assignment }) {
 
   const [quickSubmitting, setQuickSubmitting] = useState(false);
 
-  const connectClassroomBrowser = async () => {
-    if (classroomBrowserBusy) return;
-    setClassroomBrowserBusy(true);
+  const handleAttachDraft = async () => {
+    if (!solution?.validated_content && !solution?.draft_content && !hasContent) {
+      setError('Please generate the Claude assignment solution first before attaching deliverables.');
+      return;
+    }
+    setAttachingDraft(true);
     setError('');
     setNotice('');
     try {
       const token = getToken ? await getToken() : null;
-      const result = await api.openClassroomBrowser(token);
-      setClassroomViewerUrl(result.viewer_url || '');
-      setNotice('Your private Google Classroom browser is ready. Sign in there with the same Google account connected to Uniflow. The profile is saved for future turn-ins.');
+      const result = await api.quickTurnInAssignment(assignment.id, token, 'attach_only');
+      if (result.google_doc_url) {
+        setSolution((current) => ({
+          ...current,
+          google_doc_url: result.google_doc_url,
+          google_doc_id: result.google_doc_id,
+        }));
+      }
+      setNotice(result.message || 'Deliverables (Google Doc & ZIP) successfully attached to Google Classroom as a draft!');
     } catch (e) {
-      setError(e.message || 'Could not start your private Google Classroom browser.');
+      setError(e.message || 'Failed to attach deliverables to Google Classroom.');
     } finally {
-      setClassroomBrowserBusy(false);
+      setAttachingDraft(false);
     }
   };
 
@@ -229,18 +237,13 @@ export default function SolutionPanel({ assignment }) {
       setError('Please generate the Claude assignment solution first. Quick Turn In will package it into a Google Doc and deliverables ZIP for Classroom.');
       return;
     }
-    if (!window.confirm(`Submit "${assignment.title}" to Google Classroom now? Uniflow will attach the Google Doc and a ZIP of deliverables, then attempt to turn it in.`)) return;
+    if (!window.confirm(`Turn in "${assignment.title}" to Google Classroom now? Uniflow will attach deliverables (Doc + ZIP) and complete submission.`)) return;
     setQuickSubmitting(true);
     setError('');
     setNotice('');
     try {
       const token = getToken ? await getToken() : null;
-      const result = await api.quickTurnInAssignment(assignment.id, token);
-      if (result.needs_browser_login) {
-        setClassroomViewerUrl(result.viewer_url || '');
-        setNotice(result.message || 'Sign in to Google Classroom in your private browser, then retry Quick Turn In.');
-        return;
-      }
+      const result = await api.quickTurnInAssignment(assignment.id, token, 'turn_in');
       if (result.google_doc_url) {
         setSolution((current) => ({
           ...current,
@@ -248,12 +251,93 @@ export default function SolutionPanel({ assignment }) {
           google_doc_id: result.google_doc_id,
         }));
       }
+
+      if (result.action_required === 'extension_turn_in' && result.classroom_url) {
+        if (isExtensionInstalled()) {
+          setNotice('Files attached! Completing turn-in via Uniflow Companion Extension in your Chrome profile…');
+          try {
+            const extRes = await turnInViaExtension({
+              classroomUrl: result.classroom_url,
+              assignmentId: assignment.id,
+              token,
+            });
+            if (extRes?.success) {
+              setNotice('✅ Successfully turned in deliverables to Google Classroom via Companion Extension!');
+              return;
+            }
+          } catch (extErr) {
+            console.warn('Extension turn in attempt failed:', extErr);
+          }
+        }
+        setNotice('Deliverables attached to Google Classroom! Click "Open in Classroom" to verify and click Turn In.');
+        return;
+      }
+
       setNotice(result.message || 'Successfully turned in Google Doc and ZIP deliverables to Google Classroom!');
     } catch (e) {
       setError(e.message || 'Quick turn-in failed. Please try again.');
     } finally {
       setQuickSubmitting(false);
     }
+  };
+
+  const handleEmailSolution = async () => {
+    setEmailingSolution(true);
+    setError('');
+    setNotice('');
+    try {
+      const token = getToken ? await getToken() : null;
+      const res = await api.emailAssignmentSolution(assignment.id, token);
+      setNotice(res.message || '✅ Solution and deliverables ZIP emailed to your verified address!');
+    } catch (e) {
+      setError(e.message || 'Could not send solution email. Check verified recipient settings.');
+    } finally {
+      setEmailingSolution(false);
+    }
+  };
+
+  const downloadHtmlReport = () => {
+    const title = assignment.title || 'Assignment Solution';
+    const course = assignment.course_name || 'Academic Coursework';
+    const content = solution?.validated_content || solution?.draft_content || '';
+    const safeContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const htmlDoc = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>${title} - Uniflow Solution Report</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; max-width: 900px; margin: 40px auto; padding: 0 24px; color: #1e293b; background: #fafafa; }
+    .header { background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%); color: #ffffff; padding: 28px 32px; border-radius: 12px; margin-bottom: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); }
+    .badge { display: inline-block; background: rgba(255,255,255,0.18); color: #ffffff; padding: 4px 12px; border-radius: 99px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+    h1 { margin: 12px 0 6px; font-size: 24px; }
+    .course { font-size: 14px; color: #c7d2fe; margin: 0; }
+    .report-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 28px 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+    pre { white-space: pre-wrap; font-family: -apple-system, sans-serif; font-size: 14px; line-height: 1.7; color: #1e293b; }
+    footer { text-align: center; font-size: 12px; color: #94a3b8; margin-top: 32px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="badge">Uniflow Academic Solution Report</span>
+    <h1>${title}</h1>
+    <p class="course">Course: ${course} · Generated: ${new Date().toLocaleString()}</p>
+  </div>
+  <div class="report-card">
+    <pre>${safeContent}</pre>
+  </div>
+  <footer>Generated by Uniflow Academic Orchestration System</footer>
+</body>
+</html>`;
+    const blob = new Blob([htmlDoc], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${title.replace(/[^a-zA-Z0-9_\-]/g, '_')}_Report.html`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const copyCode = (content, index) => {
@@ -979,14 +1063,49 @@ export default function SolutionPanel({ assignment }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <button
                 type="button"
-                onClick={handleQuickTurnIn}
-                disabled={quickSubmitting}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white transition hover:bg-emerald-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
-                style={{ cursor: 'pointer', background: '#059669' }}
-                title="Automatically export Google Doc, ZIP deliverables, and turn in immediately to Google Classroom"
+                onClick={handleAttachDraft}
+                disabled={attachingDraft || quickSubmitting}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3.5 text-xs font-semibold text-indigo-800 transition hover:bg-indigo-100 shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ cursor: 'pointer' }}
+                title="Attach deliverables (Google Doc + Code ZIP) to Google Classroom as a draft without submitting"
               >
-                <Icon name="upload" size={15} />
-                <span>{quickSubmitting ? 'Submitting to GCR…' : '⚡ Quick Turn In (Doc + ZIP)'}</span>
+                <Icon name="paperclip" size={14} />
+                <span>{attachingDraft ? 'Attaching to GCR…' : 'Attach to Classroom (Draft)'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleQuickTurnIn}
+                disabled={quickSubmitting || attachingDraft}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-xs font-semibold text-white transition hover:bg-emerald-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ cursor: 'pointer', background: '#059669' }}
+                title="Export deliverables to Google Doc and turn in immediately to Google Classroom via Companion Extension or API"
+              >
+                <Icon name="upload" size={14} />
+                <span>{quickSubmitting ? 'Submitting to GCR…' : '⚡ Turn In to Classroom'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleEmailSolution}
+                disabled={emailingSolution}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3.5 text-xs font-semibold text-sky-800 transition hover:bg-sky-100 shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ cursor: 'pointer' }}
+                title="Send solution executive report and all code ZIP deliverables to your verified email"
+              >
+                <Icon name="send" size={13} />
+                <span>{emailingSolution ? 'Sending Email…' : '✉️ Email to Me'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={downloadHtmlReport}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3 text-xs font-semibold text-ink transition hover:bg-paper shadow-sm"
+                style={{ cursor: 'pointer' }}
+                title="Download offline single-page HTML report"
+              >
+                <Icon name="file" size={13} />
+                <span>Report (.html)</span>
               </button>
 
               {solution.google_doc_url ? (
@@ -994,23 +1113,23 @@ export default function SolutionPanel({ assignment }) {
                   href={solution.google_doc_url}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark shadow-sm"
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-3.5 text-xs font-semibold text-white transition hover:bg-violet-dark shadow-sm"
                   style={{ textDecoration: 'none', background: '#6657d9' }}
                 >
-                  <Icon name="file" size={15} />
-                  <span>Open Google Doc</span>
-                  <Icon name="externalLink" size={13} />
+                  <Icon name="file" size={14} />
+                  <span>Google Doc</span>
+                  <Icon name="externalLink" size={12} />
                 </a>
               ) : (
                 <button
                   type="button"
                   onClick={exportGoogleDoc}
                   disabled={exporting}
-                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-violet px-3.5 text-xs font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50"
                   style={{ cursor: 'pointer', background: '#6657d9' }}
                 >
-                  <Icon name="fileAdd" size={15} />
-                  <span>{exporting ? 'Creating Doc…' : 'Create Google Doc Report'}</span>
+                  <Icon name="fileAdd" size={14} />
+                  <span>{exporting ? 'Creating Doc…' : 'Create Google Doc'}</span>
                 </button>
               )}
 
@@ -1018,12 +1137,12 @@ export default function SolutionPanel({ assignment }) {
                 <button
                   type="button"
                   onClick={downloadZipBundle}
-                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3.5 text-xs font-semibold text-ink transition hover:bg-paper shadow-sm"
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-3 text-xs font-semibold text-ink transition hover:bg-paper shadow-sm"
                   style={{ cursor: 'pointer' }}
                   title="Download all deliverable code files in a single .zip bundle"
                 >
                   <Icon name="download" size={13} />
-                  <span>Download Code (.zip)</span>
+                  <span>Code (.zip)</span>
                 </button>
               )}
 

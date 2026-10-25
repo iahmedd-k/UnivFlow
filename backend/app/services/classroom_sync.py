@@ -201,10 +201,11 @@ class ClassroomSyncService:
         try:
             import io
             import os
+            result = ""
             if mime_type == "application/vnd.google-apps.document":
                 data = drive_service.files().export_media(fileId=file_id, mimeType="text/plain").execute()
-                return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
-            if mime_type == "application/vnd.google-apps.presentation":
+                result = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+            elif mime_type == "application/vnd.google-apps.presentation":
                 data = drive_service.files().export_media(
                     fileId=file_id,
                     mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -214,67 +215,68 @@ class ClassroomSyncService:
                 import xml.etree.ElementTree as ET
                 with zipfile.ZipFile(io.BytesIO(raw)) as archive:
                     slide_names = sorted((name for name in archive.namelist() if name.startswith("ppt/slides/slide") and name.endswith(".xml")), key=lambda n: int(''.join(c for c in n.rsplit('/', 1)[-1] if c.isdigit()) or 0))
-                    return "\n\n".join("Slide: " + " ".join(node.text or "" for node in ET.fromstring(archive.read(name)).iter() if node.tag.endswith("}t")) for name in slide_names)
-            if mime_type == "application/vnd.google-apps.spreadsheet":
+                    result = "\n\n".join("Slide: " + " ".join(node.text or "" for node in ET.fromstring(archive.read(name)).iter() if node.tag.endswith("}t")) for name in slide_names)
+            elif mime_type == "application/vnd.google-apps.spreadsheet":
                 data = drive_service.files().export_media(fileId=file_id, mimeType="text/csv").execute()
-                return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
-            if mime_type == "application/pdf":
+                result = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+            elif mime_type == "application/pdf":
                 data = raw_data if raw_data is not None else drive_service.files().get_media(fileId=file_id).execute()
                 from pypdf import PdfReader
                 pdf = PdfReader(io.BytesIO(data if isinstance(data, bytes) else bytes(data)))
-                return "\n".join(page.extract_text() or "" for page in pdf.pages)
-            if mime_type and (mime_type.startswith("text/") or mime_type in ("application/json", "application/javascript")):
+                result = "\n".join(page.extract_text() or "" for page in pdf.pages)
+            elif mime_type and (mime_type.startswith("text/") or mime_type in ("application/json", "application/javascript")):
                 data = raw_data if raw_data is not None else drive_service.files().get_media(fileId=file_id).execute()
-                return data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
-            # DriveFile attachments can be uploaded Office files rather than Google Docs.
-            # Download and extract these during sync so chat never needs a live Drive call.
-            ext = os.path.splitext(filename.lower())[1]
-            if ext in (".pptx", ".docx", ".xlsx") or mime_type in (
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            ):
-                data = raw_data if raw_data is not None else drive_service.files().get_media(fileId=file_id).execute()
-                raw = data if isinstance(data, bytes) else bytes(data)
-                if ext == ".pptx" or "presentationml" in (mime_type or ""):
-                    import zipfile
-                    import xml.etree.ElementTree as ET
-                    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-                        slide_names = sorted((name for name in archive.namelist() if name.startswith("ppt/slides/slide") and name.endswith(".xml")), key=lambda n: int(''.join(c for c in n.rsplit('/', 1)[-1] if c.isdigit()) or 0))
-                        return "\n\n".join("Slide: " + " ".join(node.text or "" for node in ET.fromstring(archive.read(name)).iter() if node.tag.endswith("}t")) for name in slide_names)
-                if ext == ".docx" or "wordprocessingml" in (mime_type or ""):
-                    import docx
-                    return "\n".join(p.text for p in docx.Document(io.BytesIO(raw)).paragraphs if p.text)
-                if ext == ".xlsx" or "spreadsheetml" in (mime_type or ""):
-                    import zipfile
-                    import xml.etree.ElementTree as ET
-                    namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
-                    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-                        shared = []
-                        if "xl/sharedStrings.xml" in archive.namelist():
-                            root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
-                            shared = ["".join(node.text or "" for node in item.iter() if node.tag.endswith("}t")) for item in root.findall(f"{namespace}si")]
-                        rows_text = []
-                        sheets = sorted(name for name in archive.namelist() if name.startswith("xl/worksheets/sheet") and name.endswith(".xml"))
-                        for sheet_name in sheets:
-                            root = ET.fromstring(archive.read(sheet_name))
-                            for row in root.findall(f".//{namespace}row"):
-                                values = []
-                                for cell in row.findall(f"{namespace}c"):
-                                    value = cell.find(f"{namespace}v")
-                                    if cell.get("t") == "s" and value is not None:
-                                        index = int(value.text or 0)
-                                        values.append(shared[index] if index < len(shared) else "")
-                                    elif cell.get("t") == "inlineStr":
-                                        values.append("".join(node.text or "" for node in cell.iter() if node.tag.endswith("}t")))
-                                    else:
-                                        values.append(value.text if value is not None else "")
-                                if any(values):
-                                    rows_text.append(" | ".join(values))
-                        return "\n".join(rows_text)
+                result = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+            else:
+                ext = os.path.splitext(filename.lower())[1]
+                if ext in (".pptx", ".docx", ".xlsx") or mime_type in (
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ):
+                    data = raw_data if raw_data is not None else drive_service.files().get_media(fileId=file_id).execute()
+                    raw = data if isinstance(data, bytes) else bytes(data)
+                    if ext == ".pptx" or "presentationml" in (mime_type or ""):
+                        import zipfile
+                        import xml.etree.ElementTree as ET
+                        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                            slide_names = sorted((name for name in archive.namelist() if name.startswith("ppt/slides/slide") and name.endswith(".xml")), key=lambda n: int(''.join(c for c in n.rsplit('/', 1)[-1] if c.isdigit()) or 0))
+                            result = "\n\n".join("Slide: " + " ".join(node.text or "" for node in ET.fromstring(archive.read(name)).iter() if node.tag.endswith("}t")) for name in slide_names)
+                    elif ext == ".docx" or "wordprocessingml" in (mime_type or ""):
+                        import docx
+                        result = "\n".join(p.text for p in docx.Document(io.BytesIO(raw)).paragraphs if p.text)
+                    elif ext == ".xlsx" or "spreadsheetml" in (mime_type or ""):
+                        import zipfile
+                        import xml.etree.ElementTree as ET
+                        namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+                        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                            shared = []
+                            if "xl/sharedStrings.xml" in archive.namelist():
+                                root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+                                shared = ["".join(node.text or "" for node in item.iter() if node.tag.endswith("}t")) for item in root.findall(f"{namespace}si")]
+                            rows_text = []
+                            sheets = sorted(name for name in archive.namelist() if name.startswith("xl/worksheets/sheet") and name.endswith(".xml"))
+                            for sheet_name in sheets:
+                                root = ET.fromstring(archive.read(sheet_name))
+                                for row in root.findall(f".//{namespace}row"):
+                                    values = []
+                                    for cell in row.findall(f"{namespace}c"):
+                                        value = cell.find(f"{namespace}v")
+                                        if cell.get("t") == "s" and value is not None:
+                                            index = int(value.text or 0)
+                                            values.append(shared[index] if index < len(shared) else "")
+                                        elif cell.get("t") == "inlineStr":
+                                            values.append("".join(node.text or "" for node in cell.iter() if node.tag.endswith("}t")))
+                                        else:
+                                            values.append(value.text if value is not None else "")
+                                    if any(values):
+                                        rows_text.append(" | ".join(values))
+                            result = "\n".join(rows_text)
+
+            return (result or "").replace("\x00", "")
         except Exception as e:
             logger.warning(f"Could not extract text from Drive file {file_id}: {e}")
-        return ""
+            return ""
 
 
     def _save_semester_start_date(self, dt: datetime):
@@ -352,13 +354,20 @@ class ClassroomSyncService:
                 self._sync_course(course, is_active=True)
                 self._sync_coursework(course_id, since_date=since_date, skip_drive_download=True)
                 self._sync_student_submission_states(course_id)
+                self.db.commit()
             except Exception as e:
+                self.db.rollback()
                 err_str = str(e)
                 if "invalid_grant" in err_str or "expired or revoked" in err_str:
                     raise
                 logger.warning(f"Fast coursework sync error for {course.get('id')}: {e}")
 
-        self.db.commit()
+        try:
+            self.db.commit()
+        except Exception as commit_err:
+            self.db.rollback()
+            logger.warning(f"Failed to commit fast sync transaction: {commit_err}")
+
         return self._get_assignments_for_user(since_date=since_date)
 
     def _get_assignments_for_user(self, since_date: Optional[datetime] = None) -> List[Dict[str, Any]]:
@@ -715,11 +724,11 @@ class ClassroomSyncService:
         course_dict = {
             "user_id": self.user_id,
             "external_id": course_data["id"],
-            "name": course_data.get("name", ""),
-            "section": course_data.get("section", ""),
-            "description": course_data.get("description", ""),
-            "room": course_data.get("room", ""),
-            "teacher_name": teacher_name,
+            "name": (course_data.get("name") or "").replace("\x00", ""),
+            "section": (course_data.get("section") or "").replace("\x00", ""),
+            "description": (course_data.get("description") or "").replace("\x00", ""),
+            "room": (course_data.get("room") or "").replace("\x00", ""),
+            "teacher_name": (teacher_name or "").replace("\x00", ""),
             "course_state": state,
             "alternate_link": course_data.get("alternateLink", ""),
         }
@@ -727,7 +736,11 @@ class ClassroomSyncService:
         if existing:
             for key, value in course_dict.items():
                 setattr(existing, key, value)
-            self.db.commit()
+            try:
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
             return existing
         else:
             return repo.create(course_dict)
@@ -796,8 +809,12 @@ class ClassroomSyncService:
                         if not due_at and not (created_dt and created_dt >= since_date):
                             continue
 
-                    self._sync_assignment(course.id, work, skip_drive_download=skip_drive_download)
-                    count += 1
+                    try:
+                        self._sync_assignment(course.id, work, skip_drive_download=skip_drive_download)
+                        count += 1
+                    except Exception as a_err:
+                        self.db.rollback()
+                        logger.error(f"Error syncing coursework {work.get('id')} for course {course_id}: {a_err}")
 
                 page_token = response.get("nextPageToken")
                 if not page_token:
@@ -831,14 +848,16 @@ class ClassroomSyncService:
                 tzinfo=timezone.utc
             )
 
+        desc = (work.get("description") or "").replace("\x00", "")
+        title = (work.get("title") or "").replace("\x00", "")
         assignment_dict = {
             "user_id": self.user_id,
             "external_id": external_id,
             "course_id": course_db_id,
-            "title": work.get("title", ""),
+            "title": title,
             "work_type": work.get("workType", "ASSIGNMENT"),
             "is_quiz": bool(work.get("quizSettings", {}).get("isQuiz")),
-            "description": work.get("description", ""),
+            "description": desc,
             "due_at": due_at,
             "due_date": due_at,
             "url": work.get("alternateLink", ""),
@@ -850,9 +869,13 @@ class ClassroomSyncService:
             for key, value in assignment_dict.items():
                 setattr(existing, key, value)
             existing.updated_at = datetime.now(timezone.utc)
-            self.db.commit()
-            self._sync_materials(existing.id, work.get("materials", []), default_title=work.get("title", ""), skip_drive_download=skip_drive_download)
-            if not work.get("materials") and work.get("description"):
+            try:
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
+            self._sync_materials(existing.id, work.get("materials", []), default_title=title, skip_drive_download=skip_drive_download)
+            if not work.get("materials") and desc:
                 from app.db.repositories import AssignmentMaterialRepository
                 mat_repo = AssignmentMaterialRepository(self.db)
                 if not mat_repo.get_by_assignment(existing.id):
@@ -860,11 +883,11 @@ class ClassroomSyncService:
                         "user_id": self.user_id,
                         "assignment_id": existing.id,
                         "material_type": "assignment_description",
-                        "title": f"{existing.title} (Instructions)",
+                        "title": f"{existing.title} (Instructions)".replace("\x00", ""),
                         "url": existing.url or "",
                         "drive_file_id": None,
                         "mime_type": "text/plain",
-                        "content": work.get("description", "")[:30000],
+                        "content": desc[:30000],
                     })
             return existing
         else:

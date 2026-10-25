@@ -65,7 +65,13 @@ app = FastAPI(
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
 
-extra_cors = [o.strip() for o in settings.cors_origins.split(",") if o.strip()] if getattr(settings, "cors_origins", None) else []
+raw_cors = getattr(settings, "cors_origins", None)
+if isinstance(raw_cors, list):
+    extra_cors = [str(o).strip() for o in raw_cors if str(o).strip()]
+elif isinstance(raw_cors, str):
+    extra_cors = [o.strip() for o in raw_cors.split(",") if o.strip()]
+else:
+    extra_cors = []
 
 cors_origins = list(dict.fromkeys([
     o.rstrip("/") for o in [

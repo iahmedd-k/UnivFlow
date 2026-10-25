@@ -360,6 +360,39 @@ export const api = {
   getRagConversations: async (token = null) => fetchFromApi('/rag/conversations', token),
   getRagConversationMessages: async (conversationId, token = null) => fetchFromApi(`/rag/conversations/${conversationId}/messages`, token),
 
+  // RAG v2 (DocSense)
+  getRagDocuments: async (token = null) => fetchFromApi('/rag/documents', token),
+  uploadRagDocument: async (file, token = null) => {
+    const form = new FormData();
+    form.append('file', file);
+    return fetchFromApi('/rag/documents', token, { method: 'POST', body: form });
+  },
+  getRagDocumentStatus: async (documentId, token = null) => fetchFromApi(`/rag/documents/${documentId}/status`, token),
+  deleteRagDocument: async (documentId, token = null) => fetchFromApi(`/rag/documents/${documentId}`, token, { method: 'DELETE' }),
+  ragChat: async (data, token = null) => fetchFromApi('/rag/chat', token, { method: 'POST', body: JSON.stringify(data) }),
+  ragChatStream: async (data, token = null) => {
+    const url = `${API_BASE}/rag/chat/stream`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(data),
+    });
+    return res;
+  },
+  ragSearch: async (params, token = null) => {
+    const query = new URLSearchParams(params).toString();
+    return fetchFromApi(`/rag/search?${query}`, token);
+  },
+  getRagConversations: async (token = null, offset = 0, limit = 20) => fetchFromApi(`/rag/conversations?offset=${offset}&limit=${limit}`, token),
+  createRagConversation: async (data, token = null) => fetchFromApi('/rag/conversations', token, { method: 'POST', body: JSON.stringify(data) }),
+  getRagConversation: async (conversationId, token = null) => fetchFromApi(`/rag/conversations/${conversationId}`, token),
+  updateRagConversation: async (conversationId, data, token = null) => fetchFromApi(`/rag/conversations/${conversationId}`, token, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteRagConversation: async (conversationId, token = null) => fetchFromApi(`/rag/conversations/${conversationId}`, token, { method: 'DELETE' }),
+  getRagUsage: async (token = null) => fetchFromApi('/rag/usage', token),
+
   // Assignment Templates
   getAssignmentTemplates: async (token = null) => fetchFromApi('/classroom/templates', token),
 
@@ -401,7 +434,9 @@ export const api = {
   },
 
   unsubmitAssignment: async (assignmentId, token = null) => fetchFromApi(`/classroom/assignments/${assignmentId}/unsubmit`, token, { method: 'POST' }),
-  quickTurnInAssignment: async (assignmentId, token = null) => fetchFromApi(`/classroom/assignments/${assignmentId}/quick-turn-in`, token, { method: 'POST', body: JSON.stringify({ confirm_submission: true }) }),
+  quickTurnInAssignment: async (assignmentId, token = null, action = 'turn_in') => fetchFromApi(`/classroom/assignments/${assignmentId}/quick-turn-in`, token, { method: 'POST', body: JSON.stringify({ confirm_submission: true, action }) }),
+  confirmAssignmentTurnIn: async (assignmentId, token = null) => fetchFromApi(`/classroom/assignments/${assignmentId}/confirm-turn-in`, token, { method: 'POST' }),
+  emailAssignmentSolution: async (assignmentId, token = null) => fetchFromApi(`/classroom/assignments/${assignmentId}/solution/email`, token, { method: 'POST' }),
   getCourseAutoTurnIn: async (courseId, token = null) => fetchFromApi(`/classroom/courses/${courseId}/auto-turn-in`, token),
   updateCourseAutoTurnIn: async (courseId, data, token = null) => fetchFromApi(`/classroom/courses/${courseId}/auto-turn-in`, token, {
     method: 'PUT',
@@ -455,15 +490,7 @@ export const api = {
     method: 'POST',
   }),
 
-  openClassroomBrowser: async (token = null) => fetchFromApi('/classroom/gcr-browser/open', token, {
-    method: 'POST',
-  }),
-
   getClassroomBrowserStatus: async (token = null) => fetchFromApi('/classroom/gcr-browser/status', token, { noCache: true }),
-
-  deleteClassroomBrowserProfile: async (token = null) => fetchFromApi('/classroom/gcr-browser/profile', token, {
-    method: 'DELETE',
-  }),
 
   syncClassroomSession: async (cookies, userAgent = null, token = null) => fetchFromApi('/classroom/gcr-browser/sync-session', token, {
     method: 'POST',

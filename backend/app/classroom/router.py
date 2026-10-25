@@ -620,10 +620,15 @@ def sync_classroom(
     try:
         assignments = service.fast_sync_assignments(since_date=since_dt)
     except Exception as fast_err:
+        service.db.rollback()
         err_msg = str(fast_err)
         if "invalid_grant" in err_msg or "expired or revoked" in err_msg:
             logger.warning(f"Google OAuth token expired or revoked for {user_id}: {fast_err}")
-            cached_assignments = service._get_assignments_for_user(since_date=since_dt)
+            try:
+                cached_assignments = service._get_assignments_for_user(since_date=since_dt)
+            except Exception:
+                service.db.rollback()
+                cached_assignments = []
             return {
                 "status": "reconnect_required",
                 "message": "Google Classroom token has expired. Please reconnect your Google account.",
@@ -631,7 +636,12 @@ def sync_classroom(
                 "count": len(cached_assignments),
             }
         logger.warning(f"Fast coursework sync error for {user_id}: {fast_err}")
-        assignments = service._get_assignments_for_user(since_date=since_dt)
+        try:
+            assignments = service._get_assignments_for_user(since_date=since_dt)
+        except Exception as query_err:
+            service.db.rollback()
+            logger.error(f"Could not load cached assignments after fast sync error: {query_err}")
+            assignments = []
 
     # 2. RUN HEAVY SYNC IN BACKGROUND (Drive file downloads, S3 uploads, PDF text extraction)
     lock = _get_user_lock(user_id)
@@ -1379,177 +1389,39 @@ def _attach_submission_files(
         raise HTTPException(status_code=502, detail="Failed to attach files to Google Classroom") from error
 
 
-def _finish_quick_turn_in_in_classroom_browser(
-    db: Session,
-    user_id: str,
-    assignment: Assignment,
-    course: Course,
-    submission: Submission,
-    digest_row: Setting,
-    content_digest: str,
-    google_doc_id: str,
-    google_doc_name: str,
-    zip_file_id: str,
-    zip_filename: str,
-    classroom_service,
-) -> dict:
-    """Use the user's isolated Classroom browser when API writes are forbidden."""
-    from app.services.classroom_browser_submission import (
-        ClassroomBrowserLoginRequired,
-        submit_drive_files,
-    )
-
-    browser = BrowserSessionClient.classroom()
-    state = browser.status(user_id)
-    opened_viewer_url = None
-    if not state.get("active"):
-        try:
-            opened = browser.open(user_id)
-            opened_viewer_url = opened.get("viewer_url")
-        except Exception as open_err:
-            logger.warning("Could not launch Classroom browser session for user %s: %s", user_id, open_err)
-
-    # Fetch stored Google session cookies and user agent
-    cookie_setting = db.query(Setting).filter(
-        Setting.key == f"classroom:{user_id}:google_session_cookies"
-    ).first()
-    google_cookies = None
-    if cookie_setting and cookie_setting.value:
-        try:
-            from app.core.security import decrypt_token_if_encrypted
-            decrypted = decrypt_token_if_encrypted(cookie_setting.value)
-            google_cookies = json.loads(decrypted)
-        except Exception as ce:
-            logger.warning("Could not load decrypted Google session cookies for user %s: %s", user_id, ce)
-
-    ua_setting = db.query(Setting).filter(
-        Setting.key == f"classroom:{user_id}:google_user_agent"
-    ).first()
-    google_ua = ua_setting.value.strip() if ua_setting and ua_setting.value else None
-
-    # If neither cookies nor an existing authenticated profile exists, prompt setup
-    if not google_cookies and not state.get("profile_exists"):
-        curr_state = browser.status(user_id)
-        return {
-            "success": False,
-            "needs_browser_login": True,
-            "viewer_url": curr_state.get("viewer_url") or opened_viewer_url,
-            "google_doc_id": google_doc_id,
-            "zip_file_id": zip_file_id,
-            "message": "Google Classroom needs a one-time session sync. Use the Uniflow extension popup to sync your Google Classroom session, or sign in via Settings.",
-        }
-
-    email_row = db.query(Setting).filter(
-        Setting.key == f"google_connected_email_{user_id}"
-    ).first()
-    expected_email = email_row.value.strip() if email_row and email_row.value else None
-
-    # Resolve authoritative Google Classroom web URL for this coursework
-    target_assignment_url = getattr(assignment, "url", None)
-    if not target_assignment_url or "classroom.google.com" not in target_assignment_url:
+def _resolve_student_assignment_url(assignment, course, classroom_service) -> str:
+    """Resolve the authentic Google Classroom URL for student viewing and turn-in."""
+    target_url = getattr(assignment, "url", None)
+    if not target_url or "classroom.google.com" not in target_url:
         try:
             work_obj = classroom_service.courses().courseWork().get(
                 courseId=course.external_id,
                 id=assignment.external_id,
             ).execute()
-            target_assignment_url = work_obj.get("alternateLink") or target_assignment_url
+            target_url = work_obj.get("alternateLink") or target_url
         except Exception as e:
             logger.warning("Could not fetch alternateLink from Google Classroom API: %s", e)
 
-    # Ensure the URL points to student assignment details, never teacher grading view
-    if target_assignment_url and "/submissions/" in target_assignment_url:
-        target_assignment_url = target_assignment_url.split("/submissions/")[0] + "/details"
-    elif target_assignment_url and not target_assignment_url.endswith("/details") and "/a/" in target_assignment_url:
-        target_assignment_url = target_assignment_url.rstrip("/") + "/details"
+    if target_url and "/submissions/" in target_url:
+        target_url = target_url.split("/submissions/")[0] + "/details"
+    elif target_url and not target_url.endswith("/details") and "/a/" in target_url:
+        target_url = target_url.rstrip("/") + "/details"
+    elif not target_url:
+        target_url = f"https://classroom.google.com/c/{course.external_id}/a/{assignment.external_id}/details"
 
-    try:
-        browser_result = submit_drive_files(
-            user_id=user_id,
-            course_id=course.external_id,
-            coursework_id=assignment.external_id,
-            files=[
-                {"id": google_doc_id, "name": google_doc_name},
-                {"id": zip_file_id, "name": zip_filename},
-            ],
-            assignment_url=target_assignment_url,
-            assignment_title=assignment.title,
-            expected_email=expected_email,
-            cookies=google_cookies,
-            user_agent=google_ua,
-        )
-    except ClassroomBrowserLoginRequired:
-        curr_state = browser.status(user_id)
-        return {
-            "success": False,
-            "needs_browser_login": True,
-            "viewer_url": curr_state.get("viewer_url") or opened_viewer_url,
-            "google_doc_id": google_doc_id,
-            "zip_file_id": zip_file_id,
-            "message": "Your Google Classroom session has expired or requires sign-in. Use the Uniflow extension popup to re-sync your Classroom session.",
-        }
-    except Exception as error:
-        logger.exception("Google Classroom browser submission failed for assignment %s", assignment.id)
-        raise HTTPException(
-            status_code=502,
-            detail=f"Google Classroom browser submission failed: {error}",
-        ) from error
-
-    classroom_submission_id = submission.classroom_attachment_id
-    try:
-        current = classroom_service.courses().courseWork().studentSubmissions().list(
-            courseId=course.external_id,
-            courseWorkId=assignment.external_id,
-            userId="me",
-            pageSize=100,
-        ).execute().get("studentSubmissions", [])
-        if current:
-            classroom_submission_id = current[0].get("id") or classroom_submission_id
-            if current[0].get("state") == "TURNED_IN":
-                browser_result["turned_in"] = True
-    except Exception as error:
-        logger.warning("Could not refresh Classroom submission state after browser action: %s", error)
-
-    turned_in = bool(browser_result.get("turned_in"))
-    submission.classroom_attachment_id = classroom_submission_id
-    submission.google_doc_id = google_doc_id
-    submission.google_drive_file_id = zip_file_id
-    submission.submission_state = SubmissionState.TURNED_IN if turned_in else SubmissionState.CREATED
-    submission.submitted_at = datetime.now(timezone.utc)
-    submission.approved_by_user = True
-    submission.approved_at = datetime.now(timezone.utc)
-    digest_row.value = content_digest
-    assignment.submission_state = submission.submission_state
-    assignment.status = AssignmentStatus.SUBMITTED if turned_in else AssignmentStatus.APPROVED
-    db.commit()
-    return {
-        "success": True,
-        "assignment_id": assignment.id,
-        "course_id": course.id,
-        "course_name": course.name,
-        "submission_id": submission.id,
-        "google_doc_id": google_doc_id,
-        "google_doc_url": f"https://docs.google.com/document/d/{google_doc_id}/edit",
-        "zip_file_id": zip_file_id,
-        "zip_filename": zip_filename,
-        "classroom_submission_id": classroom_submission_id,
-        "turned_in": turned_in,
-        "message": (
-            f"Successfully attached the Google Doc and {zip_filename} and turned in the assignment through Google Classroom."
-            if turned_in
-            else f"Attached the Google Doc and {zip_filename} in Google Classroom, but Classroom did not confirm turn-in."
-        ),
-    }
+    return target_url
 
 
-def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict:
+
+def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str, action: str = "turn_in") -> dict:
     """
-    Immediate Quick Turn In:
+    Immediate Quick Turn In / Deliverables Attachment:
     1. Checks/creates Google Doc with formatted solution and cover intro page.
     2. Packages all code deliverables and terminal outputs into a ZIP file.
     3. Uploads ZIP archive to student's Google Drive.
     4. Attaches BOTH Google Doc and ZIP file to Google Classroom coursework submission.
-    5. Executes turnIn on Google Classroom (if submissions are open) and marks assignment as TURNED_IN.
-       If submissions are closed/locked by instructor, leaves files attached safely without failing.
+    5. If action == 'attach_only': leaves files safely attached as a draft.
+       If action == 'turn_in': executes turnIn via API, or delegates to Companion Extension.
     """
     from app.services.ai_solution import (
         extract_assignment_deliverables,
@@ -1715,12 +1587,12 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
     db.commit()
     db.refresh(existing_sub)
 
-    # 4. Attach both Google Doc and ZIP file to Classroom submission. Do not
-    # create "anyone with the link" Drive permissions for private coursework.
+    # 4. Attach both Google Doc and ZIP file to Classroom submission.
     get_file_metadata = getattr(docs_service, "get_file", None)
     doc_metadata = get_file_metadata(student_doc_id) if callable(get_file_metadata) else None
     doc_metadata = doc_metadata or {}
     google_doc_name = doc_metadata.get("name") or f"{student_name}_{safe_title}{reg_part}"
+    target_assignment_url = _resolve_student_assignment_url(assignment, course, service.service)
 
     try:
         submission_id, sub_state = _attach_submission_files(
@@ -1731,18 +1603,51 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
             return_state=True,
         )
     except HTTPException as attach_error:
-        if attach_error.status_code != 502:
-            raise
-        return _finish_quick_turn_in_in_classroom_browser(
-            db, user_id, assignment, course, existing_sub, digest_row, content_digest,
-            student_doc_id, google_doc_name, zip_file_id, zip_filename, service.service,
-        )
+        logger.error("Classroom attach files error for assignment %s: %s", assignment_id, attach_error)
+        raise
 
-    # 6. Turn in on Classroom
-    # If submission is open, execute turnIn with body={}.
-    # If submission is closed/disallowed by instructor, leave files attached safely without failing.
+    # If action is 'attach_only', keep files attached as draft and DO NOT call turnIn
+    if action == "attach_only":
+        if not existing_sub:
+            existing_sub = Submission(assignment_id=assignment_id, user_id=user_id)
+            db.add(existing_sub)
+
+        existing_sub.google_doc_id = student_doc_id
+        existing_sub.google_drive_file_id = zip_file_id
+        existing_sub.classroom_attachment_id = submission_id
+        existing_sub.submission_state = SubmissionState.CREATED
+        existing_sub.approved_by_user = True
+        existing_sub.approved_at = datetime.now(timezone.utc)
+        if not digest_row:
+            digest_row = Setting(key=digest_key, description="Digest of last Claude draft submitted to Classroom")
+            db.add(digest_row)
+        digest_row.value = content_digest
+        assignment.submission_state = SubmissionState.CREATED
+        assignment.status = AssignmentStatus.APPROVED
+        db.commit()
+        db.refresh(existing_sub)
+
+        return {
+            "success": True,
+            "assignment_id": assignment_id,
+            "course_id": course.id,
+            "course_name": course.name,
+            "submission_id": existing_sub.id,
+            "google_doc_id": student_doc_id,
+            "google_doc_url": f"https://docs.google.com/document/d/{student_doc_id}/edit",
+            "zip_file_id": zip_file_id,
+            "zip_filename": zip_filename,
+            "classroom_submission_id": submission_id,
+            "classroom_url": target_assignment_url,
+            "action_taken": "attached_draft",
+            "turned_in": False,
+            "message": f"Deliverables ({zip_filename} & Google Doc) successfully attached to Google Classroom coursework as a draft. You can review or turn in anytime!",
+        }
+
+    # Action is 'turn_in'
     turned_in = False
     turn_in_note = ""
+    extension_required = False
 
     if sub_state != "TURNED_IN":
         try:
@@ -1763,14 +1668,13 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
             elif "closed" in err_str.lower() or "deadline" in err_str.lower() or "not open" in err_str.lower():
                 turn_in_note = " (Submission deadline has passed or submissions are closed on Google Classroom; deliverables have been safely attached to coursework)."
             else:
-                return _finish_quick_turn_in_in_classroom_browser(
-                    db, user_id, assignment, course, existing_sub, digest_row, content_digest,
-                    student_doc_id, google_doc_name, zip_file_id, zip_filename, service.service,
-                )
+                # Google restricted 3rd-party API turnIn for students -> Hand off to Companion Extension!
+                extension_required = True
+                turn_in_note = " (Deliverables attached. 1-click turn in ready via your Chrome extension)."
     else:
         turn_in_note = " (Submission was already marked turned in on Google Classroom; deliverables were updated)."
 
-    # 7. Update database records
+    # Update database records
     if not existing_sub:
         existing_sub = Submission(assignment_id=assignment_id, user_id=user_id)
         db.add(existing_sub)
@@ -1798,7 +1702,7 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
     else:
         success_msg = f"Deliverables ({zip_filename} & Google Doc) successfully added to Google Classroom!{turn_in_note}"
 
-    return {
+    res = {
         "success": True,
         "assignment_id": assignment_id,
         "course_id": course.id,
@@ -1809,9 +1713,13 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str) -> dict
         "zip_file_id": zip_file_id,
         "zip_filename": zip_filename,
         "classroom_submission_id": submission_id,
+        "classroom_url": target_assignment_url,
         "turned_in": turned_in,
         "message": success_msg,
     }
+    if extension_required:
+        res["action_required"] = "extension_turn_in"
+    return res
 
 
 def check_and_execute_course_auto_turn_in(db: Session, course_id: int, user_id: str) -> List[dict]:
@@ -1881,11 +1789,13 @@ def check_and_execute_course_auto_turn_in(db: Session, course_id: int, user_id: 
 
 class QuickTurnInPayload(BaseModel):
     confirm_submission: bool = False
+    action: Optional[str] = "turn_in"  # "turn_in" or "attach_only"
 
 
 class CourseAutoTurnInPayload(BaseModel):
     enabled: bool = True
-    submit_when_ready: bool = False
+    submit_when_ready: bool = False   # Auto Turn In
+    attach_when_ready: bool = False   # Auto Attach Only (Keep as Draft)
     minutes_before: int = Field(default=60, ge=5, le=1440)
     confirm_submission: bool = False
 
@@ -1895,7 +1805,7 @@ class CourseAutoTurnInCheckPayload(BaseModel):
 
 
 def auto_turn_in_completed_solution(db: Session, assignment_id: int, user_id: str) -> Optional[dict]:
-    """Submit a validated solution immediately only when its course opted in."""
+    """Submit or attach a completed solution immediately only when student explicitly allowed it on dashboard."""
     assignment = db.query(Assignment).filter(
         Assignment.id == assignment_id,
         Assignment.user_id == user_id,
@@ -1910,13 +1820,17 @@ def auto_turn_in_completed_solution(db: Session, assignment_id: int, user_id: st
         preferences = json.loads(setting.value or "{}") if setting else {}
     except (TypeError, json.JSONDecodeError):
         preferences = {}
-    if not preferences.get("submit_when_ready"):
+
+    submit_when_ready = bool(preferences.get("submit_when_ready", False))
+    attach_when_ready = bool(preferences.get("attach_when_ready", False))
+
+    if not submit_when_ready and not attach_when_ready:
         return None
 
     solution = db.query(AssignmentSolution).filter(
         AssignmentSolution.assignment_id == assignment_id
     ).first()
-    if not solution or not solution.validated_content:
+    if not solution or not (solution.validated_content or solution.draft_content):
         return None
 
     existing_submission = db.query(Submission).filter(
@@ -1929,7 +1843,8 @@ def auto_turn_in_completed_solution(db: Session, assignment_id: int, user_id: st
     if submission_state in {SubmissionState.TURNED_IN.value, SubmissionState.RETURNED.value}:
         return None
 
-    return execute_quick_turn_in(db, assignment_id, user_id)
+    action = "turn_in" if submit_when_ready else "attach_only"
+    return execute_quick_turn_in(db, assignment_id, user_id, action=action)
 
 
 @router.post("/assignments/{assignment_id}/quick-turn-in", response_model=dict)
@@ -1940,13 +1855,64 @@ def quick_turn_in_assignment(
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """
-    Immediate Quick Turn In:
-    Uploads Google Doc + auto-zipped deliverables archive directly to Google Classroom submission.
+    Immediate Quick Turn In / Deliverables Attachment:
+    Uploads Google Doc + auto-zipped deliverables archive directly to Google Classroom.
+    Supports action='attach_only' (draft) and action='turn_in' (turn in via API/extension).
     """
     if payload.confirm_submission is not True:
         raise HTTPException(status_code=400, detail="Explicit confirmation is required before submitting to Google Classroom.")
     user_id = _classroom_user_id(clerk_user)
-    return execute_quick_turn_in(db, assignment_id, user_id)
+    action = payload.action or "turn_in"
+    return execute_quick_turn_in(db, assignment_id, user_id, action=action)
+
+
+@router.post("/assignments/{assignment_id}/confirm-turn-in", response_model=dict)
+def confirm_assignment_turn_in(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Record confirmation when extension successfully triggers the native turn-in on classroom.google.com."""
+    user_id = _classroom_user_id(clerk_user)
+    assignment = _get_owned_assignment(db, assignment_id, user_id)
+    submission = db.query(Submission).filter(
+        Submission.assignment_id == assignment_id,
+        Submission.user_id == user_id,
+    ).first()
+    if not submission:
+        submission = Submission(assignment_id=assignment_id, user_id=user_id)
+        db.add(submission)
+
+    submission.submission_state = SubmissionState.TURNED_IN
+    submission.submitted_at = datetime.now(timezone.utc)
+    submission.approved_by_user = True
+    submission.approved_at = datetime.now(timezone.utc)
+    assignment.submission_state = SubmissionState.TURNED_IN
+    assignment.status = AssignmentStatus.SUBMITTED
+    db.commit()
+    return {"success": True, "assignment_id": assignment_id, "status": "SUBMITTED", "submission_state": "TURNED_IN"}
+
+
+@router.post("/assignments/{assignment_id}/solution/email", response_model=dict)
+def email_solution_manually(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Manually send/resend the generated solution and attached files to the user's selected email."""
+    user_id = _classroom_user_id(clerk_user)
+    from app.services.email import send_solution_delivery_email
+    from app.services.alert_service import get_user_recipient_email
+
+    recipient = get_user_recipient_email(db, user_id)
+    if not recipient:
+        raise HTTPException(status_code=400, detail="No verified recipient email found in your profile or settings.")
+
+    sent = send_solution_delivery_email(db, assignment_id, user_id)
+    if not sent:
+        raise HTTPException(status_code=500, detail="Failed to send solution email. Ensure a solution has been generated.")
+
+    return {"success": True, "recipient": recipient, "message": f"Solution and deliverables emailed to {recipient}!"}
 
 
 @router.get("/courses/{course_id}/auto-turn-in", response_model=dict)
@@ -1966,12 +1932,14 @@ def get_course_auto_turn_in(
     enabled = False
     minutes_before = 60
     submit_when_ready = False
+    attach_when_ready = False
     if setting and setting.value:
         try:
             val = json.loads(setting.value)
             enabled = bool(val.get("enabled", False))
             minutes_before = int(val.get("minutes_before", 60))
             submit_when_ready = bool(val.get("submit_when_ready", False))
+            attach_when_ready = bool(val.get("attach_when_ready", False))
         except Exception:
             enabled = setting.value.lower() == "true"
 
@@ -1994,6 +1962,7 @@ def get_course_auto_turn_in(
         "enabled": enabled,
         "minutes_before": minutes_before,
         "submit_when_ready": submit_when_ready,
+        "attach_when_ready": attach_when_ready,
         "last_run": (latest_submission.submitted_at or latest_submission.created_at) if latest_submission else None,
         "last_result": {
             "status": getattr(latest_submission.submission_state, "value", latest_submission.submission_state),
@@ -2011,12 +1980,12 @@ def update_course_auto_turn_in(
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """
-    Enable or disable auto turn-in strictly for this specific course.
-    Automatically turns in before 60 minutes to deadline.
+    Enable or disable auto turn-in or auto attachment strictly for this specific course.
+    Automatically turns in before configured minutes to deadline or when ready.
     """
     user_id = _classroom_user_id(clerk_user)
-    if (payload.enabled or payload.submit_when_ready) and payload.confirm_submission is not True:
-        raise HTTPException(status_code=400, detail="Confirm that you want Claude-generated deliverables submitted automatically for this course.")
+    if (payload.enabled or payload.submit_when_ready or payload.attach_when_ready) and payload.confirm_submission is not True:
+        raise HTTPException(status_code=400, detail="Confirm that you want Claude-generated deliverables submitted or attached automatically for this course.")
     course = db.query(Course).filter(Course.id == course_id, Course.user_id == user_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
@@ -2026,6 +1995,7 @@ def update_course_auto_turn_in(
     setting_val = {
         "enabled": payload.enabled,
         "submit_when_ready": payload.submit_when_ready,
+        "attach_when_ready": payload.attach_when_ready,
         "minutes_before": payload.minutes_before,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "course_id": course_id,
@@ -2234,12 +2204,18 @@ def generate_assignment_solution(
                         asg.status = AssignmentStatus.FAILED
                     sync_db.commit()
                 elif result.get("status") == "completed":
+                    # 1. Immediately deliver solution and files to student's email
+                    try:
+                        from app.services.email import send_solution_delivery_email
+                        send_solution_delivery_email(sync_db, assignment_id, user_id)
+                    except Exception as mail_err:
+                        logger.warning("Could not dispatch auto-solution email for assignment %s: %s", assignment_id, mail_err)
+
+                    # 2. Check if student opted in to auto-submission/attachment on dashboard
                     try:
                         submission_result = auto_turn_in_completed_solution(sync_db, assignment_id, user_id)
-                        if submission_result and submission_result.get("needs_browser_login"):
-                            logger.warning("Auto turn-in for assignment %s is waiting for Classroom browser login.", assignment_id)
-                        elif submission_result and submission_result.get("success"):
-                            logger.info("Auto turn-in completed for assignment %s: %s", assignment_id, submission_result)
+                        if submission_result and submission_result.get("success"):
+                            logger.info("Auto submission/attachment completed for assignment %s: %s", assignment_id, submission_result)
                     except Exception:
                         logger.exception("Auto turn-in after solution generation failed for assignment %s", assignment_id)
             else:
@@ -2284,8 +2260,12 @@ def open_claude_browser(clerk_user: Optional[dict] = Depends(get_current_user_op
 
 @router.post("/gcr-browser/open", response_model=dict)
 def open_google_classroom_browser(clerk_user: Optional[dict] = Depends(get_current_user_optional)):
-    """Start this user's isolated persistent Google Classroom browser profile."""
-    return BrowserSessionClient.classroom().open(_classroom_user_id(clerk_user))
+    """Classroom automation is handled natively via Unpacked Extension; server browser retired."""
+    return {
+        "success": True,
+        "extension_managed": True,
+        "message": "Google Classroom is managed via your Uniflow Companion Extension in your authenticated Chrome browser.",
+    }
 
 
 @router.get("/gcr-browser/status", response_model=dict)
@@ -2293,25 +2273,34 @@ def get_google_classroom_browser_status(
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
-    """Return this user's Google Classroom browser state without exposing CDP details."""
+    """Return this user's Google Classroom companion extension readiness status."""
     user_id = _classroom_user_id(clerk_user)
-    result = BrowserSessionClient.classroom().status(user_id)
     cookie_setting = db.query(Setting).filter(
         Setting.key == f"classroom:{user_id}:google_session_cookies"
     ).first()
     has_synced_session = bool(cookie_setting and cookie_setting.value)
     return {
-        "active": bool(result.get("active")),
-        "profile_exists": bool(result.get("profile_exists")),
-        "viewer_url": result.get("viewer_url"),
+        "active": False,
+        "profile_exists": has_synced_session,
+        "viewer_url": None,
         "has_synced_session": has_synced_session,
+        "extension_managed": True,
     }
 
 
 @router.delete("/gcr-browser/profile", response_model=dict)
-def delete_google_classroom_browser_profile(clerk_user: Optional[dict] = Depends(get_current_user_optional)):
-    """Stop and delete this user's saved Google Classroom browser session."""
-    BrowserSessionClient.classroom().delete_profile(_classroom_user_id(clerk_user))
+def delete_google_classroom_browser_profile(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Delete this user's saved Google Classroom session cookies."""
+    user_id = _classroom_user_id(clerk_user)
+    cookie_setting = db.query(Setting).filter(
+        Setting.key == f"classroom:{user_id}:google_session_cookies"
+    ).first()
+    if cookie_setting:
+        db.delete(cookie_setting)
+        db.commit()
     return {"profile_deleted": True}
 
 
