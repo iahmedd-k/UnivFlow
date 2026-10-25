@@ -7,8 +7,10 @@ from app.core.config import settings
 from app.db.base import Base
 from app import models  # noqa: F401  (ensure models are registered on Base.metadata)
 
-config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+_alembic_url = settings.database_url
+if _alembic_url.startswith("postgres://"):
+    _alembic_url = _alembic_url.replace("postgres://", "postgresql://", 1)
+config.set_main_option("sqlalchemy.url", _alembic_url.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
