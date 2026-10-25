@@ -572,15 +572,38 @@ export default function SolutionPanel({ assignment }) {
             </button>
             <button
               type="button"
-              onClick={connectClassroomBrowser}
-              disabled={classroomBrowserBusy}
+              onClick={handleAttachDraft}
+              disabled={attachingDraft || (!hasContent && isGenerating)}
               className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg border border-line bg-white px-3.5 text-xs font-semibold text-ink shadow-sm transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
-              title="Open your isolated Google Classroom sign-in browser"
+              style={{ cursor: 'pointer' }}
+              title="Attach Google Doc and deliverables ZIP to Google Classroom as a draft without submitting"
             >
-              <Icon name="externalLink" size={13} />
-              <span>{classroomBrowserBusy ? 'Starting browser…' : 'Sign in to Google Classroom'}</span>
+              <Icon name="fileText" size={13} />
+              <span>{attachingDraft ? 'Attaching draft…' : '📎 Attach Draft (GCR)'}</span>
             </button>
-            <HostedBrowserDialog url={classroomViewerUrl} onClose={() => setClassroomViewerUrl('')} />
+            <button
+              type="button"
+              onClick={handleEmailSolution}
+              disabled={emailingSolution || (!hasContent && isGenerating)}
+              className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg border border-line bg-white px-3.5 text-xs font-semibold text-ink shadow-sm transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
+              style={{ cursor: 'pointer' }}
+              title="Email the solution report and deliverables ZIP to your verified address"
+            >
+              <Icon name="mail" size={13} />
+              <span>{emailingSolution ? 'Sending email…' : '📧 Email Deliverables'}</span>
+            </button>
+            {(assignment?.alternate_link || assignment?.classroom_url) && (
+              <a
+                href={assignment.alternate_link || assignment.classroom_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg border border-line bg-white px-3.5 text-xs font-semibold text-ink shadow-sm transition hover:bg-paper"
+                title="Open this assignment in Google Classroom"
+              >
+                <Icon name="externalLink" size={13} />
+                <span>Open in Classroom</span>
+              </a>
+            )}
 
             {loading ? (
               <span className="inline-flex items-center rounded-full border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-muted">Checking status…</span>
