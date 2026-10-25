@@ -14,6 +14,10 @@ class Settings(BaseSettings):
 
     # Application
     project_name: str = "Uniflow"
+    app_name: str = Field(
+        default="Uniflow",
+        validation_alias=AliasChoices("app_name", "APP_NAME", "project_name", "PROJECT_NAME"),
+    )
     app_version: str = "1.0.0"
     environment: str = "development"
     debug: bool = False
