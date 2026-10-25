@@ -1,9 +1,11 @@
 import type { ApiError } from "./types";
 
 const RAW_BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ||
-  (import.meta.env.VITE_API_URL as string | undefined) ||
-  "";
+  process.env.NEXT_PUBLIC_API_URL ||
+  process.env.NEXT_PUBLIC_API_BASE_URL ||
+  (process.env.NODE_ENV === "production"
+    ? "https://univlfow.koreacentral.cloudapp.azure.com/api/v1"
+    : "http://localhost:8000/api/v1");
 
 const cleanRaw = RAW_BASE_URL.trim().replace(/\/+$/, "");
 const BASE_URL = cleanRaw
