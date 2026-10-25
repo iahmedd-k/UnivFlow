@@ -21,7 +21,10 @@ EMBEDDING_DIMENSION = 768
 
 
 def upgrade() -> None:
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    try:
+        op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    except Exception:
+        pass
 
     op.create_table(
         "document_chunks",

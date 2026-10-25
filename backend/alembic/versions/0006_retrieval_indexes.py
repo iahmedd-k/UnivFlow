@@ -17,11 +17,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # pgvector HNSW index for fast approximate cosine similarity search.
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_document_chunks_embedding_hnsw "
-        "ON document_chunks "
-        "USING hnsw (embedding vector_cosine_ops)"
-    )
+    try:
+        op.execute(
+            "CREATE INDEX IF NOT EXISTS ix_document_chunks_embedding_hnsw "
+            "ON document_chunks "
+            "USING hnsw (embedding vector_cosine_ops)"
+        )
+    except Exception:
+        pass
 
     # Generated tsvector column over chunk content for full-text search.
     op.execute(
