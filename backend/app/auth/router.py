@@ -136,12 +136,14 @@ def _get_frontend_origin(request: Optional[Request] = None, state_origin: Option
     """Resolve only an explicitly configured frontend origin for OAuth redirects."""
     canonical_origin = "https://univ-flow-bt12.vercel.app"
     configured_origins = {canonical_origin}
+    primary_origin = None
     if settings.frontend_url:
         frontend = urlsplit(settings.frontend_url)
         browser_viewer = urlsplit(settings.browser_viewer_base_url)
         same_as_backend_host = bool(frontend.netloc and browser_viewer.netloc and frontend.netloc == browser_viewer.netloc)
         if frontend.scheme in {"http", "https"} and frontend.netloc and not same_as_backend_host:
-            configured_origins.add(f"{frontend.scheme}://{frontend.netloc}".rstrip("/"))
+            primary_origin = f"{frontend.scheme}://{frontend.netloc}".rstrip("/")
+            configured_origins.add(primary_origin)
     cors_entries = settings.cors_origins if isinstance(settings.cors_origins, list) else (settings.cors_origins or "").split(",")
     configured_origins.update(
         str(origin).strip().rstrip("/")
@@ -161,7 +163,7 @@ def _get_frontend_origin(request: Optional[Request] = None, state_origin: Option
             candidate = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
             if candidate in configured_origins:
                 return candidate
-    return next((origin for origin in configured_origins if origin != canonical_origin), canonical_origin)
+    return primary_origin or canonical_origin
 
 
 def _oauth_frontend_redirect(

@@ -1830,7 +1830,11 @@ def auto_turn_in_completed_solution(db: Session, assignment_id: int, user_id: st
     solution = db.query(AssignmentSolution).filter(
         AssignmentSolution.assignment_id == assignment_id
     ).first()
-    if not solution or not (solution.validated_content or solution.draft_content):
+    if not solution:
+        return None
+    if submit_when_ready and not solution.validated_content:
+        return None
+    if not (solution.validated_content or solution.draft_content):
         return None
 
     existing_submission = db.query(Submission).filter(
