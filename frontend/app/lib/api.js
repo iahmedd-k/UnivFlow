@@ -54,8 +54,17 @@ export async function fetchFromApi(endpoint, token = null, options = {}) {
     ...(options.headers || {}),
   };
 
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+  let authToken = token;
+  if (!authToken && typeof window !== 'undefined' && window.Clerk?.session?.getToken) {
+    try {
+      authToken = await window.Clerk.session.getToken();
+    } catch {
+      // anonymous or session pending
+    }
+  }
+
+  if (authToken) {
+    headers['Authorization'] = `Bearer ${authToken}`;
   }
 
   // Automatic retry with exponential backoff for network resilience
@@ -553,3 +562,17 @@ export const api = {
   },
 
 };
+
+export const getRagDocuments = api.getRagDocuments;
+export const uploadRagDocument = api.uploadRagDocument;
+export const getRagDocumentStatus = api.getRagDocumentStatus;
+export const deleteRagDocument = api.deleteRagDocument;
+export const ragChat = api.ragChat;
+export const ragChatStream = api.ragChatStream;
+export const ragSearch = api.ragSearch;
+export const getRagConversations = api.getRagConversations;
+export const createRagConversation = api.createRagConversation;
+export const getRagConversation = api.getRagConversation;
+export const updateRagConversation = api.updateRagConversation;
+export const deleteRagConversation = api.deleteRagConversation;
+export const getRagUsage = api.getRagUsage;
