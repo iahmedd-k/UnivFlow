@@ -53,6 +53,9 @@ jobs:
         run: python -c "from app.main import app; assert app"
       - name: Run backend tests
         working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/univflow
+          SECRET_KEY: ci-test-check-only
         run: python -m pytest -q tests/
 
   container-build-checks:

@@ -142,10 +142,11 @@ def _get_frontend_origin(request: Optional[Request] = None, state_origin: Option
         same_as_backend_host = bool(frontend.netloc and browser_viewer.netloc and frontend.netloc == browser_viewer.netloc)
         if frontend.scheme in {"http", "https"} and frontend.netloc and not same_as_backend_host:
             configured_origins.add(f"{frontend.scheme}://{frontend.netloc}".rstrip("/"))
+    cors_entries = settings.cors_origins if isinstance(settings.cors_origins, list) else (settings.cors_origins or "").split(",")
     configured_origins.update(
-        origin.strip().rstrip("/")
-        for origin in (settings.cors_origins or "").split(",")
-        if origin.strip().startswith(("https://", "http://"))
+        str(origin).strip().rstrip("/")
+        for origin in cors_entries
+        if str(origin).strip().startswith(("https://", "http://"))
     )
 
     if state_origin and state_origin.rstrip("/") in configured_origins:

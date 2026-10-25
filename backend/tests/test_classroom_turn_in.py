@@ -341,7 +341,7 @@ def test_check_and_execute_course_auto_turn_in_strictly_scopes_to_course(monkeyp
     monkeypatch.setattr(
         classroom_mod,
         "execute_quick_turn_in",
-        lambda _db, a_id, u_id: turn_in_calls.append(a_id) or {"success": True, "assignment_id": a_id}
+        lambda _db, a_id, u_id, **_kwargs: turn_in_calls.append(a_id) or {"success": True, "assignment_id": a_id}
     )
 
     results = check_and_execute_course_auto_turn_in(db, course_id=10, user_id=user_id)
@@ -379,7 +379,7 @@ def test_auto_turn_in_completed_solution_requires_opt_in_validated_content_and_o
     monkeypatch.setattr(
         sys.modules["app.classroom.router"],
         "execute_quick_turn_in",
-        lambda _db, assignment_id, _user_id: calls.append(assignment_id) or {"success": True},
+        lambda _db, assignment_id, _user_id, **_kwargs: calls.append(assignment_id) or {"success": True},
     )
 
     assert auto_turn_in_completed_solution(db, assignment.id, user_id) is None
