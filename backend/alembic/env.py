@@ -7,6 +7,8 @@ from app.core.config import settings
 from app.db.base import Base
 from app import models  # noqa: F401  (ensure models are registered on Base.metadata)
 
+config = context.config
+
 _alembic_url = settings.database_url
 if _alembic_url.startswith("postgres://"):
     _alembic_url = _alembic_url.replace("postgres://", "postgresql://", 1)
