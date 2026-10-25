@@ -128,4 +128,4 @@ backend/scratch_test_*.py
 backend/test_drawio_pipeline.py
 backend/tmp_*.db
 TestAssignments/
-
+docsense/

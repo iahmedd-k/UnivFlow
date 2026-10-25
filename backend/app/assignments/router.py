@@ -89,25 +89,8 @@ def list_assignments(
             pass
     user_id = _authenticated_user_id(clerk_user)
     if not since_dt:
-        sem_setting = db.query(Setting).filter(
-            Setting.key == f"classroom:{user_id}:semester_start_date"
-        ).first()
-        if sem_setting and sem_setting.value:
-            try:
-                val = sem_setting.value.strip().replace('"', '')
-                if len(val) == 10:
-                    since_dt = datetime.fromisoformat(f"{val}T00:00:00+00:00")
-                else:
-                    since_dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
-            except Exception:
-                pass
-    if not since_dt:
-        now = datetime.now(timezone.utc)
-        year = now.year
-        if now.month >= 8:
-            since_dt = datetime(year, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
-        else:
-            since_dt = datetime(year, 2, 1, 0, 0, 0, tzinfo=timezone.utc)
+        from app.core.user_settings import get_semester_start_date
+        since_dt = get_semester_start_date(db, user_id=user_id)
 
     query = (
         db.query(Assignment, Course, Submission)

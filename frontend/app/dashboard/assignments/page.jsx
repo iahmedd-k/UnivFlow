@@ -17,9 +17,27 @@ const statusFilters = [
 ];
 
 export default function AssignmentsPage() {
-  const { getToken } = useAuth();
-  const [assignments, setAssignments] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { getToken, userId } = useAuth();
+  const cacheKey = `uniflow_cached_assignments_${userId || 'default'}`;
+
+  const [assignments, setAssignments] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const cached = localStorage.getItem('uniflow_cached_assignments');
+        if (cached) return JSON.parse(cached);
+      } catch (_) {}
+    }
+    return [];
+  });
+  const [loading, setLoading] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const cached = localStorage.getItem('uniflow_cached_assignments');
+        if (cached && JSON.parse(cached).length > 0) return false;
+      } catch (_) {}
+    }
+    return true;
+  });
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState('all');
   const [selectedCourse, setSelectedCourse] = useState('all');
@@ -32,13 +50,19 @@ export default function AssignmentsPage() {
 
   const loadAssignments = useCallback(async (isManualRefresh = false) => {
     if (isManualRefresh) setRefreshing(true);
-    else setLoading(true);
+    else if (!assignments.length) setLoading(true);
     try {
       const token = getToken ? await getToken() : null;
       const data = await api.getAssignments(filter === 'all' ? null : filter, token, null, {
         noCache: isManualRefresh,
       });
-      setAssignments(Array.isArray(data) ? data : []);
+      const list = Array.isArray(data) ? data : [];
+      setAssignments(list);
+      if (filter === 'all' && list.length > 0 && typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify(list));
+        } catch (_) {}
+      }
       setError(null);
     } catch (e) {
       setError(e.message || 'Unable to connect to the assignment service.');
@@ -46,25 +70,51 @@ export default function AssignmentsPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [getToken, filter]);
+  }, [getToken, filter, assignments.length, cacheKey]);
 
   const handleSyncClassroom = async () => {
     setRefreshing(true);
     setError(null);
     try {
       const token = await getToken();
-      const result = await api.syncStudyMaterials(token);
+      // Directly sync from Google Classroom API - returns latest live data immediately
+      const result = await api.triggerSync(null, token);
       api.clearCache();
-      await loadAssignments(true);
+      
+      if (result?.assignments && Array.isArray(result.assignments)) {
+        // Instantly display the fresh GCR data on the frontend
+        setAssignments(result.assignments);
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem(cacheKey, JSON.stringify(result.assignments));
+          } catch (_) {}
+        }
+      } else {
+        await loadAssignments(true);
+      }
+
       if (result?.status === 'reconnect_required') {
         setError(result.message || 'Google Classroom needs to be reconnected to sync coursework.');
-      } else if (result?.status !== 'success') {
-        setError(result?.error || 'Some coursework could not be synced.');
       }
     } catch (err) {
-      setError(err.message || 'Could not sync from Google Classroom.');
+      const msg = err.message || '';
+      if (msg.includes('invalid_grant') || msg.includes('expired or revoked')) {
+        setError('Your Google Classroom token has expired. Please reconnect your Google account.');
+      } else {
+        setError(msg || 'Could not sync from Google Classroom.');
+      }
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const handleConnectGoogle = async () => {
+    try {
+      const token = await getToken();
+      const res = await api.getGoogleAuthUrl(token, '/dashboard/assignments');
+      if (res?.auth_url) window.location.assign(res.auth_url);
+    } catch (e) {
+      setError(e.message || 'Could not initiate Google connection.');
     }
   };
 
@@ -321,14 +371,33 @@ export default function AssignmentsPage() {
 
       {/* Error Callout */}
       {error && (
-        <div className="flex items-center justify-between gap-2.5 rounded-lg border border-rose-border bg-rose-bg px-3 py-2.5 text-xs text-rose" role="alert">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-xs text-rose" role="alert">
           <div>
-            <strong className="block font-semibold">Assignments could not be loaded</strong>
-            <span>{error}</span>
+            <strong className="block font-semibold">
+              {error.toLowerCase().includes('reconnect') || error.toLowerCase().includes('expired')
+                ? 'Google Classroom session expired'
+                : 'Assignments could not be loaded'}
+            </strong>
+            <span className="mt-0.5 block">{error}</span>
           </div>
-          <button type="button" onClick={() => loadAssignments(true)} className="inline-flex min-h-9 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-input bg-surface px-3 text-xs font-semibold text-nav hover:bg-surface-secondary">
-            Try again
-          </button>
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            {(error.toLowerCase().includes('reconnect') || error.toLowerCase().includes('expired') || error.toLowerCase().includes('revoked')) && (
+              <button
+                type="button"
+                onClick={handleConnectGoogle}
+                className="inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-md bg-rose px-3 text-xs font-semibold text-white hover:opacity-90"
+              >
+                Reconnect Google
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => loadAssignments(true)}
+              className="inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-input bg-surface px-3 text-xs font-semibold text-nav hover:bg-surface-secondary"
+            >
+              Try again
+            </button>
+          </div>
         </div>
       )}
 

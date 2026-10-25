@@ -350,6 +350,55 @@ def _alert_user_ids(db):
     )
 
 
+def _reap_zombie_sync_jobs():
+    """Detect and reset background sync jobs that died due to server restarts or timeouts."""
+    db = SessionLocal()
+    try:
+        import json
+        from datetime import datetime, timezone, timedelta
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
+
+        # 1. Clean zombie classroom sync statuses
+        classroom_statuses = db.query(Setting).filter(Setting.key.like("classroom:%:sync_status")).all()
+        for s in classroom_statuses:
+            try:
+                data = json.loads(s.value or "{}")
+                if data.get("status") == "running":
+                    started_str = data.get("started_at")
+                    if started_str:
+                        started_dt = datetime.fromisoformat(started_str.replace("Z", "+00:00"))
+                        if started_dt < cutoff:
+                            data["status"] = "timed_out"
+                            data["error"] = "Sync job timed out or worker process restarted."
+                            data["finished_at"] = datetime.now(timezone.utc).isoformat()
+                            s.value = json.dumps(data)
+                            logger.info(f"[Scheduler] Reaped zombie classroom sync for setting {s.key}")
+            except Exception as e:
+                logger.warning(f"[Scheduler] Error parsing sync status for {s.key}: {e}")
+
+        # 2. Clean zombie portal sync jobs
+        from app.db.models import PortalSyncJob
+        try:
+            zombie_portal_jobs = db.query(PortalSyncJob).filter(
+                PortalSyncJob.status == "running",
+                PortalSyncJob.started_at < cutoff
+            ).all()
+            for job in zombie_portal_jobs:
+                job.status = "failed"
+                job.error = "Portal sync timed out or worker process restarted."
+                job.completed_at = datetime.now(timezone.utc)
+                logger.info(f"[Scheduler] Reaped zombie portal job {job.job_id}")
+        except Exception:
+            pass
+
+        db.commit()
+    except Exception as e:
+        logger.warning(f"[Scheduler] Zombie reaper error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def start_scheduler():
     """Initialize and start background automated sync and alert jobs"""
     try:
@@ -477,6 +526,18 @@ def start_scheduler():
             IntervalTrigger(minutes=15),
             id="retry_failed_notifications",
             name="Retry Failed Notifications (Every 15m)",
+            replace_existing=True,
+            misfire_grace_time=60,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # 11. Zombie Sync Job Reaper: Clean up hung/interrupted tasks every 10 minutes
+        scheduler.add_job(
+            _reap_zombie_sync_jobs,
+            IntervalTrigger(minutes=10),
+            id="reap_zombie_sync_jobs",
+            name="Zombie Background Job Reaper (Every 10m)",
             replace_existing=True,
             misfire_grace_time=60,
             max_instances=1,

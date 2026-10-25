@@ -174,3 +174,82 @@ def get_rate_limit_remaining(key: str, limit: int, window_seconds: int) -> int:
         return max(0, limit - current_count)
     except UpstashRedisError:
         return limit
+
+
+import threading
+import uuid
+
+_in_memory_locks: dict[str, threading.Lock] = {}
+_in_memory_lock_mutex = threading.Lock()
+
+
+def _get_in_memory_lock(key: str) -> threading.Lock:
+    with _in_memory_lock_mutex:
+        if key not in _in_memory_locks:
+            _in_memory_locks[key] = threading.Lock()
+        return _in_memory_locks[key]
+
+
+class DistributedLock:
+    """Distributed lock that synchronizes across worker processes via Redis,
+    falling back to in-memory threading.Lock when Redis is not available."""
+
+    def __init__(self, key: str, ttl_seconds: int = 300):
+        self.key = key
+        self.ttl_seconds = ttl_seconds
+        self.token = uuid.uuid4().hex
+        self.is_redis = False
+        self._acquired = False
+
+    def acquire(self, blocking: bool = True) -> bool:
+        if is_configured():
+            try:
+                acquired = acquire_lock(self.key, self.token, self.ttl_seconds)
+                if acquired:
+                    self.is_redis = True
+                    self._acquired = True
+                    return True
+                if not blocking:
+                    return False
+            except UpstashRedisError as err:
+                logger.warning(f"Redis lock request failed, falling back to in-memory: {err}")
+
+        # In-memory fallback
+        mem_lock = _get_in_memory_lock(self.key)
+        acquired = mem_lock.acquire(blocking=blocking)
+        self._acquired = acquired
+        return acquired
+
+    def release(self) -> None:
+        if not self._acquired:
+            return
+        if self.is_redis:
+            try:
+                release_lock(self.key, self.token)
+            except UpstashRedisError as err:
+                logger.warning(f"Failed to release Redis lock {self.key}: {err}")
+        else:
+            mem_lock = _get_in_memory_lock(self.key)
+            if mem_lock.locked():
+                try:
+                    mem_lock.release()
+                except RuntimeError:
+                    pass
+        self._acquired = False
+
+    def locked(self) -> bool:
+        return self._acquired
+
+    def __enter__(self):
+        self.acquire(blocking=True)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.release()
+
+
+def get_user_lock(resource: str, user_id: str, ttl_seconds: int = 300) -> DistributedLock:
+    """Acquire a distributed lock across processes/workers with graceful in-memory fallback."""
+    key = f"lock:{resource}:{user_id}"
+    return DistributedLock(key, ttl_seconds=ttl_seconds)
+

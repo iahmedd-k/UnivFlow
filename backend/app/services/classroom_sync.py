@@ -332,6 +332,98 @@ class ClassroomSyncService:
         self._save_semester_start_date(derived)
         return derived
 
+    def fast_sync_assignments(self, since_date: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """Direct live GCR fetch: immediately calls Google Classroom API for courses,
+        coursework, and student submission states. Persists them directly to the DB
+        without waiting for heavy Drive downloads or S3 uploads, and returns the full
+        assignments list for immediate UI rendering."""
+        if not self.service:
+            return []
+
+        if since_date is None:
+            since_date = self._get_configured_since_date()
+        elif since_date.tzinfo is None:
+            since_date = since_date.replace(tzinfo=timezone.utc)
+
+        courses = self._get_all_courses()
+        for course in courses:
+            try:
+                course_id = course["id"]
+                self._sync_course(course, is_active=True)
+                self._sync_coursework(course_id, since_date=since_date, skip_drive_download=True)
+                self._sync_student_submission_states(course_id)
+            except Exception as e:
+                err_str = str(e)
+                if "invalid_grant" in err_str or "expired or revoked" in err_str:
+                    raise
+                logger.warning(f"Fast coursework sync error for {course.get('id')}: {e}")
+
+        self.db.commit()
+        return self._get_assignments_for_user(since_date=since_date)
+
+    def _get_assignments_for_user(self, since_date: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """Query and format the user's active semester coursework from DB for immediate UI presentation."""
+        from app.db.models import Course, Assignment, Submission, AssignmentMaterial
+        from sqlalchemy import func
+
+        query = (
+            self.db.query(Assignment, Course, Submission)
+            .outerjoin(Course, Assignment.course_id == Course.id)
+            .outerjoin(Submission, Submission.assignment_id == Assignment.id)
+            .filter(
+                Assignment.user_id == self.user_id,
+                Course.user_id == self.user_id,
+                (Assignment.work_type.is_(None))
+                | (~func.upper(Assignment.work_type).in_(("MATERIAL", "ANNOUNCEMENT"))),
+            )
+        )
+        if since_date:
+            query = query.filter(
+                (Assignment.due_at >= since_date) | 
+                (Assignment.due_at.is_(None) & (Assignment.created_at >= since_date))
+            )
+
+        results = query.order_by(Assignment.due_at.asc().nullslast()).all()
+        if not results:
+            return []
+
+        assignment_ids = [a.id for a, c, s in results]
+        materials_by_assignment = {}
+        if assignment_ids:
+            mats = self.db.query(AssignmentMaterial).filter(AssignmentMaterial.assignment_id.in_(assignment_ids)).all()
+            for m in mats:
+                materials_by_assignment.setdefault(m.assignment_id, []).append({
+                    "id": m.id,
+                    "material_type": m.material_type,
+                    "title": m.title or "Attachment",
+                    "url": m.url,
+                    "drive_file_id": m.drive_file_id,
+                    "mime_type": m.mime_type,
+                })
+
+        output = []
+        for a, c, submission in results:
+            output.append({
+                "id": a.id,
+                "external_id": a.external_id,
+                "course_id": a.course_id,
+                "course_name": c.name if c else "General Course",
+                "course_code": (c.name.split()[0] if c and c.name else ""),
+                "title": a.title,
+                "work_type": a.work_type,
+                "is_quiz": a.is_quiz,
+                "description": a.description,
+                "materials": materials_by_assignment.get(a.id, []),
+                "due_at": a.due_at.isoformat() if a.due_at else (a.due_date.isoformat() if a.due_date else None),
+                "due_date": a.due_date.isoformat() if a.due_date else None,
+                "url": a.url,
+                "state": a.state.value if a.state else None,
+                "submission_state": a.submission_state.value if a.submission_state else None,
+                "status": a.status.value if a.status else (submission.submission_state.value if submission and submission.submission_state else "pending"),
+                "google_doc_id": submission.google_doc_id if submission else None,
+            })
+        return output
+
     def sync_all(self, since_date: Optional[datetime] = None) -> Dict[str, Any]:
         """Sync all Classroom data from the given since_date / semester start onwards"""
         if not self.service:
@@ -655,7 +747,7 @@ class ClassroomSyncService:
             pass
         return ""
 
-    def _sync_coursework(self, course_id: str, since_date: Optional[datetime] = None) -> int:
+    def _sync_coursework(self, course_id: str, since_date: Optional[datetime] = None, skip_drive_download: bool = False) -> int:
         """Sync coursework (assignments) for a course, skipping items older than since_date"""
         course = self.db.query(Course).filter(
             Course.external_id == course_id,
@@ -704,7 +796,7 @@ class ClassroomSyncService:
                         if not due_at and not (created_dt and created_dt >= since_date):
                             continue
 
-                    self._sync_assignment(course.id, work)
+                    self._sync_assignment(course.id, work, skip_drive_download=skip_drive_download)
                     count += 1
 
                 page_token = response.get("nextPageToken")
@@ -721,7 +813,7 @@ class ClassroomSyncService:
 
         return count
 
-    def _sync_assignment(self, course_db_id: int, work: Dict) -> Assignment:
+    def _sync_assignment(self, course_db_id: int, work: Dict, skip_drive_download: bool = False) -> Assignment:
         """Sync a single assignment"""
         repo = AssignmentRepository(self.db)
 
@@ -759,7 +851,7 @@ class ClassroomSyncService:
                 setattr(existing, key, value)
             existing.updated_at = datetime.now(timezone.utc)
             self.db.commit()
-            self._sync_materials(existing.id, work.get("materials", []), default_title=work.get("title", ""))
+            self._sync_materials(existing.id, work.get("materials", []), default_title=work.get("title", ""), skip_drive_download=skip_drive_download)
             if not work.get("materials") and work.get("description"):
                 from app.db.repositories import AssignmentMaterialRepository
                 mat_repo = AssignmentMaterialRepository(self.db)
@@ -783,7 +875,7 @@ class ClassroomSyncService:
             )
             assignment = repo.create(assignment_dict)
             self._new_assignments[assignment.id] = created_at
-            self._sync_materials(assignment.id, work.get("materials", []), default_title=work.get("title", ""))
+            self._sync_materials(assignment.id, work.get("materials", []), default_title=work.get("title", ""), skip_drive_download=skip_drive_download)
             if not work.get("materials") and work.get("description"):
                 from app.db.repositories import AssignmentMaterialRepository
                 mat_repo = AssignmentMaterialRepository(self.db)
@@ -1087,7 +1179,7 @@ class ClassroomSyncService:
                 logger.warning(f"Could not sync announcements for course {course_id}: {error}")
                 return count
 
-    def _sync_materials(self, assignment_db_id: int, materials: List[Dict], default_title: str = ""):
+    def _sync_materials(self, assignment_db_id: int, materials: List[Dict], default_title: str = "", skip_drive_download: bool = False):
         """Sync assignment materials, extracting Drive file text when possible."""
         from app.db.repositories import AssignmentMaterialRepository
 
@@ -1096,7 +1188,7 @@ class ClassroomSyncService:
         existing = repo.get_by_assignment(assignment_db_id)
         by_drive_id = {m.drive_file_id: m for m in existing if m.drive_file_id}
         by_identity = {(m.material_type, (m.title or "").strip().lower()): m for m in existing if not m.drive_file_id}
-        drive_service = self._get_drive_service()
+        drive_service = None if skip_drive_download else self._get_drive_service()
 
         for mat in materials:
             drive_file = mat.get("driveFile", {}).get("driveFile", {}) if mat.get("driveFile") else {}
@@ -1111,7 +1203,7 @@ class ClassroomSyncService:
             # Classroom attachment objects omit version metadata. Read lightweight
             # Drive metadata first, then download/export only when its version changed.
             metadata = {}
-            if drive_service and drive_file_id:
+            if not skip_drive_download and drive_service and drive_file_id:
                 try:
                     metadata = drive_service.files().get(
                         fileId=drive_file_id,
@@ -1147,12 +1239,12 @@ class ClassroomSyncService:
                 )
             )
             has_cached_copy = bool(existing_row and (existing_row.storage_key or existing_row.content))
-            cache_hit = has_cached_copy and (same_version or not metadata)
+            cache_hit = (has_cached_copy and (same_version or not metadata)) or skip_drive_download
 
-            storage_key = existing_row.storage_key if cache_hit else None
+            storage_key = existing_row.storage_key if cache_hit and existing_row else None
             file_size = metadata.get("size")
             raw_data = None
-            if not cache_hit and drive_service and drive_file_id and metadata:
+            if not cache_hit and not skip_drive_download and drive_service and drive_file_id and metadata:
                 try:
                     # Google's native documents are kept as PDF exports, while
                     # uploaded PDFs, images, Office files, and other attachments
@@ -1169,7 +1261,7 @@ class ClassroomSyncService:
 
             # Extract text from the same binary download whenever possible, so
             # changed PDF/Office/text uploads need one media request, not two.
-            if not cache_hit and drive_service and drive_file_id and mime_type and (
+            if not cache_hit and not skip_drive_download and drive_service and drive_file_id and mime_type and (
                 mime_type == "application/vnd.google-apps.document"
                 or mime_type == "application/vnd.google-apps.presentation"
                 or mime_type == "application/vnd.google-apps.spreadsheet"

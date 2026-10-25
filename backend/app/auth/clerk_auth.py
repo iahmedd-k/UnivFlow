@@ -75,7 +75,8 @@ def verify_clerk_token(token: str) -> Dict[str, Any]:
                 token,
                 key=public_key,
                 algorithms=["RS256"],
-                options={"verify_aud": False}
+                options={"verify_aud": False, "verify_iat": False},
+                leeway=120,
             )
             return payload
 

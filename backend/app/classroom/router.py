@@ -63,40 +63,14 @@ def _get_owned_assignment(db: Session, assignment_id: int, user_id: str) -> Assi
     return assignment
 
 
-def _get_user_lock(user_id: str) -> threading.Lock:
-    with _sync_lock_mutex:
-        if user_id not in _classroom_sync_locks:
-            _classroom_sync_locks[user_id] = threading.Lock()
-        return _classroom_sync_locks[user_id]
+def _get_user_lock(user_id: str):
+    from app.core.redis import get_user_lock
+    return get_user_lock("classroom_sync", user_id, ttl_seconds=300)
 
 
 def _get_semester_start_dt(db: Session, override: Optional[str] = None, user_id: str = "default") -> datetime:
-    val = override
-    if not val:
-        setting_key = (
-            f"classroom:{user_id}:semester_start_date"
-            if user_id != "default"
-            else "semester_start_date"
-        )
-        setting = db.query(Setting).filter(Setting.key == setting_key).first()
-        if setting and setting.value:
-            val = setting.value.strip().replace('"', '')
-    if val:
-        try:
-            if len(val) == 10:
-                dt = datetime.fromisoformat(f"{val}T00:00:00+00:00")
-            else:
-                dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
-        except Exception:
-            pass
-    now = datetime.now(timezone.utc)
-    year = now.year
-    if now.month >= 8:
-        return datetime(year, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
-    return datetime(year, 2, 1, 0, 0, 0, tzinfo=timezone.utc)
+    from app.core.user_settings import get_semester_start_date
+    return get_semester_start_date(db, user_id=user_id, override=override)
 
 
 @router.get("/settings", response_model=dict)
@@ -105,19 +79,10 @@ def get_classroom_settings(
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """Get Classroom synchronization and semester settings (isolated per-user)"""
+    from app.core.user_settings import get_semester_start_date
     user_id = _classroom_user_id(clerk_user)
-    setting = db.query(Setting).filter(
-        Setting.key == f"classroom:{user_id}:semester_start_date"
-    ).first()
-    if setting and setting.value:
-        return {"semester_start_date": setting.value.strip().replace('"', '')}
-    now = datetime.now(timezone.utc)
-    year = now.year
-    if now.month >= 8:
-        default = datetime(year, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
-    else:
-        default = datetime(year, 2, 1, 0, 0, 0, tzinfo=timezone.utc)
-    return {"semester_start_date": default.isoformat()}
+    dt = get_semester_start_date(db, user_id=user_id)
+    return {"semester_start_date": dt.isoformat()}
 
 
 @router.post("/settings", response_model=dict)
@@ -128,22 +93,13 @@ def save_classroom_settings(
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """Save semester start date setting per user"""
+    from app.core.user_settings import set_semester_start_date
     user_id = _classroom_user_id(clerk_user)
     start_date = payload.get("semester_start_date")
-    setting_key = f"classroom:{user_id}:semester_start_date"
-    setting = db.query(Setting).filter(Setting.key == setting_key).first()
-    if not setting:
-        setting = Setting(key=setting_key, description=f"Semester start date filter for user {user_id}")
-        db.add(setting)
-
-    if start_date:
-        setting.value = str(start_date).strip().replace('"', '')
-    else:
-        setting.value = None
-    db.commit()
+    set_semester_start_date(db, user_id, str(start_date).strip().replace('"', '') if start_date else None)
     return {
         "message": "Classroom settings updated",
-        "semester_start_date": setting.value
+        "semester_start_date": str(start_date).strip().replace('"', '') if start_date else None
     }
 
 
@@ -634,16 +590,12 @@ def sync_classroom(
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
-    """Trigger full Google Classroom sync from semester start date onwards with concurrency control"""
+    """Trigger direct live Google Classroom sync: immediately fetches latest courses, coursework,
+    and submission states to display on the frontend instantly, while running heavy Drive file
+    downloads, S3 storage, and text indexing asynchronously in the background."""
     user_id = _classroom_user_id(clerk_user)
-    lock = _get_user_lock(user_id)
-
-    if not lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="A synchronization is already running for your account.")
-
     service = get_classroom_service(db, user_id=user_id)
     if not service:
-        lock.release()
         raise HTTPException(status_code=503, detail="Google Classroom not configured. Complete OAuth first.")
 
     start_date = None
@@ -661,53 +613,85 @@ def sync_classroom(
         setting.value = str(start_date).strip().replace('"', '')
         db.commit()
 
-    status_key = f"classroom:{user_id}:sync_status"
-    run_status = db.query(Setting).filter(Setting.key == status_key).first()
-    if not run_status:
-        run_status = Setting(key=status_key, description="Most recent Google Classroom sync run")
-        db.add(run_status)
-    run_status.value = json.dumps({"status": "running", "started_at": datetime.now(timezone.utc).isoformat()})
-    db.commit()
+    since_dt = _get_semester_start_dt(db, override=start_date, user_id=user_id)
 
-    def run_sync(uid: str, s_key: str):
-        from app.db.database import SessionLocal
-        sync_db = SessionLocal()
-        u_lock = _get_user_lock(uid)
-        try:
-            svc = get_classroom_service(sync_db, user_id=uid)
-            if svc:
-                result = svc.sync_all()
-                logger.info(f"Classroom sync result for {uid}: {result}")
-                errors = result.get("errors") or []
-                status = "failed" if errors else "completed"
-                sync_error = "; ".join(errors) if errors else None
+    # 1. IMMEDIATE LIVE FETCH: Direct call to GCR API for courses & coursework
+    assignments = []
+    try:
+        assignments = service.fast_sync_assignments(since_date=since_dt)
+    except Exception as fast_err:
+        err_msg = str(fast_err)
+        if "invalid_grant" in err_msg or "expired or revoked" in err_msg:
+            logger.warning(f"Google OAuth token expired or revoked for {user_id}: {fast_err}")
+            cached_assignments = service._get_assignments_for_user(since_date=since_dt)
+            return {
+                "status": "reconnect_required",
+                "message": "Google Classroom token has expired. Please reconnect your Google account.",
+                "assignments": cached_assignments,
+                "count": len(cached_assignments),
+            }
+        logger.warning(f"Fast coursework sync error for {user_id}: {fast_err}")
+        assignments = service._get_assignments_for_user(since_date=since_dt)
+
+    # 2. RUN HEAVY SYNC IN BACKGROUND (Drive file downloads, S3 uploads, PDF text extraction)
+    lock = _get_user_lock(user_id)
+    acquired = lock.acquire(blocking=False)
+    status_key = f"classroom:{user_id}:sync_status"
+
+    if acquired:
+        run_status = db.query(Setting).filter(Setting.key == status_key).first()
+        if not run_status:
+            run_status = Setting(key=status_key, description="Most recent Google Classroom sync run")
+            db.add(run_status)
+        run_status.value = json.dumps({"status": "running", "started_at": datetime.now(timezone.utc).isoformat()})
+        db.commit()
+
+        def run_sync(uid: str, s_key: str):
+            from app.db.database import SessionLocal
+            sync_db = SessionLocal()
+            u_lock = _get_user_lock(uid)
+            try:
+                svc = get_classroom_service(sync_db, user_id=uid)
+                if svc:
+                    result = svc.sync_all()
+                    logger.info(f"Classroom sync result for {uid}: {result}")
+                    errors = result.get("errors") or []
+                    status = "failed" if errors else "completed"
+                    sync_error = "; ".join(errors) if errors else None
+                    run = sync_db.query(Setting).filter(Setting.key == s_key).first()
+                    if run:
+                        previous = json.loads(run.value or "{}")
+                        run.value = json.dumps({
+                            **previous,
+                            "status": status,
+                            "error": sync_error,
+                            "finished_at": datetime.now(timezone.utc).isoformat(),
+                            "result": result
+                        })
+                        sync_db.commit()
+                else:
+                    raise RuntimeError("Google Classroom credentials could not be loaded.")
+            except Exception as error:
                 run = sync_db.query(Setting).filter(Setting.key == s_key).first()
                 if run:
                     previous = json.loads(run.value or "{}")
-                    run.value = json.dumps({
-                        **previous,
-                        "status": status,
-                        "error": sync_error,
-                        "finished_at": datetime.now(timezone.utc).isoformat(),
-                        "result": result
-                    })
+                    run.value = json.dumps({**previous, "status": "failed", "error": str(error), "finished_at": datetime.now(timezone.utc).isoformat()})
                     sync_db.commit()
-            else:
-                raise RuntimeError("Google Classroom credentials could not be loaded.")
-        except Exception as error:
-            run = sync_db.query(Setting).filter(Setting.key == s_key).first()
-            if run:
-                previous = json.loads(run.value or "{}")
-                run.value = json.dumps({**previous, "status": "failed", "error": str(error), "finished_at": datetime.now(timezone.utc).isoformat()})
-                sync_db.commit()
-            logger.exception("Google Classroom sync failed")
-        finally:
-            sync_db.close()
-            if u_lock.locked():
-                u_lock.release()
+                logger.exception("Google Classroom sync failed")
+            finally:
+                sync_db.close()
+                if u_lock.locked():
+                    u_lock.release()
 
-    background_tasks.add_task(run_sync, user_id, status_key)
-    return {"message": "Classroom sync started in background", "status": "started"}
+        background_tasks.add_task(run_sync, user_id, status_key)
+
+    return {
+        "message": f"Directly fetched {len(assignments)} assignments from Google Classroom.",
+        "status": "ready",
+        "assignments": assignments,
+        "count": len(assignments),
+        "background_sync": "running" if acquired else "already_running"
+    }
 
 
 @router.post("/sync/course/{course_external_id}", response_model=dict)
@@ -2865,32 +2849,21 @@ def download_solution_files(
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Download one source file per generated task in a ZIP archive."""
-    from app.services.ai_solution import extract_assignment_deliverables, extract_execution_metadata, strip_execution_metadata, append_downloaded_assets_to_zip
+    from app.services.document_export import build_solution_zip
 
     _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
     if not solution or not (solution.validated_content or solution.draft_content):
         raise HTTPException(status_code=404, detail="No generated solution is available.")
-    raw_text = solution.validated_content or solution.draft_content or ""
-    clean_text = strip_execution_metadata(raw_text)
-    deliverables = extract_assignment_deliverables(clean_text)
-    files = deliverables["files"]
-    execution_results = extract_execution_metadata(raw_text)
-    has_downloaded_assets = any(result.get("downloaded_assets") for result in execution_results)
-    if not files and not has_downloaded_assets and not deliverables.get("tasks"):
-        raise HTTPException(status_code=404, detail="No task deliverables were found in this solution.")
 
-    archive = BytesIO()
-    with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as bundle:
-        for source_file in files:
-            bundle.writestr(source_file["name"], source_file["content"])
-        append_downloaded_assets_to_zip(bundle, execution_results, solution_markdown=clean_text, files=files)
-        for index, output in enumerate(execution_results or deliverables["terminal_outputs"]):
-            filename = output.get("filename") or f"terminal_output_task_{output.get('task', index + 1)}.txt"
-            text = output.get("terminal_output") or output.get("content") or "No terminal output was produced."
-            bundle.writestr(f"terminal_output_{filename}.txt", text + "\n")
+    raw_text = solution.validated_content or solution.draft_content or ""
+    try:
+        archive_bytes = build_solution_zip(assignment_id, raw_text)
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err))
+
     return Response(
-        content=archive.getvalue(),
+        content=archive_bytes,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="assignment_{assignment_id}_code.zip"'},
     )
@@ -2911,7 +2884,7 @@ def download_solution_file(
     if not solution or not (solution.validated_content or solution.draft_content):
         raise HTTPException(status_code=404, detail="No generated solution is available.")
     content = strip_execution_metadata(solution.validated_content or solution.draft_content or "")
-    files = extract_assignment_deliverables(content)["files"]
+    files = extract_assignment_deliverables(content).get("files", [])
     if file_index < 0 or file_index >= len(files):
         raise HTTPException(status_code=404, detail="Generated source file not found.")
     source_file = files[file_index]
@@ -2930,8 +2903,7 @@ def download_solution_report(
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Download a self-contained HTML report with generated code and run screenshots."""
-    from app.services.ai_solution import extract_code_deliverables, extract_execution_metadata, strip_execution_metadata
-    from app.services.terminal_renderer import TerminalCardRenderer
+    from app.services.document_export import build_solution_html_report
 
     user_id = _classroom_user_id(clerk_user)
     assignment = _get_owned_assignment(db, assignment_id, user_id)
@@ -2940,10 +2912,6 @@ def download_solution_report(
         raise HTTPException(status_code=404, detail="No generated solution report is available.")
 
     content = solution.validated_content or solution.draft_content or ""
-    clean_content = strip_execution_metadata(content)
-    deliverables = extract_code_deliverables(clean_content)
-    execution_results = extract_execution_metadata(content)
-    result_by_name = {item.get("filename"): item for item in execution_results}
     course = db.query(Course).filter(
         Course.id == assignment.course_id,
         Course.user_id == user_id,
@@ -2959,40 +2927,19 @@ def download_solution_report(
     instructor = course.teacher_name if course and course.teacher_name else "Instructor not provided"
     course_name = course.name if course else "Course"
 
-    sections = []
-    for source_file in deliverables["files"]:
-        result = result_by_name.get(source_file["name"], {})
-        output_text = result.get("terminal_output") or "No terminal output was produced."
-        png = TerminalCardRenderer.generate_terminal_png(
-            result.get("command") or f"Run {source_file['name']}", output_text,
-            title=f"Assignment run — {source_file['name']}",
-        )
-        screenshot = f"data:image/png;base64,{base64.b64encode(png).decode('ascii')}"
-        status = result.get("status", "not_run").replace("_", " ").title()
-        sections.append(
-            f"<section class=\"task\"><h2>Task {html.escape(str(source_file['task']))} · {html.escape(source_file['name'])}</h2>"
-            f"<p class=\"meta\">{html.escape(source_file['language'])} · Run status: {html.escape(status)} · Exit code: {html.escape(str(result.get('exit_code') if result.get('exit_code') is not None else 'n/a'))}</p>"
-            f"<h3>Source code</h3><pre><code>{html.escape(source_file['content'])}</code></pre>"
-            f"<h3>Terminal output</h3><pre><code>{html.escape(output_text)}</code></pre>"
-            f"<figure><img alt=\"Terminal screenshot for {html.escape(source_file['name'])}\" src=\"{screenshot}\"/><figcaption>Run evidence · {html.escape(source_file['name'])}</figcaption></figure></section>"
-        )
-    for generated_image in _assignment_generated_images(db, assignment_id):
-        image_uri = generated_image.get("data_uri", "")
-        prompt = html.escape(generated_image.get("prompt", "Generated assignment illustration"))
-        if image_uri.startswith("data:image/"):
-            sections.append(
-                f'<section class="task"><h2>Generated illustration</h2>'
-                f'<p class="meta">Prompt: {prompt}</p><figure><img alt="Generated assignment illustration" '
-                f'src="{image_uri}"/><figcaption>AI-generated image · review before including in a submission</figcaption></figure></section>'
-            )
-    if not sections:
-        sections.append(f"<section class=\"task\"><h2>Solution</h2><pre><code>{html.escape(clean_content)}</code></pre><p class=\"meta\">No separate code files were extracted from this solution.</p></section>")
+    report_html = build_solution_html_report(
+        assignment_title=assignment.title or "Assignment solution",
+        course_name=course_name,
+        instructor_name=instructor,
+        student_name=student_name,
+        student_id=str(profile.get("student_id") or profile.get("roll_no") or "Not provided"),
+        due_at=assignment.due_at or assignment.due_date,
+        raw_content=content,
+        generated_images=_assignment_generated_images(db, assignment_id),
+    )
 
-    report = f"""<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{html.escape(assignment.title or 'Assignment')} · Solution report</title><style>
-      *{{box-sizing:border-box}}body{{margin:0;background:#f3f4f7;color:#20232d;font:15px/1.55 Arial,sans-serif}}.cover{{min-height:92vh;padding:12vh 12%;display:flex;flex-direction:column;justify-content:center;background:#fff;border-bottom:1px solid #ddd}}.brand{{color:#6557c9;font-weight:700;letter-spacing:.12em;text-transform:uppercase}}h1{{font-size:36px;line-height:1.2;margin:20px 0 30px}}.cover dl{{display:grid;grid-template-columns:180px 1fr;gap:10px 20px;max-width:650px}}dt{{color:#747987}}dd{{margin:0;font-weight:600}}main{{max-width:920px;margin:40px auto;padding:0 20px}}.task{{margin:24px 0;padding:30px;background:#fff;border:1px solid #e3e5eb;border-radius:12px;break-inside:avoid}}h2{{margin:0 0 6px;font-size:21px}}h3{{margin:24px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#717687}}.meta,figcaption{{font-size:12px;color:#737888}}pre{{overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:16px;border-radius:8px;background:#111827;color:#ecf0f8;font:12px/1.6 Consolas,monospace}}figure{{margin:18px 0 0}}img{{display:block;width:100%;height:auto;border-radius:8px}}figcaption{{margin-top:7px}}@media print{{body{{background:white}}.cover{{min-height:95vh;page-break-after:always}}main{{margin:0 auto}}.task{{box-shadow:none}}}}
-      </style></head><body><header class=\"cover\"><p class=\"brand\">Uniflow · Academic report</p><h1>{html.escape(assignment.title or 'Assignment solution')}</h1><dl><dt>Course</dt><dd>{html.escape(course_name)}</dd><dt>Student</dt><dd>{html.escape(student_name)}</dd><dt>Student ID</dt><dd>{html.escape(str(profile.get('student_id') or profile.get('roll_no') or 'Not provided'))}</dd><dt>Instructor</dt><dd>{html.escape(instructor)}</dd><dt>Due date</dt><dd>{html.escape(assignment.due_at.strftime('%B %d, %Y') if assignment.due_at else 'Not specified')}</dd><dt>Report date</dt><dd>{datetime.now().strftime('%B %d, %Y')}</dd></dl></header><main>{''.join(sections)}</main></body></html>"""
     return Response(
-        content=report,
+        content=report_html,
         media_type="text/html; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="assignment_{assignment_id}_report.html"'},
     )
@@ -3005,10 +2952,7 @@ def download_solution_report_docx(
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Download a Word report based on the generated Google Doc template, with run screenshots embedded."""
-    from docx import Document
-    from docx.shared import Inches
-    from app.services.ai_solution import extract_code_deliverables, extract_execution_metadata, strip_execution_metadata
-    from app.services.terminal_renderer import TerminalCardRenderer
+    from app.services.document_export import build_solution_docx_report
 
     user_id = _classroom_user_id(clerk_user)
     assignment = _get_owned_assignment(db, assignment_id, user_id)
@@ -3023,73 +2967,32 @@ def download_solution_report_docx(
     submission = db.query(Submission).filter(Submission.assignment_id == assignment.id).first()
     docs_service = get_google_docs_service(db, user_id=user_id)
     docx_content = docs_service.export_doc_as_docx(submission.google_doc_id) if docs_service and submission and submission.google_doc_id else None
-    document = Document(BytesIO(docx_content)) if docx_content else Document()
 
+    profile_row = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
+    profile = {}
+    if profile_row and profile_row.value:
+        try:
+            profile = json.loads(profile_row.value)
+        except (TypeError, json.JSONDecodeError):
+            profile = {}
+    student_name = " ".join(part for part in (profile.get("first_name"), profile.get("last_name")) if part).strip() or "Student"
+    instructor = course.teacher_name if course and course.teacher_name else "Instructor not provided"
+    course_name = course.name if course else "Course"
     content = solution.validated_content or solution.draft_content or ""
-    clean_content = strip_execution_metadata(content)
-    deliverables = extract_code_deliverables(clean_content)
-    execution_results = extract_execution_metadata(content)
-    results_by_name = {item.get("filename"): item for item in execution_results}
 
-    if not docx_content:
-        profile_row = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
-        profile = {}
-        if profile_row and profile_row.value:
-            try:
-                profile = json.loads(profile_row.value)
-            except (TypeError, json.JSONDecodeError):
-                profile = {}
-        student = " ".join(part for part in (profile.get("first_name"), profile.get("last_name")) if part).strip() or "Student"
-        document.add_heading("Uniflow · Academic report", 0)
-        document.add_heading(assignment.title or "Assignment solution", level=1)
-        document.add_paragraph(f"Course: {course.name if course else 'Course'}")
-        document.add_paragraph(f"Student: {student}")
-        document.add_paragraph(f"Instructor: {course.teacher_name if course and course.teacher_name else 'Not provided'}")
-        document.add_paragraph(f"Due date: {assignment.due_at.strftime('%B %d, %Y') if assignment.due_at else 'Not specified'}")
-        document.add_page_break()
-        for source_file in deliverables["files"]:
-            document.add_heading(f"Task {source_file['task']} · {source_file['name']}", level=1)
-            document.add_heading("Source code", level=2)
-            document.add_paragraph(source_file["content"])
-            result = results_by_name.get(source_file["name"], {})
-            document.add_heading("Terminal output", level=2)
-            document.add_paragraph(result.get("terminal_output") or "No terminal output was produced.")
+    docx_bytes = build_solution_docx_report(
+        assignment_title=assignment.title or "Assignment solution",
+        course_name=course_name,
+        instructor_name=instructor,
+        student_name=student_name,
+        due_at=assignment.due_at or assignment.due_date,
+        raw_content=content,
+        base_docx_bytes=docx_content,
+        generated_images=_assignment_generated_images(db, assignment_id),
+    )
 
-    if execution_results:
-        document.add_page_break()
-        document.add_heading("Code execution evidence", level=1)
-        for result in execution_results:
-            file_name = result.get("filename") or "Generated source"
-            document.add_heading(file_name, level=2)
-            run_state = result.get("status", "not_run").replace("_", " ").title()
-            document.add_paragraph(f"Run status: {run_state} · Exit code: {result.get('exit_code') if result.get('exit_code') is not None else 'n/a'}")
-            screenshot = TerminalCardRenderer.generate_terminal_png(
-                result.get("command") or f"Run {file_name}",
-                result.get("terminal_output") or "No terminal output was produced.",
-                title=f"Assignment run — {file_name}",
-            )
-            document.add_picture(BytesIO(screenshot), width=Inches(6.2))
-            document.add_paragraph(f"Run screenshot · {file_name}")
-
-    generated_images = _assignment_generated_images(db, assignment_id)
-    if generated_images:
-        document.add_page_break()
-        document.add_heading("Generated illustrations", level=1)
-        for image in generated_images:
-            prompt = image.get("prompt", "")
-            document.add_paragraph(f"Prompt: {prompt}")
-            data_uri = image.get("data_uri", "")
-            if data_uri.startswith("data:image/") and "," in data_uri:
-                try:
-                    document.add_picture(BytesIO(base64.b64decode(data_uri.split(",", 1)[1])), width=Inches(5.8))
-                    document.add_paragraph("AI-generated illustration · verify content and attribution requirements.")
-                except (ValueError, OSError):
-                    document.add_paragraph("Image data could not be embedded in this Word export.")
-
-    output = BytesIO()
-    document.save(output)
     return Response(
-        content=output.getvalue(),
+        content=docx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="assignment_{assignment_id}_report.docx"'},
     )

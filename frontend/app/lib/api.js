@@ -94,7 +94,8 @@ export async function fetchFromApi(endpoint, token = null, options = {}) {
         clientCache.set(cacheKey, { timestamp: Date.now(), data: json });
       } else {
         // Targeted cache invalidation: clear related keys across coupled domains (assignments, classroom, courses, dashboard)
-        const endpointPrefix = endpoint.split('/')[1] || '';
+        const cleanPath = endpoint.startsWith('http') ? new URL(endpoint).pathname.replace('/api/v1', '') : endpoint;
+        const endpointPrefix = cleanPath.replace(/^\//, '').split('/')[0].split('?')[0];
         const relatedPrefixes = new Set([endpointPrefix, 'dashboard']);
         if (endpointPrefix === 'classroom' || endpointPrefix === 'assignments' || endpointPrefix === 'courses') {
           relatedPrefixes.add('classroom');
