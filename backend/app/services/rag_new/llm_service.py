@@ -55,7 +55,10 @@ class GroqChatProvider(ChatProvider):
     ):
         self.api_key = api_key
         self.model = model
-        self.base_url = base_url.rstrip("/")
+        raw_base = (base_url or "https://api.groq.com/openai/v1").rstrip("/")
+        if not raw_base.endswith("/openai/v1"):
+            raw_base = f"{raw_base}/openai/v1"
+        self.base_url = raw_base
         self._client = httpx.Client(timeout=60.0)
 
     def chat(

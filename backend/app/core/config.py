@@ -22,7 +22,10 @@ class Settings(BaseSettings):
     environment: str = "development"
     debug: bool = False
     timezone: str = "Asia/Karachi"
-    secret_key: str = ""
+    secret_key: str = Field(
+        default="dev-secret-key-change-in-production",
+        validation_alias=AliasChoices("secret_key", "SECRET_KEY"),
+    )
     encryption_key_v2: str = ""
     access_token_expire_minutes: int = 30
 
@@ -31,8 +34,7 @@ class Settings(BaseSettings):
         if not self.secret_key:
             if self.is_production:
                 raise ValueError("SECRET_KEY must be set in production environment")
-            import secrets
-            self.secret_key = secrets.token_urlsafe(32)
+            self.secret_key = "dev-secret-key-change-in-production"
 
     api_prefix: str = "/api/v1"
 
@@ -117,8 +119,11 @@ class Settings(BaseSettings):
         default="openai/gpt-oss-120b",
         validation_alias=AliasChoices("groq_chat_model", "GROQ_CHAT_MODEL"),
     )
-    gemini_api_key: str = ""
-    study_assistant_model: str = "gemini-3.8-flash"
+    gemini_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("gemini_api_key", "GEMINI_API_KEY", "Gemini_API_Key"),
+    )
+    study_assistant_model: str = "gemini-3.5-flash"
     pollinations_api_key: str = ""
     pollinations_base_url: str = "https://gen.pollinations.ai"
     pollinations_image_model: str = "zimage"

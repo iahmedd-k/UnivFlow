@@ -20,7 +20,7 @@ from app.db.database import get_db
 from app.db.repositories import GoogleCredentialRepository
 from app.db.models import Setting
 from app.core.logging import logger
-from app.auth.clerk_auth import get_current_user_optional, require_current_user
+from app.auth.clerk_auth import get_current_user_optional, require_current_user, create_manual_token
 from app.auth.access_gate import get_access_status, redeem_access_otp, request_access_otp
 from app.auth.access_gate import require_access_grant
 from app.auth.ownership import require_user_id
@@ -55,6 +55,199 @@ class NotificationEmailResponse(BaseModel):
 
 class AccessOtpRequest(BaseModel):
     code: str = Field(min_length=8, max_length=8, pattern=r"^[0-9]{8}$")
+
+
+class ManualLoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class ManualSignupRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    firstName: Optional[str] = "Student"
+    lastName: Optional[str] = ""
+
+
+SEEDED_USERS = [
+    {
+        "id": "user_3JtgZ7iYWmteFJWdZB60SEuqmb5",
+        "email": "232530@students.au.edu.pk",
+        "password": "password123",
+        "name": "Ahmed Khan",
+        "first_name": "Ahmed",
+        "last_name": "Khan",
+    },
+    {
+        "id": "manual_user_demo",
+        "email": "demo@uniflow.ai",
+        "password": "password123",
+        "name": "Demo Student",
+        "first_name": "Demo",
+        "last_name": "Student",
+    },
+    {
+        "id": "manual_user_ahmed",
+        "email": "ahmed@uniflow.ai",
+        "password": "password123",
+        "name": "Ahmed Dev",
+        "first_name": "Ahmed",
+        "last_name": "Dev",
+    },
+    {
+        "id": "manual_user_test",
+        "email": "test@uniflow.ai",
+        "password": "password123",
+        "name": "Test Student",
+        "first_name": "Test",
+        "last_name": "Student",
+    },
+]
+
+
+def _hash_manual_password(password: str) -> str:
+    salt = settings.secret_key or "uniflow_manual_salt"
+    import hashlib
+    return hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
+
+
+@router.get("/manual/seeded-users")
+def get_seeded_users():
+    """Return available seeded credentials for manual login in development/testing."""
+    return {
+        "success": True,
+        "users": [
+            {
+                "email": u["email"],
+                "password": u["password"],
+                "name": u["name"],
+                "description": f"{u['name']} (Seeded Account)",
+            }
+            for u in SEEDED_USERS
+        ],
+    }
+
+
+@router.post("/manual/login")
+def manual_login(
+    payload: ManualLoginRequest,
+    db: Session = Depends(get_db),
+):
+    """Authenticate with email and password fallback (seeded or registered)."""
+    email_clean = payload.email.strip().lower()
+
+    # 1. Check seeded accounts
+    seeded = next((u for u in SEEDED_USERS if u["email"].lower() == email_clean), None)
+    if seeded and payload.password == seeded["password"]:
+        user_id = seeded["id"]
+        key = f"clerk_user_{user_id}"
+        profile = {
+            "email": seeded["email"],
+            "first_name": seeded["first_name"],
+            "last_name": seeded["last_name"],
+            "image_url": "",
+        }
+        setting = db.query(Setting).filter(Setting.key == key).first()
+        if not setting:
+            db.add(Setting(key=key, value=json.dumps(profile), description="Manual user profile"))
+            db.commit()
+        token = create_manual_token(user_id, seeded["email"], seeded["name"])
+        return {
+            "success": True,
+            "token": token,
+            "user": {
+                "id": user_id,
+                "email": seeded["email"],
+                "name": seeded["name"],
+                "firstName": seeded["first_name"],
+                "lastName": seeded["last_name"],
+            },
+            "message": f"Welcome back, {seeded['name']}!",
+        }
+
+    # 2. Check registered manual accounts in database
+    cred_key = f"manual_user_cred_{email_clean}"
+    cred_setting = db.query(Setting).filter(Setting.key == cred_key).first()
+    if cred_setting and cred_setting.value:
+        try:
+            cred_data = json.loads(cred_setting.value)
+            hashed_input = _hash_manual_password(payload.password)
+            if cred_data.get("password_hash") == hashed_input:
+                user_id = cred_data["user_id"]
+                name = cred_data.get("name", "Student")
+                token = create_manual_token(user_id, email_clean, name)
+                return {
+                    "success": True,
+                    "token": token,
+                    "user": {
+                        "id": user_id,
+                        "email": email_clean,
+                        "name": name,
+                        "firstName": cred_data.get("first_name", "Student"),
+                        "lastName": cred_data.get("last_name", ""),
+                    },
+                    "message": f"Welcome back, {name}!",
+                }
+        except Exception as e:
+            logger.error("Error reading manual creds: %s", e)
+
+    raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+
+@router.post("/manual/signup")
+def manual_signup(
+    payload: ManualSignupRequest,
+    db: Session = Depends(get_db),
+):
+    """Register a new account via manual email and password."""
+    email_clean = payload.email.strip().lower()
+
+    if any(u["email"].lower() == email_clean for u in SEEDED_USERS):
+        raise HTTPException(status_code=400, detail="This email is reserved as a seeded demo account. Please sign in.")
+
+    cred_key = f"manual_user_cred_{email_clean}"
+    existing = db.query(Setting).filter(Setting.key == cred_key).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="An account with this email already exists. Please sign in.")
+
+    user_id = f"manual_user_{secrets.token_hex(6)}"
+    first_name = (payload.firstName or "Student").strip()
+    last_name = (payload.lastName or "").strip()
+    full_name = f"{first_name} {last_name}".strip()
+
+    cred_data = {
+        "user_id": user_id,
+        "email": email_clean,
+        "password_hash": _hash_manual_password(payload.password),
+        "name": full_name,
+        "first_name": first_name,
+        "last_name": last_name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    db.add(Setting(key=cred_key, value=json.dumps(cred_data), description="Manual user login credentials"))
+
+    profile_data = {
+        "email": email_clean,
+        "first_name": first_name,
+        "last_name": last_name,
+        "image_url": "",
+    }
+    db.add(Setting(key=f"clerk_user_{user_id}", value=json.dumps(profile_data), description="Manual user profile"))
+    db.commit()
+
+    token = create_manual_token(user_id, email_clean, full_name)
+    return {
+        "success": True,
+        "token": token,
+        "user": {
+            "id": user_id,
+            "email": email_clean,
+            "name": full_name,
+            "firstName": first_name,
+            "lastName": last_name,
+        },
+        "message": f"Account created! Welcome to Uniflow, {full_name}.",
+    }
 
 
 @router.get("/access/status")
@@ -192,7 +385,8 @@ def get_auth_status(
     user_id = _google_owner_id(clerk_user)
     repo = GoogleCredentialRepository(db)
     cred = repo.get(user_id) if user_id else None
-    google_connected = cred is not None and bool(cred.access_token)
+    decrypted_access, decrypted_refresh = get_google_credential_tokens(db, cred) if cred else (None, None)
+    google_connected = cred is not None and bool(decrypted_access or decrypted_refresh)
     google_email = _cached_google_emails.get(user_id) if user_id else None
 
     if google_connected and not google_email:
@@ -539,9 +733,36 @@ def get_current_user(
 
 
 def get_user_info(creds: Credentials) -> dict:
-    from googleapiclient.discovery import build
-    service = build("oauth2", "v2", credentials=creds)
-    return service.userinfo().get().execute()
+    if not creds:
+        return {}
+    token = creds.token
+    try:
+        if creds.expired and creds.refresh_token:
+            from google.auth.transport.requests import Request
+            import socket
+            old_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(2.0)
+            try:
+                creds.refresh(Request())
+                token = creds.token
+            finally:
+                socket.setdefaulttimeout(old_timeout)
+    except Exception as e:
+        logger.debug(f"Google creds refresh skipped/failed: {e}")
+
+    if token:
+        try:
+            resp = httpx.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=2.0
+            )
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception as e:
+            logger.debug(f"Direct Google userinfo lookup failed: {e}")
+
+    return {}
 
 
 def _get_notification_email_key(user_id: str) -> str:

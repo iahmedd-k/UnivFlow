@@ -149,7 +149,7 @@ export default function TurnInPanel({ assignment, onTurnIn, onStatusChange }) {
       const token = getToken ? await getToken() : null;
       const res = await autoVisitAndSyncGcr({ token });
       setHasSyncedSession(true);
-      setNotice('✅ ' + (res?.message || 'Google Classroom session captured!'));
+      setNotice(res?.message || 'Google Classroom session captured!');
     } catch (e) {
       setError(e.message || 'Could not auto-capture Classroom session.');
     } finally {
@@ -192,7 +192,7 @@ export default function TurnInPanel({ assignment, onTurnIn, onStatusChange }) {
             });
             if (extRes?.success) {
               setSubmitted(true);
-              setNotice('✅ Successfully turned in deliverables to Google Classroom via Companion Extension!');
+              setNotice('Successfully turned in deliverables to Google Classroom via Companion Extension!');
               if (onStatusChange) onStatusChange();
               return;
             }
@@ -392,7 +392,7 @@ export default function TurnInPanel({ assignment, onTurnIn, onStatusChange }) {
                   className="inline-flex items-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-violet-dark transition"
                 >
                   <Icon name="download" size={13} />
-                  <span>📥 Download Companion Extension (.zip)</span>
+                  <span>Download Companion Extension (.zip)</span>
                 </a>
               </div>
             )}
@@ -666,7 +666,7 @@ export default function TurnInPanel({ assignment, onTurnIn, onStatusChange }) {
                 onClick={() => setShowExtensionHelp(false)}
                 className="text-muted hover:text-ink text-sm font-bold"
               >
-                ✕
+                <Icon name="close" size={14} />
               </button>
             </div>
             <div className="mt-3 space-y-3 text-xs text-muted leading-relaxed">
@@ -679,7 +679,7 @@ export default function TurnInPanel({ assignment, onTurnIn, onStatusChange }) {
                   className="inline-flex items-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-violet-dark transition"
                 >
                   <Icon name="download" size={13} />
-                  <span>📥 Download Extension (.zip)</span>
+                  <span>Download Extension (.zip)</span>
                 </a>
               </div>
 
@@ -693,8 +693,9 @@ export default function TurnInPanel({ assignment, onTurnIn, onStatusChange }) {
                 </ol>
               </div>
 
-              <p className="rounded-lg bg-emerald-50 border border-emerald-200 p-2 text-emerald-800 text-[11px]">
-                ✨ <strong>Instant detection:</strong> Once loaded, Uniflow detects it immediately!
+              <p className="flex items-center gap-1.5 rounded-lg bg-emerald-50 border border-emerald-200 p-2 text-emerald-800 text-[11px]">
+                <Icon name="sparkles" size={12} className="text-emerald-600 shrink-0" />
+                <span><strong>Instant detection:</strong> Once loaded, Uniflow detects it immediately!</span>
               </p>
             </div>
             <div className="mt-4 flex justify-end">

@@ -256,37 +256,62 @@ def get_dashboard_overview(
             pass
 
     course_map = {c.id: c.name for c in data["courses"]}
-    assignment_ids = [assignment.id for assignment in data["all_assignments"]]
-    all_solutions = db.query(AssignmentSolution).filter(
-        AssignmentSolution.assignment_id.in_(assignment_ids)
-    ).all() if assignment_ids else []
-    solution_by_assign = {s.assignment_id: s for s in all_solutions}
+    
+    # Only active, non-submitted assignments can be generating or ready for review
+    candidate_assignments = [
+        a for a in data["all_assignments"]
+        if a.status not in (AssignmentStatus.SUBMITTED, AssignmentStatus.APPROVED)
+    ]
+    candidate_ids = [a.id for a in candidate_assignments]
+
+    # Fast column projection without loading full text payloads or triggering relationship cascades
+    sol_rows = db.query(
+        AssignmentSolution.assignment_id,
+        AssignmentSolution.generated_at,
+        AssignmentSolution.validated_at,
+        (AssignmentSolution.validated_content != None).label("has_validated_content")
+    ).filter(AssignmentSolution.assignment_id.in_(candidate_ids)).all() if candidate_ids else []
+    solution_by_assign = {s.assignment_id: s for s in sol_rows}
+
+    # Batch progress settings for generating assignments
+    generating_ids = [a.id for a in candidate_assignments if a.status == AssignmentStatus.GENERATING]
+    progress_keys = [f"assignment_crew_progress_{aid}" for aid in generating_ids]
+    progress_rows = db.query(Setting.key, Setting.value).filter(Setting.key.in_(progress_keys)).all() if progress_keys else []
+    progress_by_key = {r.key: r.value for r in progress_rows}
+
+    # Batch submissions for ready-for-review assignments
+    ready_assign_ids = [
+        a.id for a in candidate_assignments
+        if (a.status == AssignmentStatus.READY_FOR_REVIEW or (solution_by_assign.get(a.id) and solution_by_assign.get(a.id).has_validated_content))
+    ]
+    sub_rows = db.query(
+        Submission.assignment_id,
+        Submission.google_doc_id
+    ).filter(Submission.assignment_id.in_(ready_assign_ids)).all() if ready_assign_ids else []
+    sub_by_assign = {s.assignment_id: s for s in sub_rows}
 
     active_crew_runs = []
     ready_for_review_solutions = []
+    stale_generating_ids = []
 
     now_utc = datetime.now(timezone.utc)
     stale_threshold = timedelta(minutes=20)
 
-    for a in data["all_assignments"]:
+    for a in candidate_assignments:
         sol = solution_by_assign.get(a.id)
-
-        # An assignment is ONLY in an active solver run if its status is GENERATING
-        # and it has not timed out (inactive for > 20 mins)
         is_generating = False
         crew_progress = None
 
         if a.status == AssignmentStatus.GENERATING:
             progress_key = f"assignment_crew_progress_{a.id}"
-            progress_row = db.query(Setting).filter(Setting.key == progress_key).first()
-            if progress_row and progress_row.value:
+            progress_val = progress_by_key.get(progress_key)
+            if progress_val:
                 try:
-                    crew_progress = json.loads(progress_row.value)
+                    crew_progress = json.loads(progress_val)
                 except Exception:
                     crew_progress = None
 
-            # Determine last activity timestamp
-            last_activity = sol.generated_at if (sol and sol.generated_at) else (a.updated_at or a.created_at)
+            last_activity = sol.generated_at if sol else (a.updated_at or a.created_at)
             if isinstance(crew_progress, dict) and crew_progress.get("updated_at"):
                 try:
                     updated_dt = datetime.fromisoformat(crew_progress["updated_at"])
@@ -306,17 +331,8 @@ def get_dashboard_overview(
 
             # Auto-recover stale generating assignments
             if last_activity and (now_utc - last_activity) > stale_threshold:
-                logger.info("Auto-recovering stale GENERATING assignment %s (inactive > 20m)", a.id)
-                a.status = AssignmentStatus.DRAFT
-                if sol and not sol.validated_content:
-                    sol.validation_errors = "Generation session timed out."
-                try:
-                    db.commit()
-                except Exception as commit_err:
-                    db.rollback()
-                    logger.warning("Could not commit stale auto-recovery for assignment %s: %s", a.id, commit_err)
+                stale_generating_ids.append(a.id)
             else:
-                # Check if crew_progress indicates completion or failure
                 is_finished = False
                 if isinstance(crew_progress, dict):
                     if crew_progress.get("error") or crew_progress.get("status") == "failed":
@@ -337,8 +353,8 @@ def get_dashboard_overview(
                 "crew_progress": crew_progress,
                 "generated_at": sol.generated_at if sol else None,
             })
-        elif (a.status == AssignmentStatus.READY_FOR_REVIEW or (sol and sol.validated_content)) and a.status not in (AssignmentStatus.SUBMITTED, AssignmentStatus.APPROVED):
-            sub = db.query(Submission).filter(Submission.assignment_id == a.id).first()
+        elif a.status == AssignmentStatus.READY_FOR_REVIEW or (sol and sol.has_validated_content):
+            sub = sub_by_assign.get(a.id)
             ready_for_review_solutions.append({
                 "assignment_id": a.id,
                 "title": a.title,
@@ -350,6 +366,16 @@ def get_dashboard_overview(
                 "google_doc_url": f"https://docs.google.com/document/d/{sub.google_doc_id}/edit" if sub and sub.google_doc_id else None,
             })
 
+    if stale_generating_ids:
+        try:
+            db.query(Assignment).filter(Assignment.id.in_(stale_generating_ids)).update({Assignment.status: AssignmentStatus.DRAFT}, synchronize_session=False)
+            db.commit()
+        except Exception as commit_err:
+            db.rollback()
+            logger.warning("Could not commit stale auto-recovery: %s", commit_err)
+
+    missing_labs = [a for a in data["all_assignments"] if (getattr(a, "is_lab", False) or "lab" in (a.title or "").lower()) and not is_submitted(a)]
+
     return {
         "courses_count": len(active_courses),
         "assignments": {
@@ -357,6 +383,7 @@ def get_dashboard_overview(
             "pending": len(pending_assignments),
             "overdue": len(overdue_assignments),
             "completed": len(completed_assignments),
+            "missing_labs": len(missing_labs),
         },
         "upcoming_classes": len(data["upcoming_schedules"]),
         "upcoming_exams": len(data["upcoming_exams"]),

@@ -8,18 +8,17 @@ logger = logging.getLogger(__name__)
 
 def get_database_url() -> str:
     if settings.database_url:
-        # Ensure psycopg2 driver is used for PostgreSQL
-        if settings.database_url.startswith("postgresql://"):
-            return settings.database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
         if settings.database_url.startswith("postgresql+psycopg://"):
-            return settings.database_url.replace("postgresql+psycopg://", "postgresql+psycopg2://", 1)
+            return settings.database_url
+        if settings.database_url.startswith("postgresql://"):
+            return settings.database_url.replace("postgresql://", "postgresql+psycopg://", 1)
         return settings.database_url
     if settings.supabase_db_url:
         url = settings.supabase_db_url
-        if url.startswith("postgresql://"):
-            return url.replace("postgresql://", "postgresql+psycopg2://", 1)
         if url.startswith("postgresql+psycopg://"):
-            return url.replace("postgresql+psycopg://", "postgresql+psycopg2://", 1)
+            return url
+        if url.startswith("postgresql://"):
+            return url.replace("postgresql://", "postgresql+psycopg://", 1)
         return url
     
     if settings.is_production:

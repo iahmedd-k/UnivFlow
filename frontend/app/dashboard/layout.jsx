@@ -5,44 +5,53 @@ import { useAuth, useClerk, useUser, UserButton } from '@clerk/nextjs';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { api } from '@/app/lib/api';
+import { getManualSession, clearManualSession } from '@/app/lib/manual-auth';
+import { isExtensionInstalled, EXTENSION_VERSION } from '@/app/lib/extensionBridge';
 import Icon from '@/app/dashboard/Icon';
 import FirebaseAlertsBanner from '@/app/dashboard/FirebaseAlertsBanner';
 import OnboardingModal from '@/app/dashboard/OnboardingModal';
+import CompanionExtensionModal from '@/app/dashboard/CompanionExtensionModal';
 
-const groups = [
-  { label: 'Home', items: [
-    { href: '/dashboard', label: 'Overview', icon: 'dashboard' },
-  ] },
-  { label: 'Study & coursework', items: [
-    { href: '/dashboard/assignments', label: 'Assignments Studio', icon: 'listChecks' },
-    { href: '/dashboard/rag-assistant', label: 'Study Assistant', icon: 'brain' },
-  ] },
-  { label: 'Semester', items: [
-    { href: '/dashboard/timetable', label: 'Timetable', icon: 'calendar' },
-    { href: '/dashboard/attendance', label: 'Attendance', icon: 'clipboardCheck' },
-  ] },
-  { label: 'Connected services', items: [
-    { href: '/dashboard/classroom', label: 'Google Classroom', icon: 'book' },
-    { href: '/dashboard/portal', label: 'University Portal', icon: 'globe' },
-    { href: '/dashboard/mail-drive', label: 'Mail & Drive', icon: 'folder' },
-  ] },
-  { label: 'Activity & updates', items: [
-    { href: '/dashboard/activity', label: 'Automation history', icon: 'history' },
-    { href: '/dashboard/announcements', label: 'Announcements', icon: 'bell' },
-    { href: '/dashboard/notifications', label: 'Alerts & notices', icon: 'alert' },
-  ] },
-  { label: 'Account', items: [
-    { href: '/dashboard/settings', label: 'Settings', icon: 'settings' },
-  ] },
+const navGroups = [
+  {
+    label: 'Workspace',
+    items: [
+      { href: '/dashboard', label: 'Overview', icon: 'dashboard' },
+      { href: '/dashboard/assignments', label: 'Assignments Studio', icon: 'listChecks' },
+      { href: '/dashboard/rag-assistant', label: 'Study Assistant', icon: 'brain' },
+    ],
+  },
+  {
+    label: 'Academics',
+    items: [
+      { href: '/dashboard/timetable', label: 'Timetable', icon: 'calendar' },
+      { href: '/dashboard/attendance', label: 'Attendance', icon: 'clipboardCheck' },
+      { href: '/dashboard/classroom', label: 'Google Classroom', icon: 'school' },
+    ],
+  },
+  {
+    label: 'Services',
+    items: [
+      { href: '/dashboard/portal', label: 'University Portal', icon: 'globe' },
+      { href: '/dashboard/mail-drive', label: 'Mail & Drive', icon: 'folder' },
+    ],
+  },
+  {
+    label: 'Preferences',
+    items: [
+      { href: '/dashboard/activity', label: 'Activity Log', icon: 'history' },
+      { href: '/dashboard/settings', label: 'Settings', icon: 'settings' },
+    ],
+  },
 ];
 
 const titles = {
-  ...Object.fromEntries(groups.flatMap((group) => group.items.map(({ href, label }) => [href, label]))),
+  ...Object.fromEntries(navGroups.flatMap((group) => group.items.map(({ href, label }) => [href, label]))),
   '/dashboard/schedule': 'Timetable',
 };
 
-function NavIcon({ name }) {
-  return <Icon name={name} size={18} strokeWidth={1.75} />;
+function NavIcon({ name, active }) {
+  return <Icon name={name} size={17} strokeWidth={active ? 2.1 : 1.75} className={active ? 'text-violet' : 'text-muted'} />;
 }
 
 export default function DashboardLayout({ children }) {
@@ -51,71 +60,116 @@ export default function DashboardLayout({ children }) {
   const { user } = useUser();
   const pathname = usePathname();
   const router = useRouter();
-  const removedFeatureRoute = pathname === '/dashboard/study-planner' || pathname === '/dashboard/exams' || pathname.startsWith('/dashboard/exams/') || pathname === '/dashboard/quizzes' || pathname.startsWith('/dashboard/quizzes/');
+
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [syncMenuPath, setSyncMenuPath] = useState(null);
+  const [syncMenuOpen, setSyncMenuOpen] = useState(false);
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncNotice, setSyncNotice] = useState('');
   const [mounted, setMounted] = useState(false);
   const [googleConnected, setGoogleConnected] = useState(false);
   const [googleEmail, setGoogleEmail] = useState('');
   const [classroomSync, setClassroomSync] = useState(null);
-  const [privateAccess, setPrivateAccess] = useState(null);
+  const [privateAccess, setPrivateAccess] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const cached = sessionStorage.getItem('uniflow_private_access');
+        if (cached) return JSON.parse(cached);
+      } catch {}
+    }
+    return { granted: true }; // Non-blocking default
+  });
   const [accessCode, setAccessCode] = useState('');
   const [accessBusy, setAccessBusy] = useState(false);
   const [accessNotice, setAccessNotice] = useState('');
+  const [manualSession, setManualSessionState] = useState(null);
+  const [extensionInstalled, setExtensionInstalled] = useState(false);
+  const [extensionModalOpen, setExtensionModalOpen] = useState(false);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true);
+    setManualSessionState(getManualSession());
+    setExtensionInstalled(isExtensionInstalled());
+
+    const handleReady = () => setExtensionInstalled(true);
+    window.addEventListener('uniflow-companion-ready', handleReady);
+    let attempts = 0;
+    const interval = setInterval(() => {
+      attempts++;
+      if (isExtensionInstalled()) {
+        setExtensionInstalled(true);
+        clearInterval(interval);
+      } else if (attempts >= 10) {
+        clearInterval(interval);
+      }
+    }, 2500);
+
+    return () => {
+      window.removeEventListener('uniflow-companion-ready', handleReady);
+      clearInterval(interval);
+    };
   }, []);
 
-  useEffect(() => {
-    if (removedFeatureRoute) router.replace('/dashboard');
-  }, [removedFeatureRoute, router]);
-
-  const syncMenuOpen = syncMenuPath === pathname;
-
-  const loadConnections = useCallback(async () => {
-    const token = getToken ? await getToken() : null;
-    return Promise.allSettled([api.getAuthStatus(token), api.getSyncStatus(token)]);
+  const refreshConnections = useCallback(async () => {
+    let token = getToken ? await getToken() : null;
+    if (!token) {
+      const sess = getManualSession();
+      if (sess?.token) token = sess.token;
+    }
+    try {
+      const [auth, sync] = await Promise.allSettled([
+        api.getAuthStatus(token),
+        api.getSyncStatus(token),
+      ]);
+      if (auth.status === 'fulfilled') {
+        setGoogleConnected(Boolean(auth.value?.google_connected));
+        setGoogleEmail(auth.value?.google_email || '');
+      }
+      if (sync.status === 'fulfilled') setClassroomSync(sync.value);
+    } catch {}
   }, [getToken]);
 
   useEffect(() => {
     let cancelled = false;
-    const refreshInitialConnections = async () => {
+    const initLayout = async () => {
       try {
-        const [auth, sync] = await loadConnections();
+        let token = getToken ? await getToken() : null;
+        if (!token) {
+          const sess = getManualSession();
+          if (sess?.token) token = sess.token;
+        }
+
+        const [auth, sync, accessStatus] = await Promise.allSettled([
+          api.getAuthStatus(token),
+          api.getSyncStatus(token),
+          api.getPrivateAccessStatus(token),
+        ]);
+
         if (cancelled) return;
+
         if (auth.status === 'fulfilled') {
           setGoogleConnected(Boolean(auth.value?.google_connected));
           setGoogleEmail(auth.value?.google_email || '');
         }
         if (sync.status === 'fulfilled') setClassroomSync(sync.value);
-      } catch {
-        // Keep the current connection values if the status request fails.
-      }
-    };
-    refreshInitialConnections();
-    return () => { cancelled = true; };
-  }, [loadConnections]);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const token = getToken ? await getToken() : null;
-        const status = await api.getPrivateAccessStatus(token);
-        if (!cancelled) setPrivateAccess(status);
-      } catch (error) {
-        if (!cancelled) setPrivateAccess({ granted: false, error: error.message || 'Could not check access.' });
-      }
-    })();
+        if (accessStatus.status === 'fulfilled' && accessStatus.value) {
+          setPrivateAccess(accessStatus.value);
+          if (typeof window !== 'undefined') {
+            try {
+              sessionStorage.setItem('uniflow_private_access', JSON.stringify(accessStatus.value));
+            } catch {}
+          }
+        }
+      } catch {}
+    };
+
+    initLayout();
     return () => { cancelled = true; };
-  }, [getToken, userId]);
+  }, [userId]);
 
   const requestAccessCode = async () => {
-    setAccessBusy(true); setAccessNotice('');
+    setAccessBusy(true);
+    setAccessNotice('');
     try {
       const token = getToken ? await getToken() : null;
       const primaryEmail = user?.primaryEmailAddress;
@@ -134,12 +188,15 @@ export default function DashboardLayout({ children }) {
       setAccessNotice(result.message || 'Request sent to the administrator.');
     } catch (error) {
       setAccessNotice(error.message || 'Could not request access.');
-    } finally { setAccessBusy(false); }
+    } finally {
+      setAccessBusy(false);
+    }
   };
 
   const redeemAccessCode = async (event) => {
     event.preventDefault();
-    setAccessBusy(true); setAccessNotice('');
+    setAccessBusy(true);
+    setAccessNotice('');
     try {
       const token = getToken ? await getToken() : null;
       await api.redeemPrivateAccess(accessCode, token);
@@ -147,39 +204,37 @@ export default function DashboardLayout({ children }) {
       setAccessNotice('Access approved for this account.');
     } catch (error) {
       setAccessNotice(error.message || 'Could not verify that code.');
-    } finally { setAccessBusy(false); }
+    } finally {
+      setAccessBusy(false);
+    }
   };
 
-  const refreshConnections = useCallback(async () => {
-    try {
-      const [auth, sync] = await loadConnections();
-      if (auth.status === 'fulfilled') {
-        setGoogleConnected(Boolean(auth.value?.google_connected));
-        setGoogleEmail(auth.value?.google_email || '');
-      }
-      if (sync.status === 'fulfilled') setClassroomSync(sync.value);
-    } catch {
-      // Keep the current connection values if the status request fails.
-    }
-  }, [loadConnections]);
-
-  const firstName = user?.firstName || user?.username || 'Ahmed';
-  const fullName = user?.fullName || 'Ahmed Khan';
-  const email = user?.primaryEmailAddress?.emailAddress || 'ahmed@au.edu.pk';
+  const manualUser = manualSession?.user;
+  const firstName = user?.firstName || user?.username || manualUser?.firstName || manualUser?.first_name || 'Ahmed';
+  const fullName = user?.fullName || manualUser?.name || 'Ahmed Khan';
+  const email = user?.primaryEmailAddress?.emailAddress || manualUser?.email || 'ahmed@au.edu.pk';
   const pageTitle = titles[pathname] || Object.entries(titles).find(([href]) => pathname.startsWith(`${href}/`))?.[1] || 'Workspace';
-  const handleSignOut = () => {
-    if (userId) {
-      return signOut({ redirectUrl: '/sign-in' });
+
+  const handleSignOut = async () => {
+    clearManualSession();
+    if (userId && signOut) {
+      try {
+        await signOut({ redirectUrl: '/sign-in' });
+        return;
+      } catch (err) {
+        console.error('Sign-out error:', err);
+      }
     }
-    router.push('/sign-in');
+    window.location.href = '/sign-in';
   };
 
   const connectGoogle = async (destination) => {
-    setSyncBusy(true); setSyncNotice('');
+    setSyncBusy(true);
+    setSyncNotice('');
     try {
       const token = getToken ? await getToken() : null;
       if (googleConnected) {
-        setSyncMenuPath(null);
+        setSyncMenuOpen(false);
         setSyncBusy(false);
         router.push(destination);
         return;
@@ -199,7 +254,8 @@ export default function DashboardLayout({ children }) {
       return;
     }
 
-    setSyncBusy(true); setSyncNotice('');
+    setSyncBusy(true);
+    setSyncNotice('');
     try {
       const token = getToken ? await getToken() : null;
       const result = await api.triggerSync(classroomSync?.semester_start_date || null, token);
@@ -213,52 +269,67 @@ export default function DashboardLayout({ children }) {
     }
   };
 
-  if (removedFeatureRoute) return null;
-
-  if (!privateAccess) return <main className="grid min-h-screen place-items-center bg-paper p-6" aria-live="polite"><p className="text-sm text-muted">Checking workspace access…</p></main>;
-  if (!privateAccess.granted) return (
-    <main className="grid min-h-screen place-items-center bg-paper p-6">
-      <section className="w-full max-w-md rounded-2xl border border-line bg-surface p-7 shadow-sm">
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-violet">Private workspace</p>
-        <h1 className="text-2xl font-semibold text-ink">Access needs approval</h1>
-        <p className="mt-3 text-sm leading-6 text-muted">This workspace is limited to approved university fellows. Request a one-time code, then ask the administrator to share it with you. The code only works for the signed-in account below.</p>
-        <p className="mt-4 rounded-lg bg-surface-secondary p-3 text-sm text-body">{user?.primaryEmailAddress?.emailAddress || 'Signed-in account'}</p>
-        {privateAccess.error && <p className="mt-3 text-sm text-rose" role="alert">{privateAccess.error}</p>}
-        <button type="button" disabled={accessBusy} onClick={requestAccessCode} className="mt-5 w-full rounded-lg bg-violet px-4 py-3 font-semibold text-white disabled:opacity-60">{accessBusy ? 'Please wait…' : 'Send approval request'}</button>
-        <form onSubmit={redeemAccessCode} className="mt-5 border-t border-line pt-5">
-          <label htmlFor="private-access-code" className="block text-sm font-medium text-body">Administrator code</label>
-          <div className="mt-2 flex gap-2">
-          <input id="private-access-code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{8}" maxLength={8} value={accessCode} onChange={(event) => setAccessCode(event.target.value.replace(/\D/g, ''))} className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 py-2 text-center tracking-[0.35em]" placeholder="8-digit code" required />
-            <button type="submit" disabled={accessBusy || accessCode.length !== 8} className="rounded-lg border border-line px-4 py-2 font-semibold text-body disabled:opacity-50">Unlock</button>
-          </div>
-        </form>
-        {accessNotice && <p className="mt-4 text-sm text-muted" role="status">{accessNotice}</p>}
-        <button type="button" onClick={() => signOut({ redirectUrl: '/sign-in' })} className="mt-5 text-sm font-medium text-muted underline">Sign out</button>
-      </section>
-    </main>
-  );
+  if (privateAccess && privateAccess.granted === false && userId) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-paper p-6">
+        <section className="w-full max-w-md rounded-2xl border border-line bg-surface p-7 shadow-sm">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-violet">Private workspace</p>
+          <h1 className="text-2xl font-semibold text-ink">Access needs approval</h1>
+          <p className="mt-3 text-sm leading-6 text-muted">
+            This workspace is limited to approved university fellows. Request a one-time code, then ask the administrator to share it with you.
+          </p>
+          <p className="mt-4 rounded-lg bg-surface-secondary p-3 text-sm text-body">
+            {user?.primaryEmailAddress?.emailAddress || 'Signed-in account'}
+          </p>
+          {privateAccess.error && <p className="mt-3 text-sm text-rose" role="alert">{privateAccess.error}</p>}
+          <button type="button" disabled={accessBusy} onClick={requestAccessCode} className="mt-5 w-full rounded-lg bg-violet px-4 py-3 font-semibold text-white disabled:opacity-60 cursor-pointer">
+            {accessBusy ? 'Please wait…' : 'Send approval request'}
+          </button>
+          <form onSubmit={redeemAccessCode} className="mt-5 border-t border-line pt-5">
+            <label htmlFor="private-access-code" className="block text-sm font-medium text-body">Administrator code</label>
+            <div className="mt-2 flex gap-2">
+              <input id="private-access-code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{8}" maxLength={8} value={accessCode} onChange={(event) => setAccessCode(event.target.value.replace(/\D/g, ''))} className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 py-2 text-center tracking-[0.35em]" placeholder="8-digit code" required />
+              <button type="submit" disabled={accessBusy || accessCode.length !== 8} className="rounded-lg border border-line px-4 py-2 font-semibold text-body disabled:opacity-50 cursor-pointer">Unlock</button>
+            </div>
+          </form>
+          {accessNotice && <p className="mt-4 text-sm text-muted" role="status">{accessNotice}</p>}
+          <button type="button" onClick={() => signOut({ redirectUrl: '/sign-in' })} className="mt-5 text-sm font-medium text-muted underline cursor-pointer">Sign out</button>
+        </section>
+      </main>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-paper">
+    <div className="min-h-screen bg-paper flex">
       <OnboardingModal />
-      {sidebarOpen && <button aria-label="Close navigation" className="fixed inset-0 z-40 bg-black/40 lg:hidden" onClick={() => setSidebarOpen(false)} />}
+      <CompanionExtensionModal isOpen={extensionModalOpen} onClose={() => setExtensionModalOpen(false)} />
+
+      {/* Mobile Backdrop */}
+      {sidebarOpen && (
+        <button aria-label="Close navigation" className="fixed inset-0 z-40 bg-black/40 backdrop-blur-xs lg:hidden" onClick={() => setSidebarOpen(false)} />
+      )}
+
+      {/* Redesigned Sidebar */}
       <aside className={`fixed inset-y-0 left-0 z-50 w-64 flex flex-col bg-surface border-r border-line lg:translate-x-0 transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
-        <Link href="/dashboard" className="flex items-center gap-2.5 px-3 pb-6 text-ink text-xl font-bold tracking-tight hover:opacity-80" onClick={() => setSidebarOpen(false)}>
-          <span className="size-8 grid place-items-center flex-shrink-0 rounded-lg bg-violet text-white text-2xl font-bold font-serif leading-none">u</span>
-          <span>uniflow</span>
-        </Link>
-        <div className="flex items-center gap-2.5 min-h-[60px] px-3 mb-5 bg-surface-secondary border border-border-light rounded-lg">
-          <span className="size-8 flex-shrink-0 grid place-items-center rounded-lg bg-violet-light text-violet text-xs font-bold">{firstName.slice(0, 1).toUpperCase()}</span>
-          <span className="flex-1 min-w-0 flex flex-col gap-1">
-            <strong className="text-sm font-semibold">My workspace</strong>
-            <small className="text-muted text-xs">Student account</small>
-          </span>
-          <Icon name="more" size={17} className="text-muted" />
+        {/* Brand Header */}
+        <div className="px-5 pt-5 pb-4 border-b border-border-light flex items-center justify-between">
+          <Link href="/dashboard" className="flex items-center gap-2.5 no-underline group" onClick={() => setSidebarOpen(false)}>
+            <div className="size-8.5 rounded-xl bg-gradient-to-tr from-violet to-violet-dark text-white flex items-center justify-center shadow-md shadow-violet/20 font-semibold text-lg">
+              u
+            </div>
+            <div>
+              <span className="text-base font-semibold tracking-tight text-heading block leading-none">uniflow</span>
+              <span className="text-xs text-muted font-normal tracking-wide">Academic Workspace</span>
+            </div>
+          </Link>
+          <span className="rounded-md bg-violet-light/60 px-2 py-0.5 text-xs font-semibold text-violet-dark">v2.5</span>
         </div>
-        <nav className="flex-1 flex flex-col gap-5 overflow-y-auto" aria-label="Main navigation">
-          {groups.map((group) => (
-            <div key={group.label}>
-              <p className="px-3 mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted">{group.label}</p>
+
+        {/* Navigation Groups */}
+        <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-5" aria-label="Main navigation">
+          {navGroups.map((group) => (
+            <div key={group.label} className="space-y-1">
+              <p className="px-3 mb-1.5 text-xs font-semibold uppercase tracking-wider text-label">{group.label}</p>
               {group.items.map((item) => {
                 const active = item.href === '/dashboard' ? pathname === item.href : pathname === item.href || pathname.startsWith(`${item.href}/`);
                 return (
@@ -266,125 +337,152 @@ export default function DashboardLayout({ children }) {
                     key={item.href}
                     href={item.href}
                     onClick={() => setSidebarOpen(false)}
-                    className={`flex items-center gap-3 h-10 px-3 rounded-md text-sm font-medium transition-colors duration-150 ${active ? 'bg-violet-light text-violet-dark font-semibold' : 'text-text-nav hover:bg-surface-hover hover:text-violet-dark'}`}
+                    className={`flex items-center gap-3 h-10 px-3 rounded-xl text-sm transition-all duration-150 no-underline ${
+                      active
+                        ? 'bg-violet-light text-violet-dark font-medium shadow-2xs'
+                        : 'text-nav font-normal hover:bg-surface-secondary hover:text-heading hover:font-medium'
+                    }`}
                     aria-current={active ? 'page' : undefined}
                   >
-                    <NavIcon name={item.icon} className={`${active ? 'text-violet' : 'text-subtle'}`} />
-                    <span>{item.label}</span>
+                    <NavIcon name={item.icon} active={active} />
+                    <span className="flex-1 truncate">{item.label}</span>
+                    {active && <span className="size-1.5 rounded-full bg-violet" />}
                   </Link>
                 );
               })}
             </div>
           ))}
         </nav>
-        <div className="flex items-start gap-2.5 p-3 rounded-lg bg-surface-violet mx-3 mb-4">
-          <Icon name="sparkles" size={17} className="size-5 grid place-items-center rounded-md bg-violet-light text-violet flex-shrink-0" />
-          <div>
-            <strong className="block mb-1 text-sm font-semibold text-ink">Your semester, in sync.</strong>
-            <p className="text-xs leading-relaxed text-muted">Keep coursework and classes in one clear view.</p>
-          </div>
+
+        {/* Logout Action */}
+        <div className="p-3 border-t border-border-light">
+          <button
+            type="button"
+            id="sidebar-logout-btn"
+            onClick={handleSignOut}
+            className="w-full flex items-center justify-center gap-2 h-10 px-3 rounded-xl border border-rose-border/70 bg-rose-bg/50 text-rose font-medium text-xs transition-all duration-150 hover:bg-rose hover:text-white hover:border-rose hover:shadow-xs active:scale-[0.99] cursor-pointer group"
+          >
+            <Icon name="logout" size={15} className="transition-transform group-hover:-translate-x-0.5" />
+            <span>Log Out</span>
+          </button>
         </div>
-        <div className="flex flex-col gap-2.5 px-1 pt-3 border-t border-border-light">
-          <div className="flex items-center gap-2">
-            <div className="flex-1 min-w-0 flex flex-col gap-1">
-              <strong className="text-sm font-semibold truncate">{fullName}</strong>
-              <span className="text-xs text-muted truncate">{email}</span>
-            </div>
+
+        {/* User Account Footer */}
+        <div className="px-4 py-3 border-t border-border-light flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
             {mounted && userId ? (
-              <UserButton afterSignOutUrl="/sign-in" appearance={{ elements: { avatarBox: 'size-7' } }} />
+              <UserButton afterSignOutUrl="/sign-in" appearance={{ elements: { avatarBox: 'size-7.5 rounded-lg' } }} />
             ) : (
-              <div className="size-7 rounded-full bg-violet text-white flex items-center justify-center text-xs font-bold" suppressHydrationWarning>
+              <span className="size-7.5 rounded-lg bg-violet text-white grid place-items-center text-xs font-semibold shrink-0">
                 {firstName.slice(0, 1).toUpperCase()}
-              </div>
+              </span>
             )}
+            <div className="min-w-0 flex-1">
+              <strong className="block text-sm font-semibold text-heading truncate">{fullName}</strong>
+              <small className="block text-xs font-normal text-muted truncate">{email}</small>
+            </div>
           </div>
-          {mounted && (
-            <button className="w-full min-h-[34px] px-2.5 border border-border rounded-md bg-surface text-text-nav text-sm font-medium text-left cursor-pointer transition-all duration-150 hover:border-border-hover hover:bg-surface-hover hover:text-violet-dark focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet" type="button" onClick={handleSignOut}>
-              Sign out
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={handleSignOut}
+            title="Log out"
+            aria-label="Log out"
+            className="size-7.5 grid place-items-center rounded-lg text-muted hover:text-rose hover:bg-rose-bg/60 transition cursor-pointer"
+          >
+            <Icon name="logout" size={15} />
+          </button>
         </div>
       </aside>
 
-      <div className={pathname === '/dashboard/courses' ? "lg:ml-64 h-screen max-h-screen flex flex-col overflow-hidden" : "lg:ml-64 min-h-screen"}>
-        <header className={pathname === '/dashboard/courses' ? "sticky top-0 z-20 h-16 shrink-0 flex items-center justify-between px-6 bg-surface/92 border-b border-border-light backdrop-blur-md lg:px-10" : "sticky top-0 z-20 h-16 flex items-center justify-between px-6 bg-surface/92 border-b border-border-light backdrop-blur-md lg:px-10"}>
-          <button className="lg:hidden size-8 flex flex-col justify-center gap-1 p-1.5 border border-border-light rounded-md bg-surface" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}>
-            <span className="h-[1.5px] w-[15px] bg-text-nav" />
-            <span className="h-[1.5px] w-[15px] bg-text-nav" />
-            <span className="h-[1.5px] w-[15px] bg-text-nav" />
-          </button>
-          <div className="flex items-center gap-2 text-sm text-muted">
-            <span>Workspace</span>
-            <span className="text-subtle">/</span>
-            <strong className="text-body font-semibold">{pageTitle}</strong>
+      {/* Main App Container */}
+      <div className="flex-1 lg:ml-64 flex flex-col min-h-screen min-w-0">
+        {/* Redesigned Navbar */}
+        <header className="sticky top-0 z-30 h-16 flex items-center justify-between px-4 sm:px-6 lg:px-8 bg-surface/85 border-b border-border/70 backdrop-blur-xl">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              className="lg:hidden size-9 grid place-items-center rounded-xl border border-border bg-surface text-nav hover:bg-surface-secondary cursor-pointer"
+              aria-label="Open navigation"
+              onClick={() => setSidebarOpen(true)}
+            >
+              <Icon name="menu" size={18} />
+            </button>
+            <div className="flex items-center gap-1.5 text-xs">
+              <span className="text-muted font-medium">Workspace</span>
+              <span className="text-subtle">/</span>
+              <strong className="text-heading font-semibold">{pageTitle}</strong>
+            </div>
           </div>
-          <div className="flex items-center gap-4">
+
+          <div className="flex items-center gap-2.5">
+            {/* Companion Extension Pill Button */}
+            <button
+              type="button"
+              onClick={() => setExtensionModalOpen(true)}
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition cursor-pointer shadow-2xs ${
+                extensionInstalled
+                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-200/80 hover:bg-emerald-100'
+                  : 'bg-violet-light text-violet-dark border border-violet/30 hover:bg-violet/20'
+              }`}
+            >
+              <span className={`size-1.5 rounded-full ${extensionInstalled ? 'bg-emerald-600' : 'bg-violet animate-ping'}`} />
+              <span>{extensionInstalled ? 'Companion Active' : 'Setup Extension'}</span>
+            </button>
+
+            {/* Sync Menu */}
             <div className="relative">
               <button
-                className={`flex items-center gap-1.5 h-8 px-3 border rounded-md bg-surface text-sm font-semibold cursor-pointer transition-all duration-150 ${mounted && googleConnected ? "after:ml-px after:size-1.5 after:rounded-full after:bg-success after:content-['']" : ''}`}
                 type="button"
-                aria-haspopup="menu"
-                aria-expanded={syncMenuOpen}
-                onClick={() => { setSyncMenuPath(syncMenuOpen ? null : pathname); setSyncNotice(''); }}
-                suppressHydrationWarning
+                onClick={() => setSyncMenuOpen(!syncMenuOpen)}
+                className="inline-flex h-8.5 items-center gap-1.5 rounded-xl border border-border bg-surface px-3 text-xs font-semibold text-heading hover:bg-surface-secondary transition cursor-pointer"
               >
-                <Icon name="refresh" size={15} />
-                <span>Sync</span>
-                <Icon name="chevronDown" size={13} className="text-muted" />
+                <Icon name="refresh" size={13} className={syncBusy ? 'animate-spin' : ''} />
+                <span className="hidden sm:inline">Sync</span>
+                <Icon name="chevronDown" size={11} className="text-muted" />
               </button>
+
               {syncMenuOpen && (
                 <>
-                  <button className="fixed inset-0 z-10" type="button" aria-label="Close sync menu" onClick={() => setSyncMenuPath(null)} />
-                  <section className="absolute z-20 top-full -right-10 mt-3 w-[350px] max-w-[calc(100vw-30px)] p-2.5 border border-border rounded-xl bg-surface shadow-dropdown" role="menu" aria-label="Connect and sync services">
-                    <div className="flex items-center justify-between p-2 mb-3 border-b border-border-light">
-                      <div>
-                        <p className="text-xs font-semibold uppercase tracking-wider text-muted">CONNECTED SERVICES</p>
-                        <strong className="block mt-1 text-sm font-semibold text-body">Keep your workspace current</strong>
-                      </div>
-                      <button type="button" aria-label="Refresh connection status" onClick={refreshConnections} className="size-7 border border-border-light rounded-md bg-surface text-muted text-xl cursor-pointer">
-                        <Icon name="refresh" size={15} />
-                      </button>
-                    </div>
-                    <button className="w-full min-h-[59px] flex items-center gap-2.5 p-2.5 border-0 border-b border-border-light bg-surface text-left cursor-pointer hover:rounded-md hover:bg-surface-hover disabled:opacity-60 disabled:cursor-wait" type="button" role="menuitem" onClick={syncClassroom} disabled={syncBusy}>
-                      <span className="size-7 grid place-items-center flex-shrink-0 rounded-md bg-violet-light text-violet text-sm font-bold"><Icon name="school" size={16} /></span>
-                      <span className="flex-1 min-w-0 flex flex-col gap-1">
-                        <strong className="text-sm font-semibold text-body">Google Classroom</strong>
-                        <small className="text-xs text-muted">{googleConnected ? `Connected${classroomSync?.last_sync ? ` · Synced ${new Date(classroomSync.last_sync).toLocaleDateString()}` : ''}` : 'Connect Google to sync courses and work'}</small>
+                  <button className="fixed inset-0 z-10" type="button" aria-label="Close sync menu" onClick={() => setSyncMenuOpen(false)} />
+                  <section className="absolute right-0 top-full mt-2 w-72 rounded-2xl border border-border bg-surface p-2 shadow-xl z-20 animate-in fade-in zoom-in-95 duration-100">
+                    <p className="px-3 pt-2 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-muted">Connected Services</p>
+                    <button
+                      type="button"
+                      onClick={() => { syncClassroom(); setSyncMenuOpen(false); }}
+                      disabled={syncBusy}
+                      className="w-full flex items-center justify-between p-2.5 rounded-xl text-left hover:bg-surface-secondary transition cursor-pointer text-xs font-semibold text-heading"
+                    >
+                      <span className="flex items-center gap-2">
+                        <Icon name="school" size={15} className="text-violet" />
+                        <span>Google Classroom</span>
                       </span>
-                      <span className={`size-1.5 rounded-full ${mounted && googleConnected ? 'bg-success' : 'bg-transparent'}`} />
+                      <span className={`size-1.5 rounded-full ${googleConnected ? 'bg-emerald-500' : 'bg-muted'}`} />
                     </button>
-                    <button className="w-full min-h-[59px] flex items-center gap-2.5 p-2.5 border-0 border-b border-border-light bg-surface text-left cursor-pointer hover:rounded-md hover:bg-surface-hover disabled:opacity-60 disabled:cursor-wait" type="button" role="menuitem" onClick={() => connectGoogle('/dashboard/mail-drive')} disabled={syncBusy}>
-                      <span className="size-7 grid place-items-center flex-shrink-0 rounded-md bg-google-bg text-google text-sm font-bold">G</span>
-                      <span className="flex-1 min-w-0 flex flex-col gap-1">
-                        <strong className="text-sm font-semibold text-body">Google Mail & Drive</strong>
-                        <small className="text-xs text-muted">{googleEmail ? (googleEmail + ' · Open files') : 'Connect Google to see mail and files'}</small>
+                    <Link
+                      href="/dashboard/portal"
+                      onClick={() => setSyncMenuOpen(false)}
+                      className="w-full flex items-center justify-between p-2.5 rounded-xl text-left hover:bg-surface-secondary transition cursor-pointer text-xs font-semibold text-heading no-underline"
+                    >
+                      <span className="flex items-center gap-2">
+                        <Icon name="globe" size={15} className="text-cyan" />
+                        <span>University Portal</span>
                       </span>
-                      <span className={`size-1.5 rounded-full ${mounted && googleConnected ? 'bg-success' : 'bg-transparent'}`} />
-                    </button>
-                    <Link className="w-full min-h-[59px] flex items-center gap-2.5 p-2.5 border-0 bg-surface text-left hover:rounded-md hover:bg-surface-hover" role="menuitem" href="/dashboard/portal" onClick={() => setSyncMenuPath(null)}>
-                      <span className="size-7 grid place-items-center flex-shrink-0 rounded-md bg-cyan-bg text-cyan text-sm font-bold"><Icon name="globe" size={16} /></span>
-                      <span className="flex-1 min-w-0 flex flex-col gap-1">
-                        <strong className="text-sm font-semibold text-body">University portal</strong>
-                        <small className="text-xs text-muted">Set up portal access and sync grades</small>
-                      </span>
-                      <Icon name="arrowUpRight" size={14} className="text-subtle" />
+                      <Icon name="arrowUpRight" size={12} className="text-subtle" />
                     </Link>
-                    {syncNotice && (
-                      <p className={`p-2.5 text-sm ${syncNotice.toLowerCase().includes('could not') ? 'text-rose' : 'text-amber'}`} role="status">{syncNotice}</p>
-                    )}
-                    {mounted && !googleConnected && (
-                      <p className="p-2.5 text-xs text-muted">Google connection is shared by Classroom, Mail, and Drive.</p>
-                    )}
                   </section>
                 </>
               )}
             </div>
-            <span className="hidden lg:block text-sm text-muted" suppressHydrationWarning>{new Intl.DateTimeFormat('en', { weekday: 'short', month: 'short', day: 'numeric' }).format(new Date())}</span>
-            <span className="hidden lg:block w-px h-5 bg-border" />
-            <span className="size-7 flex-shrink-0 grid place-items-center rounded-full bg-violet-light text-violet text-xs font-bold" suppressHydrationWarning>{firstName.slice(0, 1).toUpperCase()}</span>
+
+            {/* Date Pill */}
+            <span className="hidden md:inline-block rounded-xl border border-border-light bg-surface px-3 py-1.5 text-xs text-muted font-medium">
+              {new Intl.DateTimeFormat('en', { weekday: 'short', month: 'short', day: 'numeric' }).format(new Date())}
+            </span>
           </div>
         </header>
-        <main className={pathname === '/dashboard/courses' ? "mx-auto flex-1 min-h-0 w-full max-w-[1536px] px-3 sm:px-5 lg:px-8 py-2 text-sm leading-6 flex flex-col overflow-hidden" : "mx-auto min-h-[calc(100vh-64px)] w-full max-w-7xl px-4 pb-10 text-sm leading-6 sm:px-6 lg:px-10"}>
+
+        {/* Content View */}
+        <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
           <FirebaseAlertsBanner />
           {children}
         </main>

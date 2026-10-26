@@ -7,7 +7,7 @@ export default function Home() {
   const router = useRouter();
 
   useEffect(() => {
-    router.replace('/dashboard/assignments');
+    router.replace('/dashboard');
   }, [router]);
 
   return (

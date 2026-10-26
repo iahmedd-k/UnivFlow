@@ -1,6 +1,7 @@
 import jwt
 import httpx
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from fastapi import Request, HTTPException, Depends, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -14,6 +15,27 @@ security = HTTPBearer(auto_error=False)
 
 # Cache for Clerk JWKS
 _jwks_cache: Optional[Dict[str, Any]] = None
+
+MANUAL_JWT_SECRET = getattr(settings, "jwt_secret_key", None) or getattr(settings, "secret_key", None) or "uniflow_manual_auth_fallback_secret_key"
+MANUAL_JWT_ALGORITHM = getattr(settings, "jwt_algorithm", "HS256") or "HS256"
+
+
+def create_manual_token(user_id: str, email: str, name: str, expires_days: int = 30) -> str:
+    """Create a signed JWT token for manual / seeded authentication."""
+    now = datetime.now(timezone.utc)
+    first_name = name.split()[0] if name else "Student"
+    last_name = " ".join(name.split()[1:]) if len(name.split()) > 1 else ""
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "name": name,
+        "first_name": first_name,
+        "last_name": last_name,
+        "iss": "uniflow_manual",
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(days=expires_days)).timestamp()),
+    }
+    return jwt.encode(payload, MANUAL_JWT_SECRET, algorithm=MANUAL_JWT_ALGORITHM)
 
 
 def get_clerk_jwks_url() -> str:
@@ -50,11 +72,29 @@ def fetch_clerk_jwks(force_refresh: bool = False) -> Optional[Dict[str, Any]]:
 
 def verify_clerk_token(token: str) -> Dict[str, Any]:
     """
-    Verify Clerk JWT session token against Clerk JWKS public keys.
+    Verify Clerk JWT session token or manual HS256 fallback session token.
     """
     if not token:
         raise HTTPException(status_code=401, detail="Missing authentication token")
 
+    # 1. First check if token is signed with manual auth secret (HS256)
+    try:
+        unverified_header = jwt.get_unverified_header(token)
+        if unverified_header.get("alg") in ("HS256", MANUAL_JWT_ALGORITHM) or unverified_header.get("iss") == "uniflow_manual":
+            payload = jwt.decode(
+                token,
+                key=MANUAL_JWT_SECRET,
+                algorithms=["HS256", MANUAL_JWT_ALGORITHM],
+                options={"verify_aud": False},
+            )
+            return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Authentication token has expired")
+    except Exception:
+        # Not a valid manual HS256 token, proceed to Clerk JWKS verification
+        pass
+
+    # 2. Clerk JWKS verification
     try:
         unverified_header = jwt.get_unverified_header(token)
         kid = unverified_header.get("kid")
@@ -115,11 +155,15 @@ async def get_current_user_optional(
     email = profile.get("email") or payload.get("email") or payload.get("primary_email_address") or ""
     name = profile.get("first_name", "") + " " + profile.get("last_name", "")
     name = name.strip() or payload.get("name") or "Student"
+    first_name = profile.get("first_name") or payload.get("first_name") or (name.split()[0] if name else "Student")
+    last_name = profile.get("last_name") or payload.get("last_name") or (" ".join(name.split()[1:]) if len(name.split()) > 1 else "")
 
     return {
         "id": user_id,
         "email": email,
         "name": name,
+        "first_name": first_name,
+        "last_name": last_name,
         "claims": payload,
         "authenticated": True
     }

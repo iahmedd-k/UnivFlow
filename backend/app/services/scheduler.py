@@ -408,7 +408,6 @@ def start_scheduler():
             IntervalTrigger(minutes=30),
             id="gcr_30min_sync",
             name="Google Classroom Auto-Sync (Every 30m)",
-            next_run_time=datetime.now(scheduler.timezone),
             replace_existing=True,
             misfire_grace_time=300,
             max_instances=1,

@@ -44,6 +44,10 @@ PORTAL_PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
 
 _portal_processes: dict[str, Any] = {}
 _sync_locks: dict[str, threading.Lock] = {}
+_sync_jobs_lock = threading.Lock()
+_active_sync_jobs: dict[str, str] = {}
+_sync_jobs: dict[str, dict] = {}
+
 
 
 class PortalUrlInput(BaseModel):

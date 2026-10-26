@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAuth, useUser } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 import Icon from '@/app/dashboard/Icon';
+import { ExtensionSetupBox } from '@/app/dashboard/CompanionExtensionModal';
 
 export default function OnboardingModal() {
   const { userId, getToken } = useAuth();
@@ -375,44 +376,48 @@ export default function OnboardingModal() {
         {/* Step 2 Body */}
         {step === 2 && (
           <form onSubmit={handleFinish} className="p-5 flex flex-col gap-4">
-            {/* Claude AI Session Cookie */}
-            <div className="p-3 rounded-xl border border-border bg-surface-secondary/30">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs font-semibold text-text-heading flex items-center gap-1.5">
-                  <Icon name="brain" size={14} className="text-violet" />
-                  Claude AI Session Cookie
-                </span>
-                {claudeConnected ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-success-bg text-success border border-success/20">
-                    <span className="size-1.5 rounded-full bg-success" />
-                    Active
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setShowClaudeHelp(!showClaudeHelp)}
-                    className="text-[10px] text-violet hover:underline flex items-center gap-0.5"
-                  >
-                    <Icon name="help" size={11} />
-                    How to find?
-                  </button>
-                )}
-              </div>
+            <div className="text-xs text-muted leading-relaxed">
+              Our <strong>Companion Chrome Extension</strong> automatically syncs your active Google Classroom, Portal, and Claude cookies in 1 click with zero password prompts.
+            </div>
 
-              {showClaudeHelp && !claudeConnected && (
-                <div className="mb-2 p-2 rounded bg-surface border border-border text-[11px] text-muted space-y-1">
-                  <p>1. Open <a href="https://claude.ai" target="_blank" rel="noreferrer" className="text-violet underline">claude.ai</a> and log in.</p>
-                  <p>2. Press <kbd className="px-1 py-0.5 rounded bg-surface-secondary border border-border text-[10px]">F12</kbd> &rarr; Application tab &rarr; Cookies.</p>
-                  <p>3. Copy the value of <code className="text-ink font-semibold">sessionKey</code> and paste below.</p>
-                </div>
-              )}
+            {/* Chrome Companion Extension Setup & Sync */}
+            <ExtensionSetupBox
+              token={getToken ? undefined : null}
+              onSynced={() => {
+                setGoogleConnected(true);
+                setClaudeConnected(true);
+                setPortalConnected(true);
+              }}
+            />
 
-              {claudeConnected ? (
-                <p className="text-xs text-muted">
-                  Your Claude account is linked for zero-latency lab and assignment report solving.
-                </p>
-              ) : (
+            {/* Optional Collapsible Manual Cookie Entry */}
+            <details className="rounded-xl border border-border bg-surface-secondary/20 p-3 text-xs">
+              <summary className="cursor-pointer font-semibold text-text-heading hover:text-violet transition">
+                Advanced / Manual Cookie Fallback (Optional)
+              </summary>
+              <div className="mt-3 space-y-3 pt-3 border-t border-border-light">
+                {/* Claude AI Session Cookie */}
                 <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-semibold text-text-heading flex items-center gap-1.5">
+                      <Icon name="brain" size={13} className="text-violet" />
+                      Claude AI Session Key
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowClaudeHelp(!showClaudeHelp)}
+                      className="text-[10px] text-violet hover:underline flex items-center gap-0.5"
+                    >
+                      <Icon name="help" size={11} />
+                      How to find?
+                    </button>
+                  </div>
+                  {showClaudeHelp && (
+                    <div className="mb-2 p-2 rounded bg-surface border border-border text-[11px] text-muted space-y-1">
+                      <p>1. Open <a href="https://claude.ai" target="_blank" rel="noreferrer" className="text-violet underline">claude.ai</a>.</p>
+                      <p>2. F12 &rarr; Application &rarr; Cookies &rarr; Copy <code className="text-ink font-semibold">sessionKey</code> value.</p>
+                    </div>
+                  )}
                   <input
                     type="password"
                     placeholder="sk-ant-sid01-..."
@@ -420,64 +425,40 @@ export default function OnboardingModal() {
                     onChange={(e) => setClaudeSessionKey(e.target.value)}
                     className="w-full h-8 px-2.5 text-xs bg-surface border border-border-input rounded-lg focus:outline-none focus:ring-2 focus:ring-violet/20 focus:border-violet text-ink placeholder:text-subtle font-mono transition-all"
                   />
-                  <p className="mt-1 text-[10px] text-muted">
-                    Powers automatic report generation & terminal output creation.
-                  </p>
                 </div>
-              )}
-            </div>
 
-            {/* University Portal Session Cookies */}
-            <div className="p-3 rounded-xl border border-border bg-surface-secondary/30">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs font-semibold text-text-heading flex items-center gap-1.5">
-                  <Icon name="globe" size={14} className="text-cyan" />
-                  University Portal Cookies
-                </span>
-                {portalConnected ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-success-bg text-success border border-success/20">
-                    <span className="size-1.5 rounded-full bg-success" />
-                    Active
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setShowPortalHelp(!showPortalHelp)}
-                    className="text-[10px] text-violet hover:underline flex items-center gap-0.5"
-                  >
-                    <Icon name="help" size={11} />
-                    How to find?
-                  </button>
-                )}
-              </div>
-
-              {showPortalHelp && !portalConnected && (
-                <div className="mb-2 p-2 rounded bg-surface border border-border text-[11px] text-muted space-y-1">
-                  <p>1. Open your Air University Student Portal.</p>
-                  <p>2. Open DevTools &rarr; Network &rarr; Click any request.</p>
-                  <p>3. Copy the <code className="text-ink font-semibold">Cookie</code> header value and paste below.</p>
-                </div>
-              )}
-
-              {portalConnected ? (
-                <p className="text-xs text-muted">
-                  Portal cookie is connected for live attendance & timetable synchronization.
-                </p>
-              ) : (
+                {/* University Portal Session Cookies */}
                 <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-semibold text-text-heading flex items-center gap-1.5">
+                      <Icon name="globe" size={13} className="text-cyan" />
+                      Portal Cookies (.AspNetCore.Cookies)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowPortalHelp(!showPortalHelp)}
+                      className="text-[10px] text-violet hover:underline flex items-center gap-0.5"
+                    >
+                      <Icon name="help" size={11} />
+                      How to find?
+                    </button>
+                  </div>
+                  {showPortalHelp && (
+                    <div className="mb-2 p-2 rounded bg-surface border border-border text-[11px] text-muted space-y-1">
+                      <p>1. Open your Air University Student Portal.</p>
+                      <p>2. F12 &rarr; Application &rarr; Cookies &rarr; Copy <code className="text-ink font-semibold">.AspNetCore.Cookies</code> value.</p>
+                    </div>
+                  )}
                   <input
                     type="password"
-                    placeholder="ASP.NET_SessionId=...; .ASPXAUTH=..."
+                    placeholder=".AspNetCore.Cookies=..."
                     value={portalCookies}
                     onChange={(e) => setPortalCookies(e.target.value)}
                     className="w-full h-8 px-2.5 text-xs bg-surface border border-border-input rounded-lg focus:outline-none focus:ring-2 focus:ring-violet/20 focus:border-violet text-ink placeholder:text-subtle font-mono transition-all"
                   />
-                  <p className="mt-1 text-[10px] text-muted">
-                    Syncs attendance and portal records without needing a headless browser.
-                  </p>
                 </div>
-              )}
-            </div>
+              </div>
+            </details>
 
             {/* Step 2 Actions */}
             <div className="pt-3 border-t border-border-light flex items-center justify-between">

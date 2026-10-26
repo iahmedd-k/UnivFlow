@@ -74,8 +74,8 @@ export default function FirebaseAlertsBanner() {
         <div className={`fixed right-6 top-6 z-[9999] w-[90%] max-w-md animate-in slide-in-from-top-2 overflow-hidden rounded-xl border-2 bg-surface shadow-xl duration-300 ${isAttendance ? 'border-rose' : 'border-violet'}`}>
           <div className={`flex items-center justify-between gap-3 border-b px-4 py-3 ${isAttendance ? 'border-rose-border bg-rose-bg' : 'border-violet/20 bg-violet-light'}`}>
             <div className="flex items-center gap-2.5">
-              <span className="text-lg">
-                {isAttendance ? '⚠️' : '🔔'}
+              <span className="flex items-center">
+                {isAttendance ? <Icon name="alertTriangle" size={18} className="text-rose" /> : <Icon name="bell" size={18} className="text-violet" />}
               </span>
               <strong className={`text-sm ${isAttendance ? 'text-rose' : 'text-violet-dark'}`}>
                 {activeAlert.title}

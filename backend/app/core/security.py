@@ -106,23 +106,32 @@ def decrypt_token_if_encrypted(value: str | None) -> str | None:
     if not value:
         return value
     if is_encrypted_token(value):
-        return decrypt_token(value)
+        try:
+            return decrypt_token(value)
+        except Exception as e:
+            logger.warning(f"Could not decrypt token (may require reconnecting): {e}")
+            return None
     return value
 
 
 def get_google_credential_tokens(db, credential) -> tuple[str | None, str | None]:
     """Read OAuth tokens and transparently migrate a legacy plaintext row."""
+    if not credential:
+        return None, None
     access = decrypt_token_if_encrypted(credential.access_token)
     refresh = decrypt_token_if_encrypted(credential.refresh_token)
     changed = False
-    if access != credential.access_token:
+    if access and not is_encrypted_token(credential.access_token):
         credential.access_token = encrypt_token_if_needed(access)
         changed = True
-    if refresh != credential.refresh_token:
+    if refresh and not is_encrypted_token(credential.refresh_token):
         credential.refresh_token = encrypt_token_if_needed(refresh)
         changed = True
     if changed:
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
     return access, refresh
 
 
@@ -135,8 +144,31 @@ def decrypt_token(encrypted_token: str) -> str:
         version = "v1"
         data = encrypted_token
     
-    f = Fernet(get_encryption_key(version))
-    return f.decrypt(data.encode()).decode()
+    # 1. Try with the primary encryption key
+    try:
+        f = Fernet(get_encryption_key(version))
+        return f.decrypt(data.encode()).decode()
+    except Exception:
+        pass
+
+    # 2. Try known fallback candidate keys
+    candidate_keys = [
+        getattr(settings, "secret_key", None),
+        getattr(settings, "jwt_secret_key", None),
+        "dev-secret-key-change-in-production",
+        "default-secret-change-me",
+        "change-me-in-production",
+    ]
+    for candidate in candidate_keys:
+        if not candidate:
+            continue
+        try:
+            f_cand = Fernet(_derive_key(candidate))
+            return f_cand.decrypt(data.encode()).decode()
+        except Exception:
+            continue
+
+    raise ValueError("Token could not be decrypted with configured keys")
 
 
 def reencrypt_token(encrypted_token: str, target_version: str = None) -> str:

@@ -2752,6 +2752,17 @@ def solve_assignment_via_claude_browser(
         solution.generated_at = datetime.now(timezone.utc)
         solution.validated_at = None
         assignment.status = AssignmentStatus.READY_FOR_REVIEW
+
+        if doc_result and doc_result.get("doc_id"):
+            from app.db.models import Submission
+            sub = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
+            if not sub:
+                sub = Submission(assignment_id=assignment_id, user_id=user_id)
+                db.add(sub)
+            sub.google_doc_id = doc_result.get("doc_id")
+            sub.google_drive_file_id = doc_result.get("doc_id")
+            sub.attached_at = datetime.now(timezone.utc)
+
         db.commit()
 
         # 13. Immediately deliver generated solution and deliverables to user's selected email
@@ -2760,6 +2771,15 @@ def solve_assignment_via_claude_browser(
             send_solution_delivery_email(db, assignment_id, user_id)
         except Exception as mail_err:
             logger.warning("Could not dispatch auto-solution email for assignment %s: %s", assignment_id, mail_err)
+
+        # 14. Check if student opted in to auto-submission/attachment on dashboard
+        try:
+            from app.classroom.router import auto_turn_in_completed_solution
+            submission_result = auto_turn_in_completed_solution(db, assignment_id, user_id)
+            if submission_result and submission_result.get("success"):
+                logger.info("Auto submission/attachment completed for assignment %s: %s", assignment_id, submission_result)
+        except Exception as attach_err:
+            logger.warning("Auto turn-in after Claude solution generation failed for assignment %s: %s", assignment_id, attach_err)
 
         _update_solver_progress(
             db,

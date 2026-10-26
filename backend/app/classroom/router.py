@@ -1190,8 +1190,11 @@ async def turn_in_assignment(
     
     # Preserve privacy for older files that may have been made link-accessible.
     for drive_id in [student_doc_id, *drive_file_ids]:
-        if not docs_service.remove_public_sharing(drive_id):
-            raise HTTPException(status_code=502, detail="Could not verify private sharing for an attached Drive file.")
+        if drive_id and hasattr(docs_service, "remove_public_sharing"):
+            try:
+                docs_service.remove_public_sharing(drive_id)
+            except Exception as priv_err:
+                logger.warning("Could not verify private sharing for %s (non-fatal): %s", drive_id, priv_err)
     
     # Attach the created cover document and all requested files to the student's
     # actual Classroom submission, then turn it in only after attachment succeeds.
@@ -1367,6 +1370,21 @@ def _attach_submission_files(
         files_to_add = [fid for fid in file_ids if fid and fid not in existing_drive_ids]
 
         if files_to_add:
+            # If the submission was already TURNED_IN, Google Classroom API rejects modifyAttachments with:
+            # "Cannot modify attachments on a submitted student submission." It must be reclaimed first.
+            if sub_state == "TURNED_IN":
+                try:
+                    submissions_api.reclaim(
+                        courseId=course_id,
+                        courseWorkId=coursework_id,
+                        id=submission_id,
+                        body={},
+                    ).execute()
+                    sub_state = "CREATED"
+                    logger.info("Reclaimed submission %s to attach updated deliverables.", submission_id)
+                except Exception as reclaim_err:
+                    logger.warning("Failed to reclaim submission %s before modifyAttachments: %s", submission_id, reclaim_err)
+
             try:
                 submissions_api.modifyAttachments(
                     courseId=course_id,
@@ -1377,7 +1395,7 @@ def _attach_submission_files(
             except Exception as attach_err:
                 err_str = str(attach_err)
                 logger.error(f"Failed to modifyAttachments on submission {submission_id}: {attach_err}")
-                raise HTTPException(status_code=502, detail="Failed to attach files to Google Classroom") from attach_err
+                raise HTTPException(status_code=502, detail=f"Failed to attach files to Google Classroom: {err_str}") from attach_err
 
         if return_state:
             return submission_id, sub_state
@@ -1428,24 +1446,31 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str, action:
         extract_execution_metadata,
         strip_execution_metadata,
         export_solution_to_google_doc,
-        append_downloaded_assets_to_zip,
+        append_clean_deliverables_to_zip,
     )
 
     assignment = _get_owned_assignment(db, assignment_id, user_id)
+    owners = user_owner_ids(user_id)
     course = db.query(Course).filter(
         Course.id == assignment.course_id,
-        Course.user_id == user_id,
+        Course.user_id.in_(owners),
     ).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
     service = get_classroom_service(db, user_id=user_id)
     if not service:
-        raise HTTPException(status_code=503, detail="Google Classroom not configured")
+        raise HTTPException(
+            status_code=503,
+            detail="Google Classroom is not connected or authorization expired. Please connect Google Classroom in Settings / Classroom to attach coursework files."
+        )
 
     docs_service = get_google_docs_service(db, user_id=user_id)
     if not docs_service:
-        raise HTTPException(status_code=503, detail="Google Docs not configured")
+        raise HTTPException(
+            status_code=503,
+            detail="Google Docs / Drive is not configured or authorization expired. Please connect Google Classroom to enable Drive uploads."
+        )
 
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
     existing_sub = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
@@ -1542,23 +1567,25 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str, action:
     if reusable_drive_pair:
         zip_file_id = existing_sub.google_drive_file_id
     else:
+        # Export PDF from Google Doc if available to bundle in the clean deliverable zip
+        gdoc_pdf_bytes = None
+        if student_doc_id and hasattr(docs_service, "export_document_as_pdf"):
+            try:
+                gdoc_pdf_bytes = docs_service.export_document_as_pdf(student_doc_id)
+            except Exception as e:
+                logger.warning(f"Could not export Google Doc {student_doc_id} to PDF for quick turn-in: {e}")
+
+        execution_results = extract_execution_metadata(raw_content) if raw_content else []
         archive = BytesIO()
         with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as bundle:
-            if files:
-                for source_file in files:
-                    fname = source_file.get("name") or f"task_{source_file.get('task', 1)}_solution.py"
-                    bundle.writestr(fname, source_file.get("content", ""))
-            else:
-                bundle.writestr(f"{safe_title}_Solution.txt", clean_content)
-
-            execution_results = extract_execution_metadata(raw_content) if raw_content else []
-            append_downloaded_assets_to_zip(bundle, execution_results, solution_markdown=clean_content, files=files)
-            for index, output in enumerate(execution_results or deliverables.get("terminal_outputs", [])):
-                filename = output.get("filename") or f"task_{output.get('task', index + 1)}"
-                is_unverified = output.get("verified") is False
-                output_prefix = "claude_reported_output" if is_unverified else "terminal_output"
-                text = output.get("terminal_output") or output.get("content") or "No terminal output was produced."
-                bundle.writestr(f"{output_prefix}_{filename}.txt", text + "\n")
+            append_clean_deliverables_to_zip(
+                bundle,
+                files=files,
+                execution_results=execution_results,
+                solution_markdown=clean_content,
+                google_doc_pdf_bytes=gdoc_pdf_bytes,
+                doc_pdf_name=f"{safe_title}_Report.pdf",
+            )
 
         zip_bytes = archive.getvalue()
 
@@ -1569,8 +1596,11 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str, action:
         zip_file_id = uploaded_zip["id"]
 
     for drive_id in (student_doc_id, zip_file_id):
-        if not docs_service.remove_public_sharing(drive_id):
-            raise HTTPException(status_code=502, detail="Could not verify private sharing for a submission file; nothing was submitted.")
+        if drive_id and hasattr(docs_service, "remove_public_sharing"):
+            try:
+                docs_service.remove_public_sharing(drive_id)
+            except Exception as priv_err:
+                logger.warning("Could not verify private sharing for %s (non-fatal): %s", drive_id, priv_err)
 
     # Save generated Drive IDs before Classroom attachment. This makes retries
     # idempotent and prevents a failed attachment from creating more orphan ZIPs.

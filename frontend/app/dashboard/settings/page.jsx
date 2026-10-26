@@ -26,22 +26,45 @@ export default function SettingsPage() {
   const [profileSuccess, setProfileSuccess] = useState('');
   const [profileError, setProfileError] = useState('');
 
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const token = await getToken();
-        const p = await api.getStudentProfile(token);
-        if (active && p) {
-          setStudentName(p.student_name || '');
-          setRollNo(p.roll_no || '');
-        }
-      } catch (err) {
-        console.error('Failed to load student profile:', err);
+  const loadSettingsData = useCallback(async () => {
+    try {
+      const token = getToken ? await getToken() : null;
+      const [profileRes, emailRes, browserRes, googleRes, gcrRes] = await Promise.allSettled([
+        api.getStudentProfile(token),
+        api.getNotificationEmail(token),
+        api.getClaudeBrowserStatus(token),
+        api.getAuthStatus(token),
+        api.getClassroomBrowserStatus(token),
+      ]);
+
+      if (profileRes.status === 'fulfilled' && profileRes.value) {
+        setStudentName(profileRes.value.student_name || '');
+        setRollNo(profileRes.value.roll_no || '');
       }
-    })();
-    return () => { active = false; };
+      if (emailRes.status === 'fulfilled' && emailRes.value) {
+        setNotificationEmail(emailRes.value.email || '');
+      }
+      if (browserRes.status === 'fulfilled' && browserRes.value) {
+        setBrowserStatus(browserRes.value);
+        setBrowserError('');
+      }
+      if (googleRes.status === 'fulfilled' && googleRes.value) {
+        setGoogleConnected(Boolean(googleRes.value?.google_connected));
+        setGoogleEmail(googleRes.value?.google_email || '');
+      }
+      if (gcrRes.status === 'fulfilled' && gcrRes.value) {
+        setGcrBrowserStatus(gcrRes.value);
+      }
+    } catch (err) {
+      console.warn('Error loading settings:', err);
+    } finally {
+      setLoading(false);
+    }
   }, [getToken]);
+
+  useEffect(() => {
+    loadSettingsData();
+  }, []);
 
   const handleSaveProfile = async (e) => {
     e.preventDefault();
@@ -49,7 +72,7 @@ export default function SettingsPage() {
     setProfileSuccess('');
     setProfileError('');
     try {
-      const token = await getToken();
+      const token = getToken ? await getToken() : null;
       await api.updateStudentProfile({
         student_name: studentName.trim(),
         roll_no: rollNo.trim(),
@@ -64,60 +87,23 @@ export default function SettingsPage() {
 
   const loadEmail = useCallback(async () => {
     try {
-      const token = await getToken();
+      const token = getToken ? await getToken() : null;
       const result = await api.getNotificationEmail(token);
       setNotificationEmail(result?.email || '');
     } catch (err) {
       console.error('Failed to load notification email:', err);
-    } finally {
-      setLoading(false);
     }
-  }, [getToken]);
-
-  useEffect(() => {
-    let active = true;
-    const fetchEmail = async () => {
-      try {
-        const token = await getToken();
-        const result = await api.getNotificationEmail(token);
-        if (active) setNotificationEmail(result?.email || '');
-      } catch (err) {
-        console.error('Failed to load notification email:', err);
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
-    fetchEmail();
-    return () => { active = false; };
   }, [getToken]);
 
   const loadBrowserStatus = useCallback(async () => {
     try {
-      const token = await getToken();
+      const token = getToken ? await getToken() : null;
       const result = await api.getClaudeBrowserStatus(token);
       setBrowserStatus(result);
       setBrowserError('');
     } catch (err) {
       setBrowserError(err.message || 'Could not load your private Claude browser status.');
     }
-  }, [getToken]);
-
-  useEffect(() => {
-    let active = true;
-    const fetchBrowser = async () => {
-      try {
-        const token = await getToken();
-        const result = await api.getClaudeBrowserStatus(token);
-        if (active) {
-          setBrowserStatus(result);
-          setBrowserError('');
-        }
-      } catch (err) {
-        if (active) setBrowserError(err.message || 'Could not load your private Claude browser status.');
-      }
-    };
-    fetchBrowser();
-    return () => { active = false; };
   }, [getToken]);
 
   const [googleConnected, setGoogleConnected] = useState(false);
@@ -128,7 +114,7 @@ export default function SettingsPage() {
 
   const loadGoogleAuth = useCallback(async () => {
     try {
-      const token = await getToken();
+      const token = getToken ? await getToken() : null;
       const status = await api.getAuthStatus(token);
       setGoogleConnected(Boolean(status?.google_connected));
       setGoogleEmail(status?.google_email || '');
@@ -139,38 +125,12 @@ export default function SettingsPage() {
 
   const loadGcrStatus = useCallback(async () => {
     try {
-      const token = await getToken();
+      const token = getToken ? await getToken() : null;
       const status = await api.getClassroomBrowserStatus(token);
       setGcrBrowserStatus(status);
     } catch (err) {
       console.error('Failed to load Google Classroom browser status:', err);
     }
-  }, [getToken]);
-
-  useEffect(() => {
-    let active = true;
-    const fetchGoogle = async () => {
-      try {
-        const token = await getToken();
-        const [status, gcr] = await Promise.all([
-          api.getAuthStatus(token).catch(() => null),
-          api.getClassroomBrowserStatus(token).catch(() => null),
-        ]);
-        if (active) {
-          if (status) {
-            setGoogleConnected(Boolean(status?.google_connected));
-            setGoogleEmail(status?.google_email || '');
-          }
-          if (gcr) {
-            setGcrBrowserStatus(gcr);
-          }
-        }
-      } catch (err) {
-        console.error('Failed to load Google auth status:', err);
-      }
-    };
-    fetchGoogle();
-    return () => { active = false; };
   }, [getToken]);
 
   const handleDisconnectGcrSession = async () => {
@@ -234,11 +194,11 @@ export default function SettingsPage() {
   const handleExtensionAutoVisitGcr = async () => {
     setExtensionSyncBusy(true);
     setError('');
-    setSuccess('Opening Google Classroom in a tab to capture session cookies…');
+    setSuccess('Opening Google Classroom in a tab to capture session cookiesâ€¦');
     try {
       const token = await getToken();
       const res = await autoVisitAndSyncGcr({ token });
-      setSuccess('✅ ' + (res?.message || 'Google Classroom session captured and synced!'));
+      setSuccess(res?.message || 'Google Classroom session captured and synced!');
       await loadGcrStatus();
     } catch (err) {
       setError(err.message || 'Could not auto-capture Classroom session.');
@@ -254,7 +214,7 @@ export default function SettingsPage() {
     }
     setExtensionSyncBusy(true);
     setError('');
-    setSuccess(autoVisit ? 'Visiting required URLs and capturing sessions…' : 'Syncing selected sessions from this Chrome profile…');
+    setSuccess(autoVisit ? 'Visiting required URLs and capturing sessionsâ€¦' : 'Syncing selected sessions from this Chrome profileâ€¦');
     try {
       const token = await getToken();
       const claudeConnected = Boolean(browserStatus?.has_session_key);
@@ -273,11 +233,11 @@ export default function SettingsPage() {
       });
 
       const msgs = [];
-      if (res?.results?.gcr && !res.results.gcr.skipped) msgs.push('Google Classroom ✓');
-      if (res?.results?.claude && !res.results.claude.skipped) msgs.push('Claude.ai ✓');
-      if (res?.results?.portal && !res.results.portal.skipped) msgs.push('Portal ✓');
+      if (res?.results?.gcr && !res.results.gcr.skipped) msgs.push('Google Classroom âœ“');
+      if (res?.results?.claude && !res.results.claude.skipped) msgs.push('Claude.ai âœ“');
+      if (res?.results?.portal && !res.results.portal.skipped) msgs.push('Portal âœ“');
 
-      setSuccess(`✅ Synced: ${msgs.length > 0 ? msgs.join(', ') : 'Selected sessions updated'}`);
+      setSuccess(`Synced: ${msgs.length > 0 ? msgs.join(', ') : 'Selected sessions updated'}`);
       await Promise.all([loadGcrStatus(), loadBrowserStatus(), loadPortalStatus()]);
     } catch (err) {
       setError(err.message || 'Session sync failed. Check your browser sessions.');
@@ -293,7 +253,7 @@ export default function SettingsPage() {
       if (!token) throw new Error('Could not retrieve active session token. Please re-login.');
       await navigator.clipboard.writeText(token);
       setTokenCopied(true);
-      setSuccess('📋 Fresh Uniflow Auth Token copied to clipboard! (You can paste it directly into the extension popup)');
+      setSuccess('Fresh Uniflow Auth Token copied to clipboard! (You can paste it directly into the extension popup)');
       setTimeout(() => setTokenCopied(false), 3500);
     } catch (err) {
       setError('Could not copy token: ' + (err.message || 'Unknown error'));
@@ -609,52 +569,52 @@ export default function SettingsPage() {
   const userEmail = user?.primaryEmailAddress?.emailAddress || 'your-email@example.com';
 
   return (
-    <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 text-[#292d3a]">
+    <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-heading">
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">PREFERENCES</p>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight">Settings</h1>
-          <p className="mt-1 text-xs text-[#858998]">Manage your notification preferences and account settings.</p>
+          <p className="text-xs font-medium uppercase tracking-wider text-label">PREFERENCES</p>
+          <h1 className="my-1 text-2xl sm:text-3xl font-semibold tracking-tight text-heading">Settings</h1>
+          <p className="text-sm font-normal text-muted leading-relaxed">Manage your notification preferences and account settings.</p>
         </div>
       </header>
 
-      {error && <div className="rounded-lg border border-[#f1dede] bg-[#fff8f8] px-3 py-2.5 text-xs text-[#a04a4a]" role="alert">{error}</div>}
-      {success && <div className="rounded-lg border border-[#d8eee4] bg-[#f3fbf7] px-3 py-2.5 text-xs text-[#43816b]" role="status">{success}</div>}
-      {browserError && <div className="rounded-lg border border-[#f1dede] bg-[#fff8f8] px-3 py-2.5 text-xs text-[#a04a4a]" role="alert">{browserError}</div>}
+      {error && <div className="rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm font-normal text-rose" role="alert">{error}</div>}
+      {success && <div className="rounded-lg border border-success/30 bg-success-bg px-4 py-3 text-sm font-normal text-success" role="status">{success}</div>}
+      {browserError && <div className="rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm font-normal text-rose" role="alert">{browserError}</div>}
       {/* Student Academic Profile Section */}
-      <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm">
-        <header className="border-b border-[#f0f0f3] px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+      <section className="min-w-0 rounded-xl border border-border bg-surface shadow-xs">
+        <header className="border-b border-border-light px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">STUDENT ACADEMIC PROFILE</p>
-            <h2 className="text-[13px] font-semibold text-[#343746]">Full Name & Registration ID</h2>
+            <p className="text-xs font-medium uppercase tracking-wider text-label">STUDENT ACADEMIC PROFILE</p>
+            <h2 className="text-lg font-semibold text-heading">Full Name & Registration ID</h2>
           </div>
           {rollNo && studentName ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#f3fbf7] px-2.5 py-1 text-xs font-semibold text-[#3a8369] border border-[#d8eee4]">
-              <span className="h-1.5 w-1.5 rounded-full bg-[#3a8369]" /> {rollNo} · {studentName}
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-success-bg px-2.5 py-1 text-xs font-medium text-success border border-success/30">
+              <span className="h-1.5 w-1.5 rounded-full bg-success" /> <span className="tabular-nums">{rollNo}</span> · {studentName}
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#fff8f8] px-2.5 py-1 text-xs font-medium text-[#a04a4a] border border-[#f1dede]">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-bg px-2.5 py-1 text-xs font-medium text-rose border border-rose-border">
               Profile Incomplete
             </span>
           )}
         </header>
         <div className="p-5 flex flex-col gap-4">
-          <p className="rounded-lg bg-[#faf9fe] border border-[#e8e7f8] p-3 text-xs leading-relaxed text-[#686c80]">
-            Used automatically on official Google Docs cover pages, Google Doc filenames (<code className="font-mono text-[#5142c1]">&lt;Name&gt;_&lt;Assignment&gt;_&lt;RegID&gt;</code>), and authentic terminal execution screenshot directories.
+          <p className="rounded-lg bg-surface-secondary border border-border-light p-3 text-sm font-normal leading-relaxed text-muted">
+            Used automatically on official Google Docs cover pages, Google Doc filenames (<code className="font-mono text-violet">&lt;Name&gt;_&lt;Assignment&gt;_&lt;RegID&gt;</code>), and authentic terminal execution screenshot directories.
           </p>
 
-          {profileError && <div className="rounded-md border border-[#f1dede] bg-[#fff8f8] px-3 py-2 text-xs text-[#a04a4a]">{profileError}</div>}
-          {profileSuccess && <div className="rounded-md border border-[#d8eee4] bg-[#f3fbf7] px-3 py-2 text-xs text-[#43816b]">{profileSuccess}</div>}
+          {profileError && <div className="rounded-md border border-rose-border bg-rose-bg px-4 py-3 text-sm font-normal text-rose">{profileError}</div>}
+          {profileSuccess && <div className="rounded-md border border-success/30 bg-success-bg px-4 py-3 text-sm font-normal text-success">{profileSuccess}</div>}
 
           <form onSubmit={handleSaveProfile} className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-2xl">
             <div>
-              <label htmlFor="studentName" className="mb-1 block text-xs font-medium text-[#696d7d]">
+              <label htmlFor="studentName" className="mb-1 block text-sm font-medium text-heading">
                 Full Student Name
               </label>
               <input
                 type="text"
                 id="studentName"
-                className="w-full rounded-md border border-[#e4e4eb] bg-white px-3 py-2 text-xs text-[#343746] outline-none focus:border-[#6657d9] focus:ring-2 focus:ring-[#6657d9]/20"
+                className="w-full rounded-md border border-border-input bg-surface px-3 py-2 text-sm font-normal text-heading outline-none focus:border-violet focus:ring-2 focus:ring-violet/20"
                 value={studentName}
                 onChange={(e) => setStudentName(e.target.value)}
                 placeholder="e.g. Ahmed Khan"
@@ -662,13 +622,13 @@ export default function SettingsPage() {
               />
             </div>
             <div>
-              <label htmlFor="rollNo" className="mb-1 block text-xs font-medium text-[#696d7d]">
+              <label htmlFor="rollNo" className="mb-1 block text-sm font-medium text-heading">
                 Registration ID / Roll No
               </label>
               <input
                 type="text"
                 id="rollNo"
-                className="w-full rounded-md border border-[#e4e4eb] bg-white px-3 py-2 text-xs font-mono text-[#343746] outline-none focus:border-[#6657d9] focus:ring-2 focus:ring-[#6657d9]/20"
+                className="w-full rounded-md border border-border-input bg-surface px-3 py-2 text-sm font-normal font-mono text-heading outline-none focus:border-violet focus:ring-2 focus:ring-violet/20"
                 value={rollNo}
                 onChange={(e) => setRollNo(e.target.value)}
                 placeholder="e.g. 232530"
@@ -679,7 +639,7 @@ export default function SettingsPage() {
               <button
                 type="submit"
                 disabled={savingProfile || !studentName.trim() || !rollNo.trim()}
-                className="inline-flex min-h-9 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-4 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55"
+                className="inline-flex min-h-9 items-center justify-center rounded-md border border-violet bg-violet px-4 text-sm font-medium text-white hover:bg-violet-dark disabled:opacity-55"
               >
                 {savingProfile ? 'Saving…' : 'Save Academic Identity'}
               </button>
@@ -688,22 +648,22 @@ export default function SettingsPage() {
         </div>
       </section>
 
-      <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm">
-        <header className="border-b border-[#f0f0f3] px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+      <section className="min-w-0 rounded-xl border border-border bg-surface shadow-xs">
+        <header className="border-b border-border-light px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">CLAUDE AI CONNECTION</p>
-            <h2 className="text-[13px] font-semibold text-[#343746]">1-Click Sync & Automatic Solving</h2>
+            <p className="text-xs font-medium uppercase tracking-wider text-label">CLAUDE AI CONNECTION</p>
+            <h2 className="text-lg font-semibold text-heading">1-Click Sync & Automatic Solving</h2>
           </div>
           {browserStatus?.has_session_key ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#f3fbf7] px-2.5 py-1 text-xs font-semibold text-[#3a8369] border border-[#d8eee4]">
-              <span className="h-1.5 w-1.5 rounded-full bg-[#3a8369]" /> Connected (Session Cookie)
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-success-bg px-2.5 py-1 text-xs font-medium text-success border border-success/30">
+              <span className="h-1.5 w-1.5 rounded-full bg-success" /> Connected (Session Cookie)
             </span>
           ) : browserStatus?.is_open ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#f6f5fe] px-2.5 py-1 text-xs font-semibold text-[#6657d9] border border-[#e5e1fc]">
-              <span className="h-1.5 w-1.5 rounded-full bg-[#6657d9]" /> Browser Running
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-light px-2.5 py-1 text-xs font-medium text-violet border border-violet/20">
+              <span className="h-1.5 w-1.5 rounded-full bg-violet" /> Browser Running
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#f8f8fb] px-2.5 py-1 text-xs font-medium text-[#747887] border border-[#ebebf0]">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-surface-secondary px-2.5 py-1 text-xs font-medium text-muted border border-border">
               Not Connected
             </span>
           )}
@@ -711,18 +671,18 @@ export default function SettingsPage() {
 
         <div className="flex flex-col gap-5 p-5">
           {/* Method 1: Instant Session Cookie Connection */}
-          <div className="rounded-lg border border-[#e8e7f8] bg-[#faf9fe] p-4 flex flex-col gap-3">
+          <div className="rounded-xl border border-violet-light bg-surface-secondary p-4 flex flex-col gap-3">
             <div className="flex items-start justify-between gap-3 flex-wrap">
               <div>
-                <h3 className="text-xs font-semibold text-[#483ba6]">⚡ 1-Click Fast Sync (No Captchas, No VNC Lag)</h3>
-                <p className="mt-1 text-xs leading-relaxed text-[#686c80] max-w-2xl">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-violet">⚡ 1-Click Fast Sync (No Captchas, No VNC Lag)</h3>
+                <p className="mt-1 text-xs font-normal leading-relaxed text-muted max-w-2xl">
                   Sync your Claude session directly. Eliminates Google OAuth &quot;Insecure browser&quot; blocks, avoids Cloudflare captchas, and requires zero remote browser streaming.
                 </p>
               </div>
               {browserStatus?.has_session_key && (
                 <button
                   type="button"
-                  className="rounded-md border border-[#e0c4c4] bg-white px-3 py-1.5 text-xs font-semibold text-[#a04a4a] hover:bg-[#fff5f5] disabled:opacity-55"
+                  className="rounded-md border border-rose-border bg-surface px-3 py-1.5 text-xs font-medium text-rose hover:bg-rose-bg disabled:opacity-55"
                   onClick={handleDisconnectSessionKey}
                   disabled={syncingKey || browserBusy}
                 >
@@ -737,14 +697,14 @@ export default function SettingsPage() {
                   id="claudeSessionInputMain"
                   type="password"
                   placeholder="Paste Claude sessionKey (sk-ant-sid01-...)"
-                  className="flex-1 rounded-md border border-[#d6d4f0] bg-white px-3 py-2 text-xs font-mono text-[#292d3a] placeholder:text-[#9fa3b5] focus:border-[#6657d9] focus:outline-none"
+                  className="flex-1 rounded-lg border border-border-input bg-surface px-3 py-2 text-sm font-normal font-mono text-heading placeholder:text-muted focus:border-violet focus:outline-none"
                   value={sessionKeyInput}
                   onChange={(e) => setSessionKeyInput(e.target.value)}
                   disabled={syncingKey || browserBusy}
                 />
                 <button
                   type="submit"
-                  className="inline-flex min-h-9 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-4 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55"
+                  className="inline-flex min-h-9 items-center justify-center rounded-lg border border-violet bg-violet px-4 text-sm font-medium text-white hover:bg-violet-dark disabled:opacity-55"
                   disabled={syncingKey || browserBusy || !sessionKeyInput.trim()}
                 >
                   {syncingKey ? 'Syncing…' : 'Connect Claude'}
@@ -752,11 +712,11 @@ export default function SettingsPage() {
               </form>
             )}
 
-            <div className="rounded-md border border-[#ececf4] bg-white p-3 text-xs text-[#6e7284]">
-              <p className="font-semibold text-[#4b4e60]">How to get your session key in 5 seconds:</p>
+            <div className="rounded-lg border border-border-light bg-surface p-3 text-xs font-normal text-muted">
+              <p className="font-semibold text-heading">How to get your session key in 5 seconds:</p>
               <ol className="mt-1.5 list-decimal pl-4 space-y-1">
-                <li>Log in to <a href="https://claude.ai" target="_blank" rel="noreferrer" className="text-[#6657d9] underline font-medium">claude.ai</a> on your computer.</li>
-                <li>Press <kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">F12</kbd> (or right click → Inspect) → click the <strong>Application</strong> tab (or <strong>Storage</strong> in Firefox).</li>
+                <li>Log in to <a href="https://claude.ai" target="_blank" rel="noreferrer" className="text-violet underline font-medium">claude.ai</a> on your computer.</li>
+                <li>Press <kbd className="rounded bg-surface-secondary px-1.5 py-0.5 font-mono text-xs border border-border-input">F12</kbd> (or right click → Inspect) → click the <strong>Application</strong> tab (or <strong>Storage</strong> in Firefox).</li>
                 <li>On the left panel, click <strong>Cookies</strong> → <strong>https://claude.ai</strong>.</li>
                 <li>Find the cookie named <strong>sessionKey</strong>, double-click its value, copy it, and paste it above!</li>
               </ol>
@@ -764,18 +724,18 @@ export default function SettingsPage() {
           </div>
 
           {/* Automatic Solving Opt-in */}
-          <label className="flex max-w-3xl items-start gap-2 text-xs leading-relaxed text-[#5d6170]">
+          <label className="flex max-w-3xl items-start gap-2 text-sm font-normal leading-relaxed text-nav">
             <input
               type="checkbox"
-              className="mt-0.5 accent-[#6657d9]"
+              className="mt-1 accent-violet"
               checked={Boolean(browserStatus?.automatic_solving_enabled)}
               onChange={(event) => setAutomaticSolving(event.target.checked)}
               disabled={browserBusy || (!browserStatus?.has_session_key && !browserStatus?.is_open)}
             />
             <span>
-              <strong>Automatically solve eligible assignments:</strong> Solves newly detected, published, unsubmitted assignments via Claude without manual triggers.
+              <strong className="font-semibold text-heading">Automatically solve eligible assignments:</strong> Solves newly detected, published, unsubmitted assignments via Claude without manual triggers.
               {(!browserStatus?.has_session_key && !browserStatus?.is_open) && (
-                <span className="block mt-0.5 text-[#a04a4a]"> (Connect Claude above to enable automatic solving)</span>
+                <span className="block mt-0.5 text-rose"> (Connect Claude above to enable automatic solving)</span>
               )}
             </span>
           </label>
@@ -796,7 +756,7 @@ export default function SettingsPage() {
                   onClick={startClaudeBrowser}
                   disabled={browserBusy}
                 >
-                  {browserBusy ? 'Starting…' : browserStatus?.is_open ? 'Open sign-in window' : 'Start hosted browser'}
+                  {browserBusy ? 'Startingâ€¦' : browserStatus?.is_open ? 'Open sign-in window' : 'Start hosted browser'}
                 </button>
                 <button
                   type="button"
@@ -847,7 +807,7 @@ export default function SettingsPage() {
                 <li key={job.id} className="flex flex-wrap justify-between gap-2 text-xs text-[#747887]">
                   <span>{job.assignment_title || `Assignment ${job.assignment_id}`}</span>
                   <span className="font-medium text-[#5d6170]">
-                    {job.status.replaceAll('_', ' ')}{job.error ? ` · ${job.error}` : ''}
+                    {job.status.replaceAll('_', ' ')}{job.error ? ` Â· ${job.error}` : ''}
                   </span>
                 </li>
               ))}
@@ -878,7 +838,7 @@ export default function SettingsPage() {
           <div className="rounded-lg border border-[#e8e7f8] bg-[#faf9fe] p-4 flex flex-col gap-3">
             <div className="flex items-start justify-between gap-3 flex-wrap">
               <div>
-                <h3 className="text-xs font-semibold text-[#483ba6]">⚡ Instant Portal Sync (Session Key / ASP.NET_SessionId)</h3>
+                <h3 className="text-xs font-semibold text-[#483ba6]">âš¡ Instant Portal Sync (Session Key / ASP.NET_SessionId)</h3>
                 <p className="mt-1 text-xs leading-relaxed text-[#686c80] max-w-2xl">
                   Connect your Air University student portal session. Our server communicates with the portal directly in milliseconds to sync course attendance, schedules, and class updates.
                 </p>
@@ -890,7 +850,7 @@ export default function SettingsPage() {
                   onClick={handleDisconnectPortalCookie}
                   disabled={syncingPortalCookie || browserBusy}
                 >
-                  {syncingPortalCookie ? 'Disconnecting…' : 'Disconnect Portal Session'}
+                  {syncingPortalCookie ? 'Disconnectingâ€¦' : 'Disconnect Portal Session'}
                 </button>
               )}
             </div>
@@ -910,7 +870,7 @@ export default function SettingsPage() {
                 className="inline-flex min-h-9 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-4 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55"
                 disabled={syncingPortalCookie || browserBusy || !portalCookieInput.trim()}
               >
-                {syncingPortalCookie ? 'Syncing…' : portalStatus?.has_session_cookies ? 'Update Session' : 'Connect & Sync Portal'}
+                {syncingPortalCookie ? 'Syncingâ€¦' : portalStatus?.has_session_cookies ? 'Update Session' : 'Connect & Sync Portal'}
               </button>
             </form>
 
@@ -918,8 +878,8 @@ export default function SettingsPage() {
               <p className="font-semibold text-[#4b4e60]">How to copy your portal session key in 5 seconds:</p>
               <ol className="mt-1.5 list-decimal pl-4 space-y-1">
                 <li>Log in to <a href="https://portals.au.edu.pk/students/" target="_blank" rel="noreferrer" className="text-[#6657d9] underline font-medium">portals.au.edu.pk/students/</a> in your browser.</li>
-                <li>Press <kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">F12</kbd> (Inspect) → click <strong>Application</strong> (or <strong>Storage</strong> in Firefox).</li>
-                <li>On the left panel, click <strong>Cookies</strong> → <strong>https://portals.au.edu.pk</strong>.</li>
+                <li>Press <kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">F12</kbd> (Inspect) â†’ click <strong>Application</strong> (or <strong>Storage</strong> in Firefox).</li>
+                <li>On the left panel, click <strong>Cookies</strong> â†’ <strong>https://portals.au.edu.pk</strong>.</li>
                 <li>Copy the value of <strong>ASP.NET_SessionId</strong> and paste it above!</li>
               </ol>
             </div>
@@ -967,7 +927,7 @@ export default function SettingsPage() {
                 className="inline-flex min-h-9 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-3 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:cursor-not-allowed disabled:opacity-55"
                 disabled={saving || loading}
               >
-                {saving ? 'Saving…' : 'Save Email'}
+                {saving ? 'Savingâ€¦' : 'Save Email'}
               </button>
 
               {notificationEmail && (
@@ -977,7 +937,7 @@ export default function SettingsPage() {
                   onClick={handleTestEmail}
                   disabled={saving || loading}
                 >
-                  {saving ? 'Sending…' : 'Send Test Email'}
+                  {saving ? 'Sendingâ€¦' : 'Send Test Email'}
                 </button>
               )}
 
@@ -988,7 +948,7 @@ export default function SettingsPage() {
                   onClick={handleDelete}
                   disabled={saving || loading}
                 >
-                  {saving ? 'Removing…' : 'Remove Email'}
+                  {saving ? 'Removingâ€¦' : 'Remove Email'}
                 </button>
               )}
             </div>
@@ -1051,7 +1011,7 @@ export default function SettingsPage() {
                   </div>
                   <small className="text-xs text-[#9295a2]">
                     {googleConnected
-                      ? (googleEmail ? `${googleEmail} · Syncs courses, slides, announcements & turn-in` : 'Connected · Syncs courses, slides, announcements & turn-in')
+                      ? (googleEmail ? `${googleEmail} Â· Syncs courses, slides, announcements & turn-in` : 'Connected Â· Syncs courses, slides, announcements & turn-in')
                       : 'Connect your student Google account to sync courses, slides, announcements, and submit work.'}
                   </small>
                 </div>
@@ -1066,7 +1026,7 @@ export default function SettingsPage() {
                       className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb] disabled:opacity-55"
                       title="Re-authorize Google Classroom or refresh permissions"
                     >
-                      {googleBusy ? 'Working…' : 'Reconnect'}
+                      {googleBusy ? 'Workingâ€¦' : 'Reconnect'}
                     </button>
                     <button
                       type="button"
@@ -1075,7 +1035,7 @@ export default function SettingsPage() {
                       className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#f0dada] bg-white px-3 text-xs font-semibold text-[#b34d4d] hover:bg-[#fff4f4] disabled:opacity-55"
                       title="Disconnect Google Classroom"
                     >
-                      {googleBusy ? 'Disconnecting…' : 'Disconnect GCR'}
+                      {googleBusy ? 'Disconnectingâ€¦' : 'Disconnect GCR'}
                     </button>
                   </>
                 ) : (
@@ -1085,7 +1045,7 @@ export default function SettingsPage() {
                     disabled={googleBusy}
                     className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-3.5 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55"
                   >
-                    {googleBusy ? 'Connecting…' : 'Connect Google Classroom'}
+                    {googleBusy ? 'Connectingâ€¦' : 'Connect Google Classroom'}
                   </button>
                 )}
               </div>
@@ -1100,7 +1060,7 @@ export default function SettingsPage() {
                     <span><strong>Active Companion Session:</strong> Google Classroom autonomous turn-in is ready.</span>
                   </div>
                   <a href="#companion-extension" className="font-semibold text-emerald-900 underline hover:text-emerald-950 text-[11px] self-start sm:self-auto">
-                    Manage Extension & Sessions ↓
+                    Manage Extension & Sessions â†“
                   </a>
                 </div>
               ) : (
@@ -1115,11 +1075,11 @@ export default function SettingsPage() {
                       download="uniflow-companion.zip"
                       className="font-semibold underline hover:text-violet-dark text-[11px]"
                     >
-                      📥 Download (.zip)
+                      Download (.zip)
                     </a>
-                    <span className="text-violet/40">·</span>
+                    <span className="text-violet/40">Â·</span>
                     <a href="#companion-extension" className="font-semibold underline hover:text-violet-dark text-[11px]">
-                      Setup Controls ↓
+                      Setup Controls â†“
                     </a>
                   </div>
                 </div>
@@ -1140,7 +1100,7 @@ export default function SettingsPage() {
                       onClick={() => setShowExtensionHelp(false)}
                       className="text-muted hover:text-ink text-sm font-bold"
                     >
-                      ✕
+                      <Icon name="close" size={14} />
                     </button>
                   </div>
                   <div className="mt-3 space-y-3 text-xs text-muted leading-relaxed">
@@ -1161,7 +1121,7 @@ export default function SettingsPage() {
                         className="inline-flex items-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-violet-dark transition"
                       >
                         <Icon name="download" size={13} />
-                        <span>📥 Download Extension (.zip)</span>
+                        <span>Download Extension (.zip)</span>
                       </a>
                     </div>
 
@@ -1175,8 +1135,9 @@ export default function SettingsPage() {
                       </ol>
                     </div>
 
-                    <p className="rounded-lg bg-emerald-50 border border-emerald-200 p-2 text-emerald-800 text-[11px]">
-                      ✨ <strong>Instant detection:</strong> Once loaded, Uniflow detects it immediately. Click <strong>⚡ 1-Click Allow & Sync Selected</strong> to sync all your university sessions!
+                    <p className="flex items-center gap-1.5 rounded-lg bg-emerald-50 border border-emerald-200 p-2 text-emerald-800 text-[11px]">
+                      <Icon name="sparkles" size={12} className="text-emerald-600 shrink-0" />
+                      <span><strong>Instant detection:</strong> Once loaded, Uniflow detects it immediately. Click <strong>1-Click Allow & Sync Selected</strong> to sync all your university sessions!</span>
                     </p>
                   </div>
                   <div className="mt-4 flex justify-end">
@@ -1213,7 +1174,7 @@ export default function SettingsPage() {
                   </div>
                   <small className="text-xs text-[#9295a2]">
                     {portalStatus?.has_session_cookies || portalStatus?.session_status === 'ACTIVE'
-                      ? 'ASP.NET session active · Live timetable, attendance records, and section schedules synced'
+                      ? 'ASP.NET session active Â· Live timetable, attendance records, and section schedules synced'
                       : 'Sync your timetable, class schedule, and real-time attendance stats via session cookies.'}
                   </small>
                 </div>
@@ -1226,7 +1187,7 @@ export default function SettingsPage() {
                     disabled={syncingPortalCookie}
                     className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#f0dada] bg-white px-3 text-xs font-semibold text-[#b34d4d] hover:bg-[#fff4f4] disabled:opacity-55"
                   >
-                    {syncingPortalCookie ? 'Disconnecting…' : 'Disconnect Portal'}
+                    {syncingPortalCookie ? 'Disconnectingâ€¦' : 'Disconnect Portal'}
                   </button>
                 ) : (
                   <button
@@ -1267,7 +1228,7 @@ export default function SettingsPage() {
                   </div>
                   <small className="text-xs text-[#9295a2]">
                     {browserStatus?.has_session_key
-                      ? 'SessionKey cookie active · 1-click automatic solving & terminal output generation enabled'
+                      ? 'SessionKey cookie active Â· 1-click automatic solving & terminal output generation enabled'
                       : 'Connect your sessionKey to solve assignments, labs, and generate academic code.'}
                   </small>
                 </div>
@@ -1280,7 +1241,7 @@ export default function SettingsPage() {
                     disabled={syncingKey || browserBusy}
                     className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#f0dada] bg-white px-3 text-xs font-semibold text-[#b34d4d] hover:bg-[#fff4f4] disabled:opacity-55"
                   >
-                    {syncingKey ? 'Disconnecting…' : 'Disconnect Claude'}
+                    {syncingKey ? 'Disconnectingâ€¦' : 'Disconnect Claude'}
                   </button>
                 ) : (
                   <button
@@ -1313,7 +1274,7 @@ export default function SettingsPage() {
                       <span className="size-1.5 rounded-full bg-[#438a71]" /> Active
                     </span>
                   </div>
-                  <small className="text-xs text-[#9295a2]">{userEmail} · Primary Single Sign-On</small>
+                  <small className="text-xs text-[#9295a2]">{userEmail} Â· Primary Single Sign-On</small>
                 </div>
               </div>
             </article>
@@ -1321,10 +1282,10 @@ export default function SettingsPage() {
         </div>
       </section>
 
-      {/* ─────────────────────────────────────────────────────────────
+      {/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           DEDICATED SECTION: UNIFLOW ACADEMIC COMPANION EXTENSION
           Separate, dedicated card to download and configure extension anytime
-      ───────────────────────────────────────────────────────────── */}
+      â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <section id="companion-extension" className="min-w-0 rounded-xl border border-violet/30 bg-white shadow-sm overflow-hidden">
         <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#ecebf8] bg-gradient-to-r from-[#faf9fe] to-white px-5 py-4">
           <div className="flex items-center gap-3">
@@ -1347,7 +1308,7 @@ export default function SettingsPage() {
               title="Download uniflow-companion.zip package anytime"
             >
               <Icon name="download" size={14} />
-              <span>📥 Download Extension (.zip)</span>
+              <span>Download Extension (.zip)</span>
             </a>
             {extensionDetected ? (
               <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-800 border border-emerald-200">
@@ -1371,7 +1332,7 @@ export default function SettingsPage() {
           <div className="rounded-xl border border-violet/15 bg-violet-light/25 p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
             <div className="space-y-1">
               <strong className="text-xs font-semibold text-ink flex items-center gap-1.5">
-                <span>⚡ 1-Click Session Extraction & Autonomous Turn-In</span>
+                <span>1-Click Session Extraction & Autonomous Turn-In</span>
               </strong>
               <p className="text-[11px] text-muted leading-relaxed max-w-2xl">
                 Google blocks automated cloud browsers from logging in directly with <em>&quot;This browser or app may not be secure&quot;</em>. 
@@ -1415,7 +1376,7 @@ export default function SettingsPage() {
               </div>
               <div className="rounded-lg bg-white border border-line p-2.5">
                 <span className="font-bold text-violet mr-1">3.</span>
-                Click <strong>Load unpacked</strong> and pick the folder (or click 🔄 Reload if already installed).
+                Click <strong>Load unpacked</strong> and pick the folder (or click Reload if already installed).
               </div>
             </div>
           </div>
@@ -1436,7 +1397,7 @@ export default function SettingsPage() {
                   <div className="flex items-center gap-1.5">
                     <strong className="text-xs font-semibold text-ink">Classroom</strong>
                     {gcrBrowserStatus?.has_synced_session ? (
-                      <span className="text-[10px] text-emerald-700 font-bold">✓ Synced</span>
+                      <span className="text-[10px] text-emerald-700 font-bold">âœ“ Synced</span>
                     ) : (
                       <span className="text-[10px] text-amber-700 font-semibold">Needs Sync</span>
                     )}
@@ -1457,7 +1418,7 @@ export default function SettingsPage() {
                   <div className="flex items-center gap-1.5">
                     <strong className="text-xs font-semibold text-ink">Claude.ai</strong>
                     {browserStatus?.has_session_key ? (
-                      <span className="text-[10px] text-emerald-700 font-bold">✓ Active</span>
+                      <span className="text-[10px] text-emerald-700 font-bold">âœ“ Active</span>
                     ) : (
                       <span className="text-[10px] text-amber-700 font-semibold">Needs Key</span>
                     )}
@@ -1480,7 +1441,7 @@ export default function SettingsPage() {
                   <div className="flex items-center gap-1.5">
                     <strong className="text-xs font-semibold text-ink">Uni Portal</strong>
                     {portalStatus?.has_session_cookies || portalStatus?.session_status === 'ACTIVE' ? (
-                      <span className="text-[10px] text-emerald-700 font-bold">✓ Active</span>
+                      <span className="text-[10px] text-emerald-700 font-bold">âœ“ Active</span>
                     ) : (
                       <span className="text-[10px] text-amber-700 font-semibold">Needs Sync</span>
                     )}
@@ -1503,7 +1464,7 @@ export default function SettingsPage() {
                 className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-violet-dark disabled:opacity-50"
               >
                 <Icon name="upload" size={13} />
-                <span>{extensionSyncBusy ? 'Syncing…' : '⚡ 1-Click Allow & Sync Selected'}</span>
+                <span>{extensionSyncBusy ? 'Syncingâ€¦' : '1-Click Allow & Sync Selected'}</span>
               </button>
               <button
                 type="button"
@@ -1513,7 +1474,7 @@ export default function SettingsPage() {
                 title="Visits necessary URLs and captures missing sessions"
               >
                 <Icon name="externalLink" size={13} />
-                <span>{extensionSyncBusy ? 'Auto-Visiting…' : '🚀 Auto-Visit & Extract'}</span>
+                <span>{extensionSyncBusy ? 'Auto-Visitingâ€¦' : 'Auto-Visit & Extract'}</span>
               </button>
               <button
                 type="button"
@@ -1522,7 +1483,7 @@ export default function SettingsPage() {
                 title="Copy a fresh, active Clerk session token to paste into the Companion Extension popup"
               >
                 <Icon name="copy" size={13} />
-                <span>{tokenCopied ? '✓ Copied Token!' : '📋 Copy Fresh Token'}</span>
+                <span>{tokenCopied ? 'âœ“ Copied Token!' : 'Copy Fresh Token'}</span>
               </button>
             </div>
 
@@ -1533,7 +1494,7 @@ export default function SettingsPage() {
                 disabled={gcrBusy}
                 className="rounded-md border border-[#e0c4c4] bg-white px-2.5 py-1 text-xs font-semibold text-[#a04a4a] hover:bg-[#fff5f5] disabled:opacity-55"
               >
-                {gcrBusy ? 'Disconnecting…' : 'Disconnect GCR Session'}
+                {gcrBusy ? 'Disconnectingâ€¦' : 'Disconnect GCR Session'}
               </button>
             )}
           </div>

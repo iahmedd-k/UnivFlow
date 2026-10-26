@@ -36,7 +36,22 @@ export function clearApiCache(prefix = null) {
 export async function fetchFromApi(endpoint, token = null, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
   const url = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
-  const cacheKey = `${method}:${url}:${token || 'anon'}`;
+
+  let authToken = token;
+  if (!authToken && typeof window !== 'undefined') {
+    const manualToken = localStorage.getItem('uniflow_manual_token');
+    if (manualToken) {
+      authToken = manualToken;
+    } else if (window.Clerk?.session?.getToken) {
+      try {
+        authToken = await window.Clerk.session.getToken();
+      } catch {
+        // anonymous or session pending
+      }
+    }
+  }
+
+  const cacheKey = `${method}:${url}:${authToken ? authToken.slice(-16) : 'anon'}`;
 
   // Check cache for GET requests
   if (method === 'GET' && !options.noCache) {
@@ -53,15 +68,6 @@ export async function fetchFromApi(endpoint, token = null, options = {}) {
     ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
     ...(options.headers || {}),
   };
-
-  let authToken = token;
-  if (!authToken && typeof window !== 'undefined' && window.Clerk?.session?.getToken) {
-    try {
-      authToken = await window.Clerk.session.getToken();
-    } catch {
-      // anonymous or session pending
-    }
-  }
 
   if (authToken) {
     headers['Authorization'] = `Bearer ${authToken}`;
@@ -99,10 +105,14 @@ export async function fetchFromApi(endpoint, token = null, options = {}) {
       }
 
       const json = await res.json();
-      if (method === 'GET' && !options.noCache) {
-        clientCache.set(cacheKey, { timestamp: Date.now(), data: json });
-      } else {
-        // Targeted cache invalidation: clear related keys across coupled domains (assignments, classroom, courses, dashboard)
+      const isMutation = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(method);
+
+      if (method === 'GET') {
+        if (!options.noCache) {
+          clientCache.set(cacheKey, { timestamp: Date.now(), data: json });
+        }
+      } else if (isMutation) {
+        // Targeted cache invalidation: only write mutations should invalidate caches!
         const cleanPath = endpoint.startsWith('http') ? new URL(endpoint).pathname.replace('/api/v1', '') : endpoint;
         const endpointPrefix = cleanPath.replace(/^\//, '').split('/')[0].split('?')[0];
         const relatedPrefixes = new Set([endpointPrefix, 'dashboard']);
@@ -562,6 +572,17 @@ export const api = {
     return fetchFromApi(`/notifications/preview-alerts${params}`, token);
   },
 
+  // Manual / Seeded Fallback Authentication
+  manualLogin: async (email, password) => fetchFromApi('/auth/manual/login', null, {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  }),
+  manualSignup: async (userData) => fetchFromApi('/auth/manual/signup', null, {
+    method: 'POST',
+    body: JSON.stringify(userData),
+  }),
+  getSeededUsers: async () => fetchFromApi('/auth/manual/seeded-users'),
+
 };
 
 export const getRagDocuments = api.getRagDocuments;
@@ -579,3 +600,6 @@ export const deleteRagConversation = api.deleteRagConversation;
 export const getRagUsage = api.getRagUsage;
 export const syncRagClassroom = api.syncRagClassroom;
 export const triggerSync = api.triggerSync;
+export const manualLogin = api.manualLogin;
+export const manualSignup = api.manualSignup;
+export const getSeededUsers = api.getSeededUsers;

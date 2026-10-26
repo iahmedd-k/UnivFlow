@@ -263,7 +263,7 @@ export default function SolutionPanel({ assignment }) {
               token,
             });
             if (extRes?.success) {
-              setNotice('✅ Successfully turned in deliverables to Google Classroom via Companion Extension!');
+              setNotice('Successfully turned in deliverables to Google Classroom via Companion Extension!');
               return;
             }
           } catch (extErr) {
@@ -289,7 +289,7 @@ export default function SolutionPanel({ assignment }) {
     try {
       const token = getToken ? await getToken() : null;
       const res = await api.emailAssignmentSolution(assignment.id, token);
-      setNotice(res.message || '✅ Solution and deliverables ZIP emailed to your verified address!');
+      setNotice(res.message || 'Solution and deliverables ZIP emailed to your verified address!');
     } catch (e) {
       setError(e.message || 'Could not send solution email. Check verified recipient settings.');
     } finally {
@@ -580,7 +580,7 @@ export default function SolutionPanel({ assignment }) {
               title="Attach Google Doc and deliverables ZIP to Google Classroom as a draft without submitting"
             >
               <Icon name="fileText" size={13} />
-              <span>{attachingDraft ? 'Attaching draft…' : '📎 Attach Draft (GCR)'}</span>
+              <span>{attachingDraft ? 'Attaching draft…' : 'Attach Draft (GCR)'}</span>
             </button>
             <button
               type="button"
@@ -591,7 +591,7 @@ export default function SolutionPanel({ assignment }) {
               title="Email the solution report and deliverables ZIP to your verified address"
             >
               <Icon name="mail" size={13} />
-              <span>{emailingSolution ? 'Sending email…' : '📧 Email Deliverables'}</span>
+              <span>{emailingSolution ? 'Sending email…' : 'Email Deliverables'}</span>
             </button>
             {(assignment?.alternate_link || assignment?.classroom_url) && (
               <a
@@ -1118,7 +1118,7 @@ export default function SolutionPanel({ assignment }) {
                 title="Send solution executive report and all code ZIP deliverables to your verified email"
               >
                 <Icon name="send" size={13} />
-                <span>{emailingSolution ? 'Sending Email…' : '✉️ Email to Me'}</span>
+                <span>{emailingSolution ? 'Sending Email…' : 'Email to Me'}</span>
               </button>
 
               <button

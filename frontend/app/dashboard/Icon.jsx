@@ -37,6 +37,7 @@ import {
   Lightbulb,
   Link2,
   ListChecks,
+  LogOut,
   Menu,
   MessageCircle,
   MessageSquareText,
@@ -55,6 +56,8 @@ import {
   Timer,
   Upload,
   X,
+  Zap,
+  Key,
 } from 'lucide-react';
 
 const icons = {
@@ -92,6 +95,7 @@ const icons = {
   lightbulb: Lightbulb,
   link: Link2,
   listChecks: ListChecks,
+  logout: LogOut,
   menu: Menu,
   message: MessageCircle,
   messageText: MessageSquareText,
@@ -113,6 +117,8 @@ const icons = {
   clipboard: ClipboardList,
   clipboardCheck: ClipboardCheck,
   clock: Clock3,
+  zap: Zap,
+  key: Key,
 };
 
 export default function Icon({ name, size = 16, strokeWidth = 1.8, className = '' }) {

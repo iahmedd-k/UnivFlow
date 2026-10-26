@@ -9,9 +9,10 @@ import AssignmentCard from './AssignmentCard';
 
 const statusFilters = [
   { id: 'all', label: 'All Work' },
+  { id: 'missing_labs', label: 'Missing Labs' },
   { id: 'open', label: 'Upcoming' },
   { id: 'missing', label: 'Overdue' },
-  { id: 'assignments', label: 'Assignments & Labs' },
+  { id: 'assignments', label: 'Assignments' },
   { id: 'quizzes', label: 'Quizzes' },
   { id: 'submitted', label: 'Submitted' },
 ];
@@ -50,7 +51,6 @@ export default function AssignmentsPage() {
 
   const loadAssignments = useCallback(async (isManualRefresh = false) => {
     if (isManualRefresh) setRefreshing(true);
-    else if (!assignments.length) setLoading(true);
     try {
       const token = getToken ? await getToken() : null;
       const data = await api.getAssignments(filter === 'all' ? null : filter, token, null, {
@@ -70,7 +70,7 @@ export default function AssignmentsPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [getToken, filter, assignments.length, cacheKey]);
+  }, [filter, cacheKey, getToken]);
 
   const handleSyncClassroom = async () => {
     setRefreshing(true);
@@ -119,9 +119,8 @@ export default function AssignmentsPage() {
   };
 
   useEffect(() => {
-    const timer = setTimeout(() => loadAssignments(), 0);
-    return () => clearTimeout(timer);
-  }, [loadAssignments]);
+    loadAssignments();
+  }, [filter]);
 
   const availableCourses = useMemo(() => {
     const courses = new Set();
@@ -138,26 +137,43 @@ export default function AssignmentsPage() {
     let submitted = 0;
     let upcoming = 0;
     let quizzes = 0;
+    let missingLabs = 0;
 
     assignments.forEach((a) => {
-      const isSub = a.submission_state === 'TURNED_IN' || a.submission_state === 'RETURNED' || a.status === 'APPROVED';
+      const isSub = a.submission_state === 'TURNED_IN' || a.submission_state === 'RETURNED' || a.status === 'APPROVED' || a.status === 'SUBMITTED';
       const isDue = a.due_at ? new Date(a.due_at) : null;
+      const text = `${a.title || ''} ${a.course_name || ''} ${a.description || ''}`.toLowerCase();
+      const isLab = !a.is_quiz && text.includes('lab');
+
       if (a.is_quiz) quizzes++;
       if (isSub) {
         submitted++;
-      } else if (isDue && isDue < now) {
-        overdue++;
       } else {
-        upcoming++;
+        if (isLab) missingLabs++;
+        if (isDue && isDue < now) {
+          overdue++;
+        } else {
+          upcoming++;
+        }
       }
     });
 
     const completionRate = total > 0 ? Math.round((submitted / total) * 100) : 0;
-    return { total, overdue, submitted, upcoming, quizzes, completionRate };
+    return { total, overdue, submitted, upcoming, quizzes, missingLabs, completionRate };
   }, [assignments]);
 
   const visibleAssignments = useMemo(() => {
     let list = [...assignments];
+
+    if (filter === 'missing_labs') {
+      list = list.filter((a) => {
+        const isSub = a.submission_state === 'TURNED_IN' || a.submission_state === 'RETURNED' || a.status === 'APPROVED' || a.status === 'SUBMITTED';
+        if (isSub) return false;
+        if (a.is_quiz) return false;
+        const text = `${a.title || ''} ${a.course_name || ''} ${a.description || ''}`.toLowerCase();
+        return text.includes('lab');
+      });
+    }
 
     if (query.trim()) {
       const q = query.trim().toLowerCase();
@@ -211,16 +227,16 @@ export default function AssignmentsPage() {
       {/* Header */}
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wider text-label">COURSEWORK & DEADLINES</p>
-          <h1 className="my-1 text-2xl font-semibold tracking-tight text-ink">
+          <p className="text-xs font-medium uppercase tracking-wider text-label">COURSEWORK & DEADLINES</p>
+          <h1 className="my-1 text-2xl sm:text-3xl font-semibold tracking-tight text-heading">
             Assignments
           </h1>
-          <p className="text-xs text-muted">
+          <p className="text-sm font-normal text-muted leading-relaxed">
             Review deadlines, query your AI academic tutor, test solutions, and turn in to Google Classroom.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Link href="/dashboard/templates" className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-border-input bg-surface px-3 text-xs font-semibold text-nav no-underline hover:bg-surface-secondary">
+          <Link href="/dashboard/templates" className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-border-input bg-surface px-3 text-sm font-medium text-nav no-underline hover:bg-surface-secondary">
             <Icon name="files" size={15}/>
             <span>Cover Templates</span>
           </Link>
@@ -228,7 +244,7 @@ export default function AssignmentsPage() {
             type="button"
             onClick={handleSyncClassroom}
             disabled={refreshing || loading}
-            className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-violet bg-violet px-3 text-xs font-semibold text-white hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-55"
+            className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-violet bg-violet px-3 text-sm font-medium text-white hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-55"
             aria-label="Refresh assignments"
           >
             {refreshing ? 'Syncing…' : <><Icon name="refresh" size={14}/> Sync Classroom</>}
@@ -241,36 +257,36 @@ export default function AssignmentsPage() {
         <article className="flex min-h-24 items-start gap-3 rounded-xl border border-border bg-surface p-4">
           <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-violet-light text-violet"><Icon name="clipboard" size={18}/></span>
           <div className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs text-muted">Total coursework</span>
-            <strong className="text-2xl font-semibold leading-none tracking-tight text-heading">{loading ? '—' : stats.total}</strong>
-            <small className="text-xs text-subtle">{stats.quizzes} quizzes included</small>
+            <span className="text-xs font-medium uppercase tracking-wider text-muted">Total coursework</span>
+            <strong className="text-2xl sm:text-3xl font-semibold leading-none tracking-tight text-heading tabular-nums">{loading ? '—' : stats.total}</strong>
+            <small className="text-xs font-normal text-subtle">{stats.quizzes} quizzes included</small>
           </div>
         </article>
 
         <article className="flex min-h-24 items-start gap-3 rounded-xl border border-border bg-surface p-4">
           <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-warning-bg text-warning"><Icon name="clock" size={18}/></span>
           <div className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs text-muted">Upcoming & open</span>
-            <strong className="text-2xl font-semibold leading-none tracking-tight text-warning">{loading ? '—' : stats.upcoming}</strong>
-            <small className="text-xs text-subtle">Pending submissions</small>
+            <span className="text-xs font-medium uppercase tracking-wider text-muted">Upcoming & open</span>
+            <strong className="text-2xl sm:text-3xl font-semibold leading-none tracking-tight text-warning tabular-nums">{loading ? '—' : stats.upcoming}</strong>
+            <small className="text-xs font-normal text-subtle">Pending submissions</small>
           </div>
         </article>
 
         <article className="flex min-h-24 items-start gap-3 rounded-xl border border-border bg-surface p-4">
           <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-danger-bg text-danger"><Icon name="alert" size={18}/></span>
           <div className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs text-muted">Past deadline</span>
-            <strong className="text-2xl font-semibold leading-none tracking-tight text-danger">{loading ? '—' : stats.overdue}</strong>
-            <small className="text-xs text-subtle">{stats.overdue > 0 ? 'Requires attention' : 'All clear!'}</small>
+            <span className="text-xs font-medium uppercase tracking-wider text-muted">Past deadline</span>
+            <strong className="text-2xl sm:text-3xl font-semibold leading-none tracking-tight text-danger tabular-nums">{loading ? '—' : stats.overdue}</strong>
+            <small className="text-xs font-normal text-subtle">{stats.overdue > 0 ? 'Requires attention' : 'All clear!'}</small>
           </div>
         </article>
 
         <article className="flex min-h-24 items-start gap-3 rounded-xl border border-border bg-surface p-4">
           <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-success-bg text-success"><Icon name="checkCircle" size={18}/></span>
           <div className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs text-muted">Submitted & done</span>
-            <strong className="text-2xl font-semibold leading-none tracking-tight text-success">{loading ? '—' : stats.submitted}</strong>
-            <small className="text-xs text-subtle">{stats.completionRate}% completion rate</small>
+            <span className="text-xs font-medium uppercase tracking-wider text-muted">Submitted & done</span>
+            <strong className="text-2xl sm:text-3xl font-semibold leading-none tracking-tight text-success tabular-nums">{loading ? '—' : stats.submitted}</strong>
+            <small className="text-xs font-normal text-subtle">{stats.completionRate}% completion rate</small>
           </div>
         </article>
       </section>
@@ -288,7 +304,7 @@ export default function AssignmentsPage() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search assignments or courses…"
-              className="h-9 w-full rounded-lg border border-border-input bg-surface-tertiary pl-8 pr-7 text-xs text-heading outline-none focus-visible:ring-2 focus-visible:ring-violet/20"
+              className="h-9 w-full rounded-lg border border-border-input bg-surface-tertiary pl-8 pr-7 text-sm font-normal text-heading outline-none focus-visible:ring-2 focus-visible:ring-violet/20"
               aria-label="Search assignments"
             />
             {query && (
@@ -304,7 +320,7 @@ export default function AssignmentsPage() {
               <select
                 value={selectedCourse}
                 onChange={(e) => setSelectedCourse(e.target.value)}
-                className="h-9 cursor-pointer rounded-lg border border-border-input bg-surface px-2.5 text-xs font-medium text-nav outline-none"
+                className="h-9 cursor-pointer rounded-lg border border-border-input bg-surface px-2.5 text-sm font-normal text-nav outline-none"
                 aria-label="Filter by course"
               >
                 <option value="all">All Courses ({availableCourses.length})</option>
@@ -319,7 +335,7 @@ export default function AssignmentsPage() {
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value)}
-              className="h-9 cursor-pointer rounded-lg border border-border-input bg-surface px-2.5 text-xs font-medium text-nav outline-none"
+              className="h-9 cursor-pointer rounded-lg border border-border-input bg-surface px-2.5 text-sm font-normal text-nav outline-none"
               aria-label="Sort assignments"
             >
               <option value="due_asc">Deadline: Earliest first</option>
@@ -333,18 +349,18 @@ export default function AssignmentsPage() {
               <button
                 type="button"
                 onClick={() => setViewMode('grid')}
-                className={`cursor-pointer rounded-md border-0 px-2 py-1 text-xs font-semibold ${viewMode === 'grid' ? 'bg-surface text-violet shadow-sm' : 'bg-transparent text-muted'}`}
+                className={`cursor-pointer rounded-md border-0 px-2.5 py-1 text-sm font-medium ${viewMode === 'grid' ? 'bg-surface text-violet shadow-sm' : 'bg-transparent text-muted'}`}
                 title="Grid View"
               >
-                <Icon name="dashboard" size={13}/> Grid
+                <Icon name="dashboard" size={14}/> Grid
               </button>
               <button
                 type="button"
                 onClick={() => setViewMode('list')}
-                className={`cursor-pointer rounded-md border-0 px-2 py-1 text-xs font-semibold ${viewMode === 'list' ? 'bg-surface text-violet shadow-sm' : 'bg-transparent text-muted'}`}
+                className={`cursor-pointer rounded-md border-0 px-2.5 py-1 text-sm font-medium ${viewMode === 'list' ? 'bg-surface text-violet shadow-sm' : 'bg-transparent text-muted'}`}
                 title="List View"
               >
-                <Icon name="listChecks" size={13}/> List
+                <Icon name="listChecks" size={14}/> List
               </button>
             </div>
           </div>
@@ -354,15 +370,29 @@ export default function AssignmentsPage() {
         <nav className="flex gap-1.5 overflow-x-auto bg-surface px-4 py-3" aria-label="Filter assignments">
           {statusFilters.map((item) => {
             const isActive = filter === item.id;
+            const count = item.id === 'missing_labs' ? stats.missingLabs : null;
             return (
               <button
                 type="button"
                 key={item.id}
                 onClick={() => setFilter(item.id)}
                 aria-pressed={isActive}
-                className={`shrink-0 cursor-pointer whitespace-nowrap rounded-md border px-2.5 py-1.5 text-xs ${isActive ? 'border-violet-light bg-violet-light font-semibold text-violet' : 'border-transparent bg-transparent text-nav'}`}
+                className={`inline-flex items-center gap-1.5 shrink-0 cursor-pointer whitespace-nowrap rounded-md border px-3 py-1.5 text-sm font-medium transition ${
+                  isActive
+                    ? 'border-violet-light bg-violet-light font-semibold text-violet'
+                    : 'border-transparent bg-transparent text-nav hover:bg-paper'
+                }`}
               >
-                {item.label}
+                <span>{item.label}</span>
+                {typeof count === 'number' && count > 0 && (
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${
+                      isActive ? 'bg-rose-500 text-white' : 'bg-rose-100 text-rose-700'
+                    }`}
+                  >
+                    {count}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -371,21 +401,21 @@ export default function AssignmentsPage() {
 
       {/* Error Callout */}
       {error && (
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-xs text-rose" role="alert">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose" role="alert">
           <div>
             <strong className="block font-semibold">
               {error.toLowerCase().includes('reconnect') || error.toLowerCase().includes('expired')
                 ? 'Google Classroom session expired'
                 : 'Assignments could not be loaded'}
             </strong>
-            <span className="mt-0.5 block">{error}</span>
+            <span className="mt-0.5 block font-normal">{error}</span>
           </div>
           <div className="flex items-center gap-2 self-start sm:self-auto">
             {(error.toLowerCase().includes('reconnect') || error.toLowerCase().includes('expired') || error.toLowerCase().includes('revoked')) && (
               <button
                 type="button"
                 onClick={handleConnectGoogle}
-                className="inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-md bg-rose px-3 text-xs font-semibold text-white hover:opacity-90"
+                className="inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-md bg-rose px-3 text-sm font-medium text-white hover:opacity-90"
               >
                 Reconnect Google
               </button>
@@ -393,7 +423,7 @@ export default function AssignmentsPage() {
             <button
               type="button"
               onClick={() => loadAssignments(true)}
-              className="inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-input bg-surface px-3 text-xs font-semibold text-nav hover:bg-surface-secondary"
+              className="inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-input bg-surface px-3 text-sm font-medium text-nav hover:bg-surface-secondary"
             >
               Try again
             </button>
@@ -403,27 +433,37 @@ export default function AssignmentsPage() {
 
       {/* Assignments Content */}
       {loading ? (
-        <div className="rounded-xl border border-border bg-surface p-6 text-center text-muted">
-          <span className="mb-2 inline-block size-2 animate-spin rounded-full border-2 border-line border-t-violet" />
-          <p className="m-0 text-xs">Loading your coursework…</p>
+        <div className="rounded-xl border border-border bg-surface p-8 text-center text-muted">
+          <span className="mb-2 inline-block size-4 animate-spin rounded-full border-2 border-line border-t-violet" />
+          <p className="m-0 text-sm font-normal">Loading your coursework…</p>
         </div>
       ) : visibleAssignments.length === 0 ? (
         <div className="rounded-xl border border-border bg-surface">
-          <div className="px-5 py-8 text-center text-xs leading-relaxed text-subtle">
-            <span className="mx-auto mb-2.5 grid size-9 place-items-center rounded-lg bg-success-light text-success"><Icon name="checkCircle" size={19}/></span>
-            <strong className="mb-1 block text-xs text-body">{query ? 'No matching coursework' : filter === 'all' ? 'No assignments yet' : 'Nothing in this view'}</strong>
-            <p className="mx-auto max-w-sm">
+          <div className="px-5 py-10 text-center leading-relaxed">
+            <span className="mx-auto mb-3 grid size-10 place-items-center rounded-lg bg-success-light text-success"><Icon name="checkCircle" size={22}/></span>
+            <strong className="mb-1 block text-base font-semibold text-heading">
+              {query
+                ? 'No matching coursework'
+                : filter === 'all'
+                ? 'No assignments yet'
+                : filter === 'missing_labs'
+                ? 'No missing lab assignments'
+                : 'Nothing in this view'}
+            </strong>
+            <p className="mx-auto max-w-sm text-sm font-normal text-muted">
               {query
                 ? 'Try a different search term or clear the filter.'
                 : filter === 'all'
                 ? 'Coursework synced from your connected Classroom will appear here.'
+                : filter === 'missing_labs'
+                ? 'All of your lab coursework is currently submitted. You’re all caught up on labs!'
                 : 'There are no assignments matching this filter right now.'}
             </p>
             {query && (
               <button
                 type="button"
                 onClick={() => setQuery('')}
-                className="mt-2.5 inline-flex min-h-9 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-border-input bg-surface px-3 text-xs font-semibold text-nav hover:bg-surface-secondary"
+                className="mt-3 inline-flex min-h-9 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-border-input bg-surface px-3 text-sm font-medium text-nav hover:bg-surface-secondary"
               >
                 Clear Search
               </button>

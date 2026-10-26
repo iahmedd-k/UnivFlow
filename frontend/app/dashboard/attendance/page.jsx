@@ -19,7 +19,7 @@ export default function AttendancePage() {
 
   const loadData = useCallback(async () => {
     try {
-      const token = await getToken();
+      const token = getToken ? await getToken() : null;
       const [attData, portalData] = await Promise.all([
         api.getAttendanceSummary(token),
         api.getPortalSettings(token).catch(() => null),
@@ -34,9 +34,8 @@ export default function AttendancePage() {
   }, [getToken]);
 
   useEffect(() => {
-    const timer = setTimeout(() => loadData(), 0);
-    return () => clearTimeout(timer);
-  }, [loadData]);
+    loadData();
+  }, []);
 
   const handleSyncPortal = async () => {
     setSyncing(true);
@@ -149,19 +148,19 @@ export default function AttendancePage() {
   }, [courses, attendance]);
 
   return (
-    <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-[#292d3a]">
+    <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-heading">
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">SEMESTER TRACKING</p>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight">Attendance</h1>
-          <p className="mt-1 text-xs text-[#858998]">Compare verified portal attendance with each course’s weekly timetable frequency.</p>
+          <p className="text-xs font-medium uppercase tracking-wider text-label">SEMESTER TRACKING</p>
+          <h1 className="my-1 text-2xl sm:text-3xl font-semibold tracking-tight text-heading">Attendance</h1>
+          <p className="text-sm font-normal text-muted leading-relaxed">Compare verified portal attendance with each course’s weekly timetable frequency.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-1" role="group" aria-label="Attendance layout">
-            <button type="button" onClick={() => setViewMode('table')} className={`rounded-md px-3 py-1.5 text-xs font-medium ${viewMode === 'table' ? 'bg-neutral-900 text-white' : 'text-neutral-600 hover:bg-neutral-100'}`} aria-pressed={viewMode === 'table'}>Table</button>
-            <button type="button" onClick={() => setViewMode('cards')} className={`rounded-md px-3 py-1.5 text-xs font-medium ${viewMode === 'cards' ? 'bg-neutral-900 text-white' : 'text-neutral-600 hover:bg-neutral-100'}`} aria-pressed={viewMode === 'cards'}>Cards</button>
+          <div className="inline-flex rounded-lg border border-border bg-surface p-1" role="group" aria-label="Attendance layout">
+            <button type="button" onClick={() => setViewMode('table')} className={`rounded-md px-3 py-1.5 text-sm font-medium ${viewMode === 'table' ? 'bg-ink text-white' : 'text-nav hover:bg-surface-secondary'}`} aria-pressed={viewMode === 'table'}>Table</button>
+            <button type="button" onClick={() => setViewMode('cards')} className={`rounded-md px-3 py-1.5 text-sm font-medium ${viewMode === 'cards' ? 'bg-ink text-white' : 'text-nav hover:bg-surface-secondary'}`} aria-pressed={viewMode === 'cards'}>Cards</button>
           </div>
-          <button type="button" disabled={syncing || loading} onClick={handleSyncPortal} className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-3 text-xs font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
+          <button type="button" disabled={syncing || loading} onClick={handleSyncPortal} className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg bg-violet px-3 text-sm font-medium text-white hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50">
             <Icon name="refresh" size={15} className={syncing ? 'animate-spin' : ''} />
             {syncing ? 'Syncing…' : 'Sync portal'}
           </button>
@@ -169,65 +168,65 @@ export default function AttendancePage() {
       </header>
 
       {error && (
-        <div className="mb-4 bg-rose-50 border border-rose-200 text-rose-800 px-4 py-3 rounded-xl text-xs flex items-center gap-2" role="alert">
+        <div className="mb-4 bg-rose-bg border border-rose-border text-rose px-4 py-3 rounded-xl text-sm font-normal flex items-center gap-2" role="alert">
           <Icon name="alert" size={15} />
           <span>{error}</span>
         </div>
       )}
       {notice && (
-        <div className="mb-4 bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-xl text-xs flex items-center gap-2" role="status">
+        <div className="mb-4 bg-success-bg border border-success/30 text-success px-4 py-3 rounded-xl text-sm font-normal flex items-center gap-2" role="status">
           <Icon name="check" size={15} />
           <span>{notice}</span>
         </div>
       )}
 
-      <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs leading-relaxed text-blue-900">
+      <div className="mb-4 rounded-xl border border-info-bg bg-info-light px-4 py-3 text-sm leading-relaxed text-ink">
         Attendance uses the portal’s Attendance Report: Total is classes held, ATTS is attended, and ABS is absent. Hour columns are excluded; timetable frequency is informational and does not change the portal totals.
       </div>
 
       {portalSettings?.url ? (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs text-neutral-600">
-          <span className={`h-2 w-2 rounded-full ${portalSettings.session_status === 'ACTIVE' ? 'bg-emerald-500' : 'bg-neutral-300'}`} />
-          <span><strong>University portal</strong> · {portalSettings.session_status?.replaceAll('_', ' ').toLowerCase() || 'status unavailable'}</span>
-          {portalSettings.last_synced_at && <span className="text-neutral-400">Synced {new Date(portalSettings.last_synced_at).toLocaleString()}</span>}
-          <Link className="ml-auto font-medium text-indigo-600 hover:underline" href="/dashboard/portal">Portal settings <Icon name="arrowUpRight" size={13} /></Link>
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3.5 py-2.5 text-sm text-muted">
+          <span className={`h-2 w-2 rounded-full ${portalSettings.session_status === 'ACTIVE' ? 'bg-success' : 'bg-muted'}`} />
+          <span><strong className="font-semibold text-heading">University portal</strong> · {portalSettings.session_status?.replaceAll('_', ' ').toLowerCase() || 'status unavailable'}</span>
+          {portalSettings.last_synced_at && <span className="text-subtle tabular-nums">Synced {new Date(portalSettings.last_synced_at).toLocaleString()}</span>}
+          <Link className="ml-auto font-medium text-violet hover:underline text-sm" href="/dashboard/portal">Portal settings <Icon name="arrowUpRight" size={13} /></Link>
         </div>
       ) : (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning-bg bg-warning-bg/40 px-3.5 py-2.5 text-sm text-warning">
           <span>Attendance data may be out of date until you connect your university portal.</span>
-          <Link className="font-medium hover:underline" href="/dashboard/portal">Connect portal <Icon name="arrowUpRight" size={13} /></Link>
+          <Link className="font-medium hover:underline text-sm" href="/dashboard/portal">Connect portal <Icon name="arrowUpRight" size={13} /></Link>
         </div>
       )}
 
       {portalSettings?.session_status === 'REAUTH_REQUIRED' && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-900" role="alert">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-warning-bg bg-warning-bg/40 px-4 py-3 text-sm leading-relaxed text-warning" role="alert">
           <span>The saved university portal session has expired. Attendance is showing the last stored snapshot and may not include recent classes.</span>
-          <Link className="shrink-0 font-semibold text-amber-800 underline underline-offset-2" href="/dashboard/portal">Reconnect portal</Link>
+          <Link className="shrink-0 font-medium text-warning underline underline-offset-2" href="/dashboard/portal">Reconnect portal</Link>
         </div>
       )}
 
       <section className="grid grid-cols-1 gap-3.5 md:grid-cols-3" aria-label="Attendance summary">
-        <article className="rounded-xl border border-neutral-200 bg-white p-4 shadow-sm">
-          <span className="block text-xs text-neutral-500">Overall attendance</span>
-          <strong className="mt-2 block text-2xl font-semibold text-neutral-900">{loading || totals.overallPct == null ? '—' : `${totals.overallPct}%`}</strong>
-          <small className="mt-1 block text-xs text-neutral-500">{totals.coursesWithCounts} courses with exact counts · 75% required</small>
+        <article className="rounded-xl border border-border bg-surface p-4 shadow-xs">
+          <span className="block text-xs font-medium uppercase tracking-wider text-muted">Overall attendance</span>
+          <strong className="mt-2 block text-2xl sm:text-3xl font-semibold text-heading tabular-nums">{loading || totals.overallPct == null ? '—' : `${totals.overallPct}%`}</strong>
+          <small className="mt-1 block text-xs font-normal text-subtle">{totals.coursesWithCounts} courses with exact counts · 75% required</small>
         </article>
-        <article className={`rounded-xl border bg-white p-4 shadow-sm ${totals.deficitCount ? 'border-rose-200' : 'border-neutral-200'}`}>
-          <span className="block text-xs text-neutral-500">Needs attention</span>
-          <strong className="mt-2 block text-2xl font-semibold text-neutral-900">{loading ? '—' : totals.deficitCount}</strong>
-          <small className="mt-1 block text-xs text-neutral-500">{loading ? 'Courses below 75%' : `${totals.borderlineCount} near threshold · based on portal percentages`}</small>
+        <article className={`rounded-xl border bg-surface p-4 shadow-xs ${totals.deficitCount ? 'border-rose-border' : 'border-border'}`}>
+          <span className="block text-xs font-medium uppercase tracking-wider text-muted">Needs attention</span>
+          <strong className="mt-2 block text-2xl sm:text-3xl font-semibold text-heading tabular-nums">{loading ? '—' : totals.deficitCount}</strong>
+          <small className="mt-1 block text-xs font-normal text-subtle">{loading ? 'Courses below 75%' : `${totals.borderlineCount} near threshold · based on portal percentages`}</small>
         </article>
-        <article className="rounded-xl border border-neutral-200 bg-white p-4 shadow-sm">
-          <span className="block text-xs text-neutral-500">Verified classes attended</span>
-          <strong className="mt-2 block text-2xl font-semibold text-neutral-900">{loading ? '—' : totals.coursesWithCounts ? `${totals.totalAttended} / ${totals.totalHeld}` : '—'}</strong>
-          <small className="mt-1 block text-xs text-neutral-500">{loading ? 'Across tracked courses' : totals.coursesWithCounts ? `${totals.totalAbsent} absences · ${totals.coursesWithCounts} courses with counts` : 'Exact class counts are unavailable'}</small>
+        <article className="rounded-xl border border-border bg-surface p-4 shadow-xs">
+          <span className="block text-xs font-medium uppercase tracking-wider text-muted">Verified classes attended</span>
+          <strong className="mt-2 block text-2xl sm:text-3xl font-semibold text-heading tabular-nums">{loading ? '—' : totals.coursesWithCounts ? `${totals.totalAttended} / ${totals.totalHeld}` : '—'}</strong>
+          <small className="mt-1 block text-xs font-normal text-subtle">{loading ? 'Across tracked courses' : totals.coursesWithCounts ? `${totals.totalAbsent} absences · ${totals.coursesWithCounts} courses with counts` : 'Exact class counts are unavailable'}</small>
         </article>
       </section>
 
       {!loading && totals.deficitCount > 0 && (
-        <button type="button" className="flex w-full flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-left text-xs text-rose-800 hover:bg-rose-100" onClick={() => setFilter('deficit')}>
-          <span><strong>{totals.deficitCount} {totals.deficitCount === 1 ? 'course is' : 'courses are'} below the 75% requirement.</strong> Review the recovery plan for each course.</span>
-          <span>Show courses <Icon name="arrowUpRight" size={14} /></span>
+        <button type="button" className="flex w-full flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-border bg-rose-bg px-4 py-3 text-left text-sm font-normal text-rose hover:bg-rose-bg/80" onClick={() => setFilter('deficit')}>
+          <span><strong className="font-semibold">{totals.deficitCount} {totals.deficitCount === 1 ? 'course is' : 'courses are'} below the 75% requirement.</strong> Review the recovery plan for each course.</span>
+          <span className="font-medium inline-flex items-center gap-1">Show courses <Icon name="arrowUpRight" size={14} /></span>
         </button>
       )}
 
@@ -242,52 +241,52 @@ export default function AttendancePage() {
             key={item.id}
             type="button"
             onClick={() => setFilter(item.id)}
-            className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium ${filter === item.id ? 'border-indigo-200 bg-indigo-50 text-indigo-700' : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50'}`}
+            className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium ${filter === item.id ? 'border-violet-light bg-violet-light text-violet' : 'border-border bg-surface text-nav hover:bg-surface-secondary'}`}
             aria-pressed={filter === item.id}
           >
-            {item.label}<span>{item.count}</span>
+            <span>{item.label}</span><span className="text-xs font-medium tabular-nums">{item.count}</span>
           </button>
         ))}
       </div>
 
       {loading ? (
-        <div className="p-12 text-center text-xs text-neutral-400 bg-white rounded-xl border border-neutral-200">
+        <div className="p-12 text-center text-sm font-normal text-muted bg-surface rounded-xl border border-border">
           Loading official attendance records…
         </div>
       ) : filteredCourses.length === 0 ? (
-        <div className="p-12 text-center text-xs text-neutral-400 bg-white rounded-xl border border-neutral-200">
+        <div className="p-12 text-center text-sm font-normal text-muted bg-surface rounded-xl border border-border">
           {courses.length === 0 ? 'No attendance records yet. Connect your university portal or sync to load course records.' : 'No courses match this filter.'}
         </div>
       ) : viewMode === 'table' ? (
-        <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm">
+        <div className="overflow-hidden rounded-xl border border-border bg-surface shadow-xs">
           <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left text-xs">
+            <table className="w-full border-collapse text-left text-sm">
               <thead>
-                <tr className="border-b border-neutral-200 bg-neutral-50 text-xs uppercase tracking-wide text-neutral-600"><th className="px-4 py-3">Course</th><th className="px-4 py-3">Classes</th><th className="px-4 py-3">Attendance</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">What to do</th></tr>
+                <tr className="border-b border-border bg-surface-secondary text-xs uppercase tracking-wider text-muted font-medium"><th className="px-4 py-3">Course</th><th className="px-4 py-3">Classes</th><th className="px-4 py-3">Attendance</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">What to do</th></tr>
               </thead>
-              <tbody className="divide-y divide-neutral-100">
+              <tbody className="divide-y divide-border-light">
                 {filteredCourses.map((c) => (
-                  <tr className="hover:bg-neutral-50" key={c.course_id || c.subject}>
-                    <td className="px-4 py-3"><strong className="block font-semibold text-neutral-900">{c.cleanTitle}</strong><small className="mt-1 block text-neutral-500">{c.isLab ? 'Lab' : 'Course'}{c.subject && c.subject !== c.cleanTitle ? ` · ${c.subject}` : ''}</small></td>
-                    <td>
-                      <strong className="block font-medium text-neutral-800">{c.hasCounts ? `${c.attended} / ${c.held}` : 'Counts unavailable'}</strong>
-                      <small className="mt-1 block text-neutral-500">
+                  <tr className="hover:bg-surface-secondary/70 transition" key={c.course_id || c.subject}>
+                    <td className="px-4 py-3.5"><strong className="block font-semibold text-heading">{c.cleanTitle}</strong><small className="mt-0.5 block text-xs font-normal text-muted">{c.isLab ? 'Lab' : 'Course'}{c.subject && c.subject !== c.cleanTitle ? ` · ${c.subject}` : ''}</small></td>
+                    <td className="px-4 py-3.5">
+                      <strong className="block font-medium text-heading tabular-nums">{c.hasCounts ? `${c.attended} / ${c.held}` : 'Counts unavailable'}</strong>
+                      <small className="mt-0.5 block text-xs font-normal text-muted tabular-nums">
                         {c.hasCounts ? `${c.absent} absent` : 'Portal count data unavailable'}
                         {c.weekly_schedule_available ? ` · ${c.classesPerWeek}/week scheduled` : ' · no timetable match'}
                       </small>
                     </td>
-                    <td>
+                    <td className="px-4 py-3.5">
                       <div className="flex min-w-28 items-center gap-2">
-                        <strong className={`shrink-0 font-mono ${!c.hasAttendance ? 'text-neutral-400' : c.isDeficit ? 'text-rose-700' : c.isBorderline ? 'text-amber-700' : 'text-emerald-700'}`}>{c.hasAttendance ? `${c.pct}%` : '—'}</strong>
-                        <span className="h-1.5 min-w-12 flex-1 overflow-hidden rounded-full bg-neutral-100"><i className={`block h-full rounded-full ${!c.hasAttendance ? 'bg-neutral-300' : c.isDeficit ? 'bg-rose-500' : c.isBorderline ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: `${c.hasAttendance ? Math.min(100, Math.max(0, c.pct)) : 0}%` }} /></span>
+                        <strong className={`shrink-0 font-semibold tabular-nums ${!c.hasAttendance ? 'text-muted' : c.isDeficit ? 'text-danger' : c.isBorderline ? 'text-warning' : 'text-success'}`}>{c.hasAttendance ? `${c.pct}%` : '—'}</strong>
+                        <span className="h-1.5 min-w-12 flex-1 overflow-hidden rounded-full bg-border-input"><i className={`block h-full rounded-full ${!c.hasAttendance ? 'bg-muted' : c.isDeficit ? 'bg-rose-500' : c.isBorderline ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: `${c.hasAttendance ? Math.min(100, Math.max(0, c.pct)) : 0}%` }} /></span>
                       </div>
                     </td>
-                    <td className="px-4 py-3"><span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${!c.hasAttendance ? 'bg-neutral-100 text-neutral-600' : c.isDeficit ? 'bg-rose-50 text-rose-700' : c.isBorderline ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>{!c.hasAttendance ? 'No portal percentage' : c.isDeficit ? 'Below requirement' : c.isBorderline ? 'Near threshold' : 'On track'}</span></td>
-                    <td className={`px-4 py-3 text-neutral-600 ${c.isDeficit ? 'bg-rose-50/60' : ''}`}>
+                    <td className="px-4 py-3.5"><span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${!c.hasAttendance ? 'bg-surface-secondary text-muted' : c.isDeficit ? 'bg-rose-bg text-rose' : c.isBorderline ? 'bg-warning-bg text-warning' : 'bg-success-bg text-success'}`}>{!c.hasAttendance ? 'No portal percentage' : c.isDeficit ? 'Below requirement' : c.isBorderline ? 'Near threshold' : 'On track'}</span></td>
+                    <td className={`px-4 py-3.5 text-muted leading-relaxed ${c.isDeficit ? 'bg-rose-bg/30' : ''}`}>
                       {!c.hasCounts ? (
                         <span>{c.hasAttendance ? 'Exact attendance counts are needed for recovery estimates.' : 'Sync the portal to load attendance.'}</span>
                       ) : c.isDeficit ? (
-                        <span>Attend the next <strong>{c.neededToPass} {c.neededToPass === 1 ? 'class' : 'classes'}</strong> to recover.</span>
+                        <span>Attend the next <strong className="font-semibold text-heading tabular-nums">{c.neededToPass} {c.neededToPass === 1 ? 'class' : 'classes'}</strong> to recover.</span>
                       ) : (
                         <span>{c.canAffordToMiss > 0 ? `Can miss up to ${c.canAffordToMiss} ${c.canAffordToMiss === 1 ? 'class' : 'classes'} and stay above 75%.` : 'Attend upcoming classes to maintain your standing.'}</span>
                       )}
@@ -303,84 +302,84 @@ export default function AttendancePage() {
           {filteredCourses.map((c) => (
             <article
               key={c.course_id || c.subject}
-              className={`flex flex-col justify-between rounded-xl border bg-white p-4 shadow-sm transition ${
+              className={`flex flex-col justify-between rounded-xl border bg-surface p-4 shadow-xs transition ${
                 c.isDeficit
-                  ? 'border-rose-200/80 ring-1 ring-rose-100'
+                  ? 'border-rose-border ring-1 ring-rose-bg'
                   : c.isBorderline
-                  ? 'border-amber-200/80 ring-1 ring-amber-100'
-                  : 'border-neutral-200/80'
+                  ? 'border-warning-bg ring-1 ring-warning-bg/50'
+                  : 'border-border'
               }`}
             >
               <div>
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div>
-                    <h3 className="font-bold text-sm text-neutral-900 leading-snug">{c.cleanTitle}</h3>
-                    <span className="text-xs text-neutral-400 font-mono block mt-0.5">{c.subject}</span>
+                    <h3 className="font-semibold text-base text-heading leading-snug">{c.cleanTitle}</h3>
+                    <span className="text-xs text-muted block mt-0.5">{c.subject}</span>
                   </div>
                   <span
-                    className={`shrink-0 text-xs font-bold px-2 py-0.5 rounded-lg font-mono ${
+                    className={`shrink-0 text-xs font-semibold px-2.5 py-0.5 rounded-full tabular-nums ${
                       !c.hasAttendance
-                        ? 'bg-neutral-100 text-neutral-500 border border-neutral-200'
+                        ? 'bg-surface-secondary text-muted border border-border'
                         : c.isDeficit
-                        ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                        ? 'bg-rose-bg text-rose border border-rose-border'
                         : c.isBorderline
-                        ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                        : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                        ? 'bg-warning-bg text-warning border border-warning'
+                        : 'bg-success-bg text-success border border-success/30'
                     }`}
                   >
                     {c.hasAttendance ? `${c.pct}%` : 'No data'}
                   </span>
                 </div>
 
-                <div className="grid grid-cols-4 gap-1 py-2 border-y border-neutral-100 text-center my-3">
+                <div className="grid grid-cols-4 gap-1 py-2 border-y border-border-light text-center my-3">
                   <div>
-                    <span className="text-xs text-neutral-400 block uppercase">Held</span>
-                    <strong className="text-xs text-neutral-800">{c.hasCounts ? c.held : '—'}</strong>
+                    <span className="text-xs text-muted block uppercase tracking-wider font-medium">Held</span>
+                    <strong className="text-xs font-semibold text-heading tabular-nums">{c.hasCounts ? c.held : '—'}</strong>
                   </div>
                   <div>
-                    <span className="text-xs text-neutral-400 block uppercase">Present</span>
-                    <strong className="text-xs text-emerald-700">{c.hasCounts ? c.attended : '—'}</strong>
+                    <span className="text-xs text-muted block uppercase tracking-wider font-medium">Present</span>
+                    <strong className="text-xs font-semibold text-success tabular-nums">{c.hasCounts ? c.attended : '—'}</strong>
                   </div>
                   <div>
-                    <span className="text-xs text-neutral-400 block uppercase">Absent</span>
-                    <strong className="text-xs text-rose-700">{c.hasCounts ? c.absent : '—'}</strong>
+                    <span className="text-xs text-muted block uppercase tracking-wider font-medium">Absent</span>
+                    <strong className="text-xs font-semibold text-danger tabular-nums">{c.hasCounts ? c.absent : '—'}</strong>
                   </div>
                   <div>
-                    <span className="text-xs text-neutral-400 block uppercase">Per week</span>
-                    <strong className="text-xs text-neutral-500 font-mono">{c.weekly_schedule_available ? c.classesPerWeek : '—'}</strong>
+                    <span className="text-xs text-muted block uppercase tracking-wider font-medium">Per week</span>
+                    <strong className="text-xs font-medium text-muted tabular-nums">{c.weekly_schedule_available ? c.classesPerWeek : '—'}</strong>
                   </div>
                 </div>
 
-                <div className="w-full bg-neutral-100 h-1.5 rounded-full overflow-hidden mb-3">
+                <div className="w-full bg-border-input h-1.5 rounded-full overflow-hidden mb-3">
                   <div
-                    className={`h-full rounded-full ${!c.hasAttendance ? 'bg-neutral-300' : c.isDeficit ? 'bg-rose-500' : c.isBorderline ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                    className={`h-full rounded-full ${!c.hasAttendance ? 'bg-muted' : c.isDeficit ? 'bg-rose-500' : c.isBorderline ? 'bg-amber-500' : 'bg-emerald-500'}`}
                     style={{ width: `${c.hasAttendance ? Math.min(100, Math.max(0, c.pct)) : 0}%` }}
                   />
                 </div>
               </div>
 
               <div
-                className={`p-2.5 rounded-lg text-xs leading-relaxed border ${
+                className={`p-3 rounded-lg text-xs leading-relaxed border font-normal ${
                   !c.hasCounts
-                  ? 'bg-neutral-50 border-neutral-200 text-neutral-600'
+                  ? 'bg-surface-secondary border-border text-muted'
                   : c.isDeficit
-                    ? 'bg-rose-50/70 border-rose-100 text-rose-800'
+                    ? 'bg-rose-bg border-rose-border text-rose'
                     : c.isBorderline
-                    ? 'bg-amber-50/70 border-amber-100 text-amber-800'
-                    : 'bg-emerald-50/70 border-emerald-100 text-emerald-800'
+                    ? 'bg-warning-bg/40 border-warning-bg text-warning'
+                    : 'bg-success-bg/40 border-success/20 text-success'
                 }`}
               >
                 {!c.hasCounts ? (
                   <span>{c.hasAttendance ? 'Exact class counts are needed for a recovery estimate.' : 'No attendance data is available.'}</span>
                 ) : c.isDeficit ? (
                   <span>
-                    <strong>Action Required:</strong> Must attend next{' '}
-                    <span className="font-bold underline decoration-rose-300">{c.neededToPass} classes</span> consecutively to clear examination threshold.
+                    <strong className="font-semibold">Action Required:</strong> Must attend next{' '}
+                    <span className="font-semibold underline decoration-rose-300 tabular-nums">{c.neededToPass} classes</span> consecutively to clear examination threshold.
                   </span>
                 ) : (
                   <span>
-                    <strong>Good Standing:</strong> Can afford to miss up to{' '}
-                    <strong>{c.canAffordToMiss} {c.canAffordToMiss === 1 ? 'class' : 'classes'}</strong> before dropping below 75%.
+                    <strong className="font-semibold">Good Standing:</strong> Can afford to miss up to{' '}
+                    <strong className="font-semibold tabular-nums">{c.canAffordToMiss} {c.canAffordToMiss === 1 ? 'class' : 'classes'}</strong> before dropping below 75%.
                   </span>
                 )}
               </div>

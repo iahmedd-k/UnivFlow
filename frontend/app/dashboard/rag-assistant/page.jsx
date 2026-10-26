@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useCallback, useEffect } from "react";
+import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -48,6 +48,10 @@ import {
   Minimize2,
   ExternalLink,
   Info,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Copy,
+  Check,
 } from "lucide-react";
 
 import {
@@ -59,6 +63,7 @@ import {
   createConversation,
   getConversation,
   updateConversationTitle,
+  deleteConversation,
   sendChat,
   getUsage,
   syncClassroom,
@@ -499,37 +504,124 @@ function ConfidenceBadge({ confidence }) {
   );
 }
 
+function PreCodeBlock({ children }) {
+  const codeChild = React.isValidElement(children) ? children : null;
+  const codeProps = codeChild?.props || {};
+  const className = codeProps.className || "";
+  const rawCode = codeProps.children || "";
+  const cleanCode = (typeof rawCode === "string" ? rawCode : String(rawCode || "")).replace(/\n$/, "");
+  const match = /language-(\w+)/.exec(className);
+  const lang = match ? match[1] : "";
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(cleanCode);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  return (
+    <div className="my-3 rounded-xl border border-stone-800 bg-[#18181b] text-stone-100 shadow-sm overflow-hidden text-[13px] font-mono">
+      <div className="flex items-center justify-between px-3.5 py-1.5 bg-stone-900 border-b border-stone-800 text-[11px] text-stone-400 font-sans tracking-wide">
+        <span className="uppercase font-semibold text-stone-300">{lang || "code"}</span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="inline-flex items-center gap-1.5 text-stone-300 hover:text-white px-2 py-0.5 rounded hover:bg-stone-800 transition-colors cursor-pointer select-none text-[11px]"
+          title="Copy code"
+        >
+          {copied ? (
+            <>
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="text-emerald-400 font-medium">Copied!</span>
+            </>
+          ) : (
+            <>
+              <Copy className="w-3.5 h-3.5" />
+              <span>Copy</span>
+            </>
+          )}
+        </button>
+      </div>
+      <div className="p-3.5 overflow-x-auto leading-relaxed text-[12.5px]">
+        <pre className="m-0 p-0 font-mono bg-transparent border-0">
+          <code className={className}>{cleanCode}</code>
+        </pre>
+      </div>
+    </div>
+  );
+}
+
 function AnswerText({ text, onCiteClick, activeCite }) {
   if (!text) return null;
 
+  // Format table joined pipes and prevent corrupting array indexes like arr[0]
   let processedText = text.replace(/\|\s*\|/g, "|\n|");
-  processedText = processedText.replace(/\[(\d+)\]/g, "[$1](#cite-$1)");
+  processedText = processedText.replace(/(^|[^\w`])\[(\d+)\](?![`\]])/g, "$1[$2](#cite-$2)");
 
   return (
-    <div className="markdown-body text-[14px] text-stone-700 leading-relaxed overflow-x-auto">
+    <div className="markdown-body text-[14.5px] text-stone-800 leading-relaxed overflow-x-auto">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeRaw]}
         components={{
+          h1: ({ node, ...props }) => (
+            <h1 className="text-[18px] font-bold text-stone-900 mt-5 mb-2.5 pb-1 border-b border-stone-200/80 tracking-tight" {...props} />
+          ),
+          h2: ({ node, ...props }) => (
+            <h2 className="text-[16px] font-bold text-stone-900 mt-4 mb-2 pb-1 border-b border-stone-100 tracking-tight" {...props} />
+          ),
+          h3: ({ node, ...props }) => (
+            <h3 className="text-[14.5px] font-semibold text-stone-900 mt-3 mb-1" {...props} />
+          ),
+          h4: ({ node, ...props }) => (
+            <h4 className="text-[13.5px] font-semibold text-stone-900 mt-2.5 mb-1" {...props} />
+          ),
+          p: ({ node, ...props }) => (
+            <p className="my-2.5 leading-relaxed text-stone-800 text-[14.5px]" {...props} />
+          ),
+          strong: ({ node, ...props }) => (
+            <strong className="font-semibold text-stone-950" {...props} />
+          ),
+          em: ({ node, ...props }) => (
+            <em className="italic text-stone-800" {...props} />
+          ),
+          blockquote: ({ node, ...props }) => (
+            <blockquote className="border-l-3 border-indigo-400 pl-3.5 py-1.5 my-3 bg-stone-50/80 rounded-r-lg italic text-stone-700 text-[13.5px] leading-relaxed" {...props} />
+          ),
+          hr: ({ node, ...props }) => (
+            <hr className="my-4 border-stone-200/80" {...props} />
+          ),
+          pre: PreCodeBlock,
+          code: ({ node, className, children, ...props }) => (
+            <code
+              className="px-1.5 py-0.5 rounded-md bg-stone-100 text-indigo-700 font-mono text-[12.5px] border border-stone-200/60 font-medium"
+              {...props}
+            >
+              {children}
+            </code>
+          ),
           table: ({ node, ...props }) => (
             <div className="overflow-x-auto my-3 rounded-xl border border-stone-200/90 shadow-2xs">
               <table className="min-w-full divide-y divide-stone-200 text-[13px] bg-white" {...props} />
             </div>
           ),
           thead: ({ node, ...props }) => (
-            <thead className="bg-stone-50/90 text-stone-700" {...props} />
+            <thead className="bg-stone-50 text-stone-800 font-semibold" {...props} />
           ),
           th: ({ node, ...props }) => (
             <th className="px-3.5 py-2.5 text-left text-[12px] font-semibold text-stone-800 uppercase tracking-wider border-b border-stone-200" {...props} />
           ),
           td: ({ node, ...props }) => (
-            <td className="px-3.5 py-2 text-stone-600 border-b border-stone-100 align-top leading-normal" {...props} />
+            <td className="px-3.5 py-2 text-stone-700 border-b border-stone-100 align-top leading-normal" {...props} />
           ),
           ul: ({ node, ...props }) => (
-            <ul className="list-disc pl-5 my-2 space-y-1 text-stone-700" {...props} />
+            <ul className="list-disc pl-5 my-2.5 space-y-1.5 text-stone-800 text-[14px]" {...props} />
           ),
           ol: ({ node, ...props }) => (
-            <ol className="list-decimal pl-5 my-2 space-y-1 text-stone-700" {...props} />
+            <ol className="list-decimal pl-5 my-2.5 space-y-1.5 text-stone-800 text-[14px]" {...props} />
           ),
           li: ({ node, ...props }) => (
             <li className="leading-relaxed pl-1" {...props} />
@@ -757,7 +849,7 @@ function PipelineRunning({ stageIndex }) {
   );
 }
 
-function ChatRow({ chat, isActive, onClick }) {
+function ChatRow({ chat, isActive, onClick, onDelete }) {
   const dateStr = formatConversationDate(chat.updated_at || chat.created_at);
   const toneKey = chat.abstained
     ? "sky"
@@ -771,34 +863,41 @@ function ChatRow({ chat, isActive, onClick }) {
   const tone = STATUS[toneKey] || STATUS.sky;
 
   return (
-    <button
+    <div
       onClick={onClick}
-      className={`w-full text-left px-4 py-3 border-b border-stone-100 transition-colors cursor-pointer ${
+      className={`group w-full text-left px-4 py-3 border-b border-stone-100 transition-colors cursor-pointer flex items-center justify-between gap-2 ${
         isActive ? "bg-indigo-50/70" : "hover:bg-stone-50"
       }`}
     >
-      <div className="flex items-start justify-between gap-2">
+      <div className="min-w-0 flex-1">
         <p className="text-[13.5px] font-medium text-stone-800 leading-snug line-clamp-2 flex items-center gap-1.5">
           {chat.document_ids && chat.document_ids.length > 0 && <FileText className="w-3 h-3 text-indigo-400 shrink-0" />}
-          <span className="line-clamp-2">{chat.title}</span>
+          <span className="line-clamp-2">{chat.title || "Untitled Conversation"}</span>
         </p>
-        {isActive && (
-          <div className="flex items-center gap-2 shrink-0 pt-0.5 text-stone-400">
-            <Star className="w-3.5 h-3.5" />
-            <MoreVertical className="w-3.5 h-3.5" />
-          </div>
-        )}
+        <div className="flex items-center gap-1.5 mt-1.5">
+          <span className={`w-2 h-2 rounded-full ${tone.dot}`} />
+          <span className="text-[12px] text-stone-500">
+            {chat.document_ids && chat.document_ids.length > 0
+              ? `${chat.document_ids.length} source${chat.document_ids.length === 1 ? "" : "s"}`
+              : "All sources"}
+          </span>
+          {dateStr && <span className="text-[12px] text-stone-400 ml-auto">{dateStr}</span>}
+        </div>
       </div>
-      <div className="flex items-center gap-1.5 mt-1.5">
-        <span className={`w-2 h-2 rounded-full ${tone.dot}`} />
-        <span className="text-[12px] text-stone-500">
-          {chat.document_ids && chat.document_ids.length > 0
-            ? `${chat.document_ids.length} source${chat.document_ids.length === 1 ? "" : "s"}`
-            : "All sources"}
-        </span>
-        {dateStr && <span className="text-[12px] text-stone-400 ml-auto">{dateStr}</span>}
-      </div>
-    </button>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete?.();
+        }}
+        title="Delete conversation"
+        className={`shrink-0 p-1.5 rounded-md text-stone-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer ${
+          isActive ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus:opacity-100"
+        }`}
+      >
+        <Trash2 className="w-3.5 h-3.5" />
+      </button>
+    </div>
   );
 }
 
@@ -926,6 +1025,7 @@ function ChatInboxDashboard({
   const [showDocPicker, setShowDocPicker] = useState(false);
   const [inlineUploading, setInlineUploading] = useState(false);
   const [mobileShowSidebar, setMobileShowSidebar] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const scrollRef = useRef(null);
   const docPickerRef = useRef(null);
   const inlineFileInputRef = useRef(null);
@@ -934,6 +1034,26 @@ function ChatInboxDashboard({
   const activeChat = conversations.find((c) => c.id === activeId);
   const turns = turnsById[activeId] || [];
   const filtered = conversations.filter((c) => (c.title || "").toLowerCase().includes(search.toLowerCase()));
+
+  const handleDeleteConversation = async (chatId) => {
+    try {
+      await deleteConversation(chatId);
+    } catch {
+      // Handled silently
+    }
+    setConversations((prev) => {
+      const remaining = prev.filter((c) => c.id !== chatId);
+      if (activeId === chatId) {
+        setActiveId(remaining.length > 0 ? remaining[0].id : null);
+      }
+      return remaining;
+    });
+    setTurnsById((prev) => {
+      const next = { ...prev };
+      delete next[chatId];
+      return next;
+    });
+  };
 
   useEffect(() => {
     let isSubscribed = true;
@@ -1242,12 +1362,16 @@ function ChatInboxDashboard({
       )}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-40 w-[85vw] max-w-[300px] bg-stone-50 border-r border-stone-200 flex flex-col transition-transform duration-200 ease-out md:static md:w-[300px] md:translate-x-0 ${
-          mobileShowSidebar ? "translate-x-0 shadow-2xl" : "-translate-x-full md:translate-x-0"
-        }`}
+        className={`fixed inset-y-0 left-0 z-40 bg-stone-50 border-r border-stone-200 flex flex-col transition-all duration-300 ease-in-out md:static ${
+          sidebarCollapsed
+            ? "w-0 md:w-0 border-r-0 overflow-hidden opacity-0 pointer-events-none -translate-x-full md:translate-x-0"
+            : "w-[85vw] max-w-[300px] md:w-[300px] md:translate-x-0 opacity-100"
+        } ${mobileShowSidebar ? "translate-x-0 shadow-2xl opacity-100 pointer-events-auto" : "-translate-x-full md:translate-x-0"}`}
       >
         <div className="flex items-center justify-between px-4 pt-4 pb-3">
-          <h2 className="text-[15px] font-semibold tracking-tight">Conversations</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-[15px] font-semibold tracking-tight">Conversations</h2>
+          </div>
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => {
@@ -1258,6 +1382,14 @@ function ChatInboxDashboard({
               className="w-8 h-8 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center transition-colors cursor-pointer shadow-xs"
             >
               <Plus className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed(true)}
+              title="Collapse sidebar"
+              className="hidden md:flex w-8 h-8 rounded-lg hover:bg-stone-200/70 items-center justify-center text-stone-500 hover:text-stone-800 transition-colors cursor-pointer"
+            >
+              <PanelLeftClose className="w-4 h-4" />
             </button>
             <button
               onClick={() => setMobileShowSidebar(false)}
@@ -1303,6 +1435,7 @@ function ChatInboxDashboard({
                   openChat(chat.id);
                   setMobileShowSidebar(false);
                 }}
+                onDelete={() => handleDeleteConversation(chat.id)}
               />
             ))
           )}
@@ -1329,6 +1462,17 @@ function ChatInboxDashboard({
       <main className="flex-1 flex flex-col min-w-0 bg-white">
         <header className="flex items-center justify-between px-4 sm:px-8 pt-4 sm:pt-5 pb-3 sm:pb-4 border-b border-stone-100 gap-2">
           <div className="flex items-center gap-2 min-w-0 flex-1">
+            {sidebarCollapsed && (
+              <button
+                type="button"
+                onClick={() => setSidebarCollapsed(false)}
+                title="Expand sidebar"
+                className="hidden md:flex shrink-0 items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-lg border border-stone-200 text-stone-700 bg-stone-50 hover:bg-stone-100 hover:text-stone-900 transition-colors cursor-pointer shadow-2xs"
+              >
+                <PanelLeftOpen className="w-4 h-4 text-indigo-600" />
+                <span>Conversations</span>
+              </button>
+            )}
             <button
               onClick={() => setMobileShowSidebar(true)}
               className="md:hidden shrink-0 flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-lg border border-stone-200 text-stone-700 bg-stone-50 hover:bg-stone-100 cursor-pointer"
@@ -1725,7 +1869,9 @@ function FileRow({ file, selected, onToggleSelect, onRetry, onRequestDelete, onC
 
 function CourseGroupCard({
   group,
-  selectedIds,
+  courseName: propCourseName,
+  files: propFiles,
+  selectedIds = new Set(),
   onToggleSelect,
   onToggleCourseSelect,
   onRetry,
@@ -1735,9 +1881,14 @@ function CourseGroupCard({
   isExpanded,
   onToggleExpand,
 }) {
-  const { courseName, files, total, slidesCnt, labsCnt, asgCnt } = group;
-  const isCourseSelected = files.length > 0 && files.every((f) => selectedIds.has(f.id));
-  const hasSomeSelected = files.some((f) => selectedIds.has(f.id)) && !isCourseSelected;
+  const courseName = group?.courseName || propCourseName || "General Documents";
+  const files = group?.files || propFiles || [];
+  const total = group?.total ?? files.length;
+  const slidesCnt = group?.slidesCnt ?? files.filter((f) => f.category === "slides").length;
+  const labsCnt = group?.labsCnt ?? files.filter((f) => f.category === "labs").length;
+  const asgCnt = group?.asgCnt ?? files.filter((f) => f.category === "coursework").length;
+  const isCourseSelected = files.length > 0 && files.every((f) => selectedIds?.has(f.id));
+  const hasSomeSelected = files.some((f) => selectedIds?.has(f.id)) && !isCourseSelected;
 
   return (
     <div className="border border-stone-200 rounded-xl overflow-hidden bg-white mb-3.5 shadow-2xs transition-all">
@@ -2411,6 +2562,7 @@ function RagFileManager({
                 groupedCourses.map(({ courseName, files: courseFiles }) => (
                   <CourseGroupCard
                     key={courseName}
+                    group={{ courseName, files: courseFiles }}
                     courseName={courseName}
                     files={courseFiles}
                     isExpanded={query.trim().length > 0 ? true : !!expandedCourses[courseName]}

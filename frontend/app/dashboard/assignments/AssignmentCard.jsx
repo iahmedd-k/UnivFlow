@@ -39,32 +39,32 @@ export default function AssignmentCard({ assignment, onOpen, viewMode = 'grid' }
     return (
       <Link
         href={targetHref}
-        className="group flex min-h-[60px] items-center gap-3 border-b border-[#f1f1f4] px-[13px] py-3 text-inherit no-underline last:border-b-0 hover:bg-[#fafafd]"
+        className="group flex min-h-[60px] items-center gap-3 border-b border-border-light px-4 py-3 text-inherit no-underline last:border-b-0 hover:bg-surface-secondary"
       >
-        <span className="grid size-8 shrink-0 place-items-center rounded-[9px] bg-violet-light text-violet">
+        <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-violet-light text-violet">
           <Icon name={isQuiz ? 'clipboard' : 'book'} size={16}/>
         </span>
-        <span className="flex min-w-0 flex-1 flex-col gap-1">
-          <strong className="truncate text-[13px] font-semibold text-[#2c2f3c]">
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <strong className="truncate text-sm font-semibold text-heading">
             {assignment.title || 'Untitled assignment'}
           </strong>
-          <small className="text-xs text-[#858998]">
+          <small className="text-xs font-normal text-muted">
             {assignment.course_name || 'Course'}
             {assignment.work_type ? ` · ${assignment.work_type.replace('_', ' ')}` : ''}
           </small>
         </span>
-        <span className="whitespace-nowrap text-right text-xs text-[#858998] max-sm:hidden">
+        <span className="whitespace-nowrap text-right text-xs font-normal text-muted max-sm:hidden tabular-nums">
           Due {dueDateStr}
           {relativeStr && (
-            <span className={`block text-xs ${status.label === 'Overdue' ? 'text-[#b34d4d]' : 'text-violet'}`}>
+            <span className={`block text-xs font-semibold tabular-nums ${status.label === 'Overdue' ? 'text-danger' : 'text-violet'}`}>
               {relativeStr}
             </span>
           )}
         </span>
-        <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-semibold ${status.className}`}>
+        <span className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${status.className}`}>
           {status.label}
         </span>
-        <span className="ml-2 inline-flex shrink-0 items-center whitespace-nowrap text-xs font-semibold text-violet max-sm:hidden">
+        <span className="ml-2 inline-flex shrink-0 items-center whitespace-nowrap text-xs font-medium text-violet max-sm:hidden">
           Open <Icon name="arrowUpRight" size={13}/>
         </span>
       </Link>
@@ -74,52 +74,52 @@ export default function AssignmentCard({ assignment, onOpen, viewMode = 'grid' }
   return (
     <Link
       href={targetHref}
-      className="group flex flex-col justify-between rounded-[11px] border border-[#ebebf0] bg-white p-[18px_20px] text-inherit transition-all duration-150 hover:-translate-y-px hover:border-[#d6d0fb] hover:shadow-md"
+      className="group flex flex-col justify-between rounded-xl border border-border bg-surface p-4 sm:p-5 text-inherit transition-all duration-150 hover:-translate-y-px hover:border-border-hover hover:shadow-md"
     >
       <div>
         <div className="mb-3 flex items-center justify-between gap-2">
-          <span className="max-w-[65%] truncate rounded-md border border-[#e6e1fb] bg-[#f4f1ff] px-2 py-0.5 text-xs font-semibold text-[#5b4cc6]">
+          <span className="max-w-[65%] truncate rounded-md border border-violet-light bg-violet-light/60 px-2 py-0.5 text-xs font-medium text-violet">
             {assignment.course_name || 'Course'}
           </span>
-          <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-semibold ${status.className}`}>
+          <span className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${status.className}`}>
             {status.label}
           </span>
         </div>
 
         <div className="mb-2.5 flex items-start gap-2.5">
-          <span className={`mt-px grid size-[26px] shrink-0 place-items-center rounded-[7px] text-[13px] ${isQuiz ? 'bg-[#fff3e8] text-[#d88752]' : 'bg-violet-light text-violet'}`}>
+          <span className={`mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg text-xs ${isQuiz ? 'bg-warning-bg text-warning' : 'bg-violet-light text-violet'}`}>
             <Icon name={isQuiz ? 'clipboard' : 'file'} size={15}/>
           </span>
           <span className="min-w-0 flex-1">
-            <span className="line-clamp-2 text-[13px] font-semibold leading-[1.4] text-[#2c2f3b]">
+            <span className="line-clamp-2 text-sm font-semibold leading-snug text-heading">
               {assignment.title || 'Untitled assignment'}
             </span>
-            <span className="mt-[3px] block text-xs font-medium uppercase tracking-[0.04em] text-[#9a9cab]">
+            <span className="mt-1 block text-xs font-medium uppercase tracking-wider text-label">
               {assignment.work_type ? assignment.work_type.replace('_', ' ') : isQuiz ? 'Quiz' : 'Assignment'}
             </span>
           </span>
         </div>
       </div>
 
-      <div className="mt-3.5 border-t border-[#f2f2f5] pt-3">
-        <div className="mb-2 flex items-center justify-between gap-2 text-xs text-[#858998]">
-          <span className="inline-flex min-w-0 items-center gap-[5px]">
+      <div className="mt-3.5 border-t border-border-light pt-3">
+        <div className="mb-2 flex items-center justify-between gap-2 text-xs text-muted">
+          <span className="inline-flex min-w-0 items-center gap-1.5 tabular-nums">
             <Icon name="clock" size={13}/>
             <span className="truncate">{dueDateStr}</span>
           </span>
           {relativeStr && (
-            <span className={`shrink-0 text-xs font-semibold ${status.label === 'Overdue' ? 'text-[#b34d4d]' : 'text-violet'}`}>
+            <span className={`shrink-0 text-xs font-semibold tabular-nums ${status.label === 'Overdue' ? 'text-danger' : 'text-violet'}`}>
               {relativeStr}
             </span>
           )}
         </div>
 
-        <div className="flex items-center justify-between gap-2 text-xs text-[#9a9cab]">
-          <span className="inline-flex min-w-0 items-center gap-[5px] truncate">
+        <div className="flex items-center justify-between gap-2 text-xs text-subtle">
+          <span className="inline-flex min-w-0 items-center gap-1.5 truncate">
             {materialsCount > 0 && <Icon name="paperclip" size={12}/>}
             {materialsCount > 0 ? `${materialsCount} ${materialsCount === 1 ? 'attachment' : 'attachments'}` : 'No attachments'}
           </span>
-          <span className="inline-flex shrink-0 items-center gap-[3px] text-xs font-semibold text-violet">
+          <span className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-violet">
             Open Page <Icon name="arrowUpRight" size={13}/>
           </span>
         </div>

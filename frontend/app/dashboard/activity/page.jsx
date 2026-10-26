@@ -84,16 +84,16 @@ export default function ActivityPage() {
   const syncStatus = sync?.sync_run?.status || 'not started';
 
   return (
-    <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 text-[#292d3a]">
+    <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-heading">
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">BACKGROUND WORK</p>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight text-[#292d3a]">Sync history</h1>
-          <p className="mt-1 text-xs text-[#858998]">Check recent academic sync runs and what they updated.</p>
+          <p className="text-xs font-medium uppercase tracking-wider text-label">BACKGROUND WORK</p>
+          <h1 className="my-1 text-2xl sm:text-3xl font-semibold tracking-tight text-heading">Sync history</h1>
+          <p className="text-sm font-normal text-muted leading-relaxed">Check recent academic sync runs and what they updated.</p>
         </div>
         <button
           type="button"
-          className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] transition-colors hover:bg-[#f8f8fb]"
+          className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md border border-border-input bg-surface px-3 text-sm font-medium text-nav transition-colors hover:bg-surface-secondary"
           onClick={() => {
             setLoading(true);
             load().finally(() => setLoading(false));
@@ -103,96 +103,96 @@ export default function ActivityPage() {
         </button>
       </header>
 
-      {error && <div className="rounded-lg border border-[#f1dede] bg-[#fff8f8] px-3 py-2.5 text-xs text-[#a04a4a]">{error}</div>}
-      {actionMessage && <div role="status" className="rounded-lg border border-[#d8eee4] bg-[#f1fbf6] px-3 py-2.5 text-xs text-[#287457]">{actionMessage}</div>}
+      {error && <div className="rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm font-normal text-rose">{error}</div>}
+      {actionMessage && <div role="status" className="rounded-lg border border-success/30 bg-success-bg px-4 py-3 text-sm font-normal text-success">{actionMessage}</div>}
 
-      <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm">
-        <header className="flex items-center justify-between gap-3.5 border-b border-[#f0f0f3] px-5 py-4">
+      <section className="min-w-0 rounded-xl border border-border bg-surface shadow-xs">
+        <header className="flex items-center justify-between gap-3.5 border-b border-border-light px-5 py-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">AUTOMATION HISTORY</p>
-            <h2 className="text-[13px] font-semibold text-[#343746]">Claude drafts and Classroom submissions</h2>
+            <p className="text-xs font-medium uppercase tracking-wider text-label">AUTOMATION HISTORY</p>
+            <h2 className="text-lg font-semibold text-heading">Claude drafts and Classroom submissions</h2>
           </div>
-          <span className="inline-flex items-center rounded-full bg-[#f1f1f6] px-2 py-1 text-xs font-semibold text-[#6e7281]">{automationHistory.length}</span>
+          <span className="inline-flex items-center rounded-full bg-surface-secondary px-2.5 py-0.5 text-xs font-medium text-nav tabular-nums">{automationHistory.length}</span>
         </header>
-        {loading ? <p className="px-5 py-7 text-center text-xs text-[#9396a3]">Loading automation history…</p> : automationHistory.length ? (
-          <div className="divide-y divide-[#f1f1f4]">
+        {loading ? <p className="px-5 py-8 text-center text-sm font-normal text-muted">Loading automation history…</p> : automationHistory.length ? (
+          <div className="divide-y divide-border-light">
             {automationHistory.map((item) => (
               <article key={item.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
-                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#f0edff] text-[#6657d9]"><Icon name={item.kind === 'claude_assignment' ? 'sparkles' : 'upload'} size={15} /></span>
+                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-violet-light text-violet"><Icon name={item.kind === 'claude_assignment' ? 'sparkles' : 'upload'} size={15} /></span>
                 <div className="min-w-0 flex-1">
-                  <strong className="block truncate text-xs font-semibold text-[#414553]">{item.assignment_title}</strong>
-                  <span className="block text-xs text-[#858998]">{item.course_name} · {item.kind === 'claude_assignment' ? 'Claude draft' : 'Classroom turn-in'} · {item.started_at ? new Date(item.started_at).toLocaleString() : 'Time unavailable'}</span>
-                  {item.error && <span className="mt-1 block text-xs text-[#b34f4f]">{item.error}</span>}
+                  <strong className="block truncate text-sm font-semibold text-heading">{item.assignment_title}</strong>
+                  <span className="block text-xs font-normal text-muted">{item.course_name} · {item.kind === 'claude_assignment' ? 'Claude draft' : 'Classroom turn-in'} · <span className="tabular-nums">{item.started_at ? new Date(item.started_at).toLocaleString() : 'Time unavailable'}</span></span>
+                  {item.error && <span className="mt-1 block text-xs font-normal text-danger">{item.error}</span>}
                 </div>
-                <span className={`rounded-full px-2 py-1 text-xs font-semibold ${['completed', 'TURNED_IN'].includes(item.status) ? 'bg-[#eaf7f1] text-[#438a71]' : ['failed', 'FAILED'].includes(item.status) ? 'bg-[#fff0f0] text-[#b15252]' : 'bg-[#fff4e4] text-[#a87936]'}`}>{item.status?.replaceAll('_', ' ')}</span>
-                {item.retryable && <button type="button" onClick={() => retryAutomation(item)} className="min-h-9 rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb]">{item.kind === 'claude_assignment' ? 'Retry with Claude' : 'Retry turn-in'}</button>}
+                <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${['completed', 'TURNED_IN'].includes(item.status) ? 'bg-success-bg text-success' : ['failed', 'FAILED'].includes(item.status) ? 'bg-rose-bg text-rose' : 'bg-warning-bg text-warning'}`}>{item.status?.replaceAll('_', ' ')}</span>
+                {item.retryable && <button type="button" onClick={() => retryAutomation(item)} className="min-h-8 rounded-md border border-border-input bg-surface px-3 text-xs font-medium text-nav hover:bg-surface-secondary">{item.kind === 'claude_assignment' ? 'Retry with Claude' : 'Retry turn-in'}</button>}
               </article>
             ))}
           </div>
-        ) : <p className="px-5 py-7 text-center text-xs text-[#9396a3]">No assignment automation or Classroom submission history yet.</p>}
+        ) : <p className="px-5 py-8 text-center text-sm font-normal text-muted">No assignment automation or Classroom submission history yet.</p>}
       </section>
 
       <section className="grid grid-cols-1 gap-3.5 md:grid-cols-3">
-        <article className="rounded-xl border border-[#ededf2] bg-white p-4">
-          <span className="block text-xs text-[#858998]">Agent runs</span>
-          <strong className="mt-2 block text-[22px] font-semibold text-[#343746]">{loading ? '—' : (stats?.total_runs ?? 0)}</strong>
+        <article className="rounded-xl border border-border bg-surface p-4 shadow-xs">
+          <span className="block text-xs font-medium uppercase tracking-wider text-muted">Agent runs</span>
+          <strong className="mt-2 block text-2xl sm:text-3xl font-semibold text-heading tabular-nums">{loading ? '—' : (stats?.total_runs ?? 0)}</strong>
         </article>
-        <article className="rounded-xl border border-[#ededf2] bg-white p-4">
-          <span className="block text-xs text-[#858998]">Completed</span>
-          <strong className="mt-2 block text-[22px] font-semibold text-[#343746]">{loading ? '—' : (stats?.completed ?? 0)}</strong>
+        <article className="rounded-xl border border-border bg-surface p-4 shadow-xs">
+          <span className="block text-xs font-medium uppercase tracking-wider text-muted">Completed</span>
+          <strong className="mt-2 block text-2xl sm:text-3xl font-semibold text-heading tabular-nums">{loading ? '—' : (stats?.completed ?? 0)}</strong>
         </article>
-        <article className="rounded-xl border border-[#ededf2] bg-white p-4">
-          <span className="block text-xs text-[#858998]">Google Classroom sync</span>
-          <strong className="mt-2 block text-base font-semibold capitalize text-[#343746]">{loading ? '—' : syncStatus}</strong>
-          <small className="mt-1 block text-xs text-[#858998]">
+        <article className="rounded-xl border border-border bg-surface p-4 shadow-xs">
+          <span className="block text-xs font-medium uppercase tracking-wider text-muted">Google Classroom sync</span>
+          <strong className="mt-2 block text-base font-semibold capitalize text-heading">{loading ? '—' : syncStatus}</strong>
+          <small className="mt-1 block text-xs font-normal text-subtle tabular-nums">
             {sync?.last_sync ? new Date(sync.last_sync).toLocaleString() : 'No successful sync yet'}
           </small>
         </article>
       </section>
 
-      <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm">
-        <header className="flex items-center justify-between gap-3.5 border-b border-[#f0f0f3] px-5 py-4">
+      <section className="min-w-0 rounded-xl border border-border bg-surface shadow-xs">
+        <header className="flex items-center justify-between gap-3.5 border-b border-border-light px-5 py-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">AUTOMATION ACTIVITY</p>
-            <h2 className="text-[13px] font-semibold text-[#343746]">Recent agent runs</h2>
+            <p className="text-xs font-medium uppercase tracking-wider text-label">AUTOMATION ACTIVITY</p>
+            <h2 className="text-lg font-semibold text-heading">Recent agent runs</h2>
           </div>
-          <span className="inline-flex items-center rounded-full bg-[#f1f1f6] px-2 py-1 text-xs font-semibold text-[#6e7281]">{runs.length}</span>
+          <span className="inline-flex items-center rounded-full bg-surface-secondary px-2.5 py-0.5 text-xs font-medium text-nav tabular-nums">{runs.length}</span>
         </header>
 
         {loading ? (
-          <div className="px-5 py-8 text-center text-xs leading-relaxed text-[#9396a3]">Loading sync history…</div>
+          <div className="px-5 py-8 text-center text-sm font-normal text-muted">Loading sync history…</div>
         ) : runs.length ? (
           <div className="flex flex-col">
             {runs.map((run) => (
-              <article className="border-t border-[#f1f1f4] first:border-t-0" key={run.id}>
-                <div className="flex min-h-[60px] items-center gap-3 px-4 py-3 hover:bg-[#fafafd]">
-                  <span className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-lg bg-[#f0edff] text-[#6657d9]">
+              <article className="border-t border-border-light first:border-t-0" key={run.id}>
+                <div className="flex min-h-[60px] items-center gap-3 px-4 py-3 hover:bg-surface-secondary transition">
+                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-violet-light text-violet">
                     <Icon name="refresh" size={15} />
                   </span>
-                  <span className="flex min-w-0 flex-1 flex-col gap-1">
-                    <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#414553]">{(run.trigger || 'Sync').replaceAll('_', ' ')}</strong>
-                    <small className="text-xs text-[#9295a2]">
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-sm font-semibold text-heading">{(run.trigger || 'Sync').replaceAll('_', ' ')}</strong>
+                    <small className="text-xs font-normal text-muted tabular-nums">
                       {run.started_at ? new Date(run.started_at).toLocaleString() : 'Time unavailable'}
                       {run.duration_seconds != null
                         ? ` · ${Math.round(run.duration_seconds)} sec`
                         : ''}
                     </small>
-                    <small className="text-xs text-[#9295a2]">
+                    <small className="text-xs font-normal text-subtle tabular-nums">
                       {run.assignments_found ?? 0} assignments found · {run.changes_found ?? 0} changes ·{' '}
                       {run.notifications_sent ?? 0} notifications
                     </small>
                     {run.errors > 0 && (
-                      <small className="text-xs text-[#b34f4f]">
+                      <small className="text-xs font-normal text-danger">
                         {run.error_details || `${run.errors} run errors`}
                       </small>
                     )}
                   </span>
-                  <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold ${run.status === 'COMPLETED' ? 'bg-[#eaf7f1] text-[#438a71]' : run.status === 'FAILED' ? 'bg-[#fff0f0] text-[#b15252]' : 'bg-[#fff4e4] text-[#a87936]'}`}>
+                  <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${run.status === 'COMPLETED' ? 'bg-success-bg text-success' : run.status === 'FAILED' ? 'bg-rose-bg text-rose' : 'bg-warning-bg text-warning'}`}>
                     {(run.status || 'unknown').toLowerCase()}
                   </span>
                   <button
                     type="button"
-                    className="inline-flex min-h-9 shrink-0 items-center justify-center rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb]"
+                    className="inline-flex min-h-8 shrink-0 items-center justify-center rounded-md border border-border-input bg-surface px-3 text-xs font-medium text-nav hover:bg-surface-secondary"
                     onClick={() => toggleEvents(run.id)}
                   >
                     {expandedRun === run.id ? 'Hide details' : 'View details'}
@@ -200,18 +200,18 @@ export default function ActivityPage() {
                 </div>
 
                 {expandedRun === run.id && (
-                  <div className="flex flex-col gap-2 border-t border-[#f1f1f4] px-4 pb-4 pl-14 pt-2 text-xs text-[#888c99]">
+                  <div className="flex flex-col gap-2 border-t border-border-light px-4 pb-4 pl-14 pt-2 text-xs font-normal text-muted">
                     {runEvents[run.id] ? (
                       runEvents[run.id].length ? (
                         runEvents[run.id].map((event) => (
                           <div className="flex items-start gap-2" key={event.id}>
-                            <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold ${event.status?.toUpperCase() === 'COMPLETED' ? 'bg-[#eaf7f1] text-[#438a71]' : event.status?.toUpperCase() === 'FAILED' ? 'bg-[#fff0f0] text-[#b15252]' : 'bg-[#fff4e4] text-[#a87936]'}`}>
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${event.status?.toUpperCase() === 'COMPLETED' ? 'bg-success-bg text-success' : event.status?.toUpperCase() === 'FAILED' ? 'bg-rose-bg text-rose' : 'bg-warning-bg text-warning'}`}>
                               {event.status || event.event_type}
                             </span>
-                            <span className="flex flex-col gap-1">
-                              <strong className="text-xs font-medium text-[#5e6270]">{event.message || event.source || 'Sync event'}</strong>
+                            <span className="flex flex-col gap-0.5">
+                              <strong className="text-xs font-medium text-heading">{event.message || event.source || 'Sync event'}</strong>
                               {event.created_at && (
-                                <small className="text-xs text-[#a0a2ad]">{new Date(event.created_at).toLocaleString()}</small>
+                                <small className="text-xs font-normal text-subtle tabular-nums">{new Date(event.created_at).toLocaleString()}</small>
                               )}
                             </span>
                           </div>

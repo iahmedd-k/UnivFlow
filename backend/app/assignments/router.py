@@ -120,6 +120,20 @@ def list_assignments(
             query = query.filter(Assignment.is_quiz == True)
         elif status_lower == "assignments":
             query = query.filter(Assignment.is_quiz == False)
+        elif status_lower in ("missing_labs", "missing-labs", "missing_lab"):
+            lab_condition = (
+                (Assignment.is_quiz == False) & (
+                    func.lower(Assignment.title).like("%lab%") |
+                    func.lower(Course.name).like("%lab%") |
+                    func.lower(func.coalesce(Assignment.description, "")).like("%lab%")
+                )
+            )
+            unsubmitted_condition = (
+                ((Assignment.submission_state.notin_([SubmissionState.TURNED_IN, SubmissionState.RETURNED])) | Assignment.submission_state.is_(None)) &
+                ((Assignment.status.notin_([AssignmentStatus.SUBMITTED, AssignmentStatus.APPROVED])) | Assignment.status.is_(None)) &
+                ((Submission.submission_state.notin_([SubmissionState.TURNED_IN, SubmissionState.RETURNED])) | Submission.submission_state.is_(None))
+            )
+            query = query.filter(lab_condition & unsubmitted_condition)
         elif status_lower == "submitted":
             query = query.filter(
                 (Assignment.submission_state.in_([SubmissionState.TURNED_IN, SubmissionState.RETURNED])) |

@@ -140,7 +140,14 @@ def send_smtp_email(
     pwd = (settings.smtp_password or "").replace(" ", "")
     host = settings.smtp_host or "smtp.gmail.com"
     port = settings.smtp_port or 587
-    from_email = settings.email_from or user
+    user = settings.smtp_username or settings.smtp_user or ""
+    pwd = (settings.smtp_password or "").replace(" ", "")
+    host = settings.smtp_host or "smtp.gmail.com"
+    port = settings.smtp_port or 587
+    if "gmail.com" in host.lower():
+        from_email = f"Uniflow <{user}>"
+    else:
+        from_email = settings.email_from or user
 
     if not (user and pwd and host):
         logger.error("SMTP credentials not fully configured")
@@ -198,18 +205,25 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
     import io
     import zipfile
     from datetime import datetime, timezone
-    from app.db.models import Assignment, Course, AssignmentSolution
+    from app.db.models import Assignment, Course, AssignmentSolution, Submission
     from app.services.alert_service import get_user_recipient_email
-    from app.services.ai_solution import extract_assignment_deliverables
+    from app.services.ai_solution import (
+        extract_assignment_deliverables,
+        extract_execution_metadata,
+        append_clean_deliverables_to_zip,
+    )
+    from app.services.google_docs import get_google_docs_service
+    from app.auth.ownership import user_owner_ids
 
     try:
-        assignment = db.query(Assignment).filter(
-            Assignment.id == assignment_id,
-            Assignment.user_id == user_id,
-        ).first()
+        owners = user_owner_ids(user_id) if user_id else []
+        assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
         if not assignment:
-            logger.warning("send_solution_delivery_email: Assignment %s not found for user %s", assignment_id, user_id)
+            logger.warning("send_solution_delivery_email: Assignment %s not found", assignment_id)
             return False
+
+        if owners and assignment.user_id not in owners and assignment.user_id != user_id:
+            logger.warning("send_solution_delivery_email: Assignment %s ownership mismatch for user %s", assignment_id, user_id)
 
         course = db.query(Course).filter(Course.id == assignment.course_id).first()
         solution = db.query(AssignmentSolution).filter(
@@ -226,6 +240,13 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
 
         to_email = get_user_recipient_email(db, user_id)
         if not to_email or "@" not in to_email:
+            to_email = (
+                getattr(settings, "notification_email", None)
+                or getattr(settings, "smtp_username", None)
+                or getattr(settings, "smtp_user", None)
+            )
+
+        if not to_email or "@" not in to_email:
             logger.warning("send_solution_delivery_email: No verified recipient email found for user %s", user_id)
             return False
 
@@ -233,34 +254,55 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
         assignment_title = assignment.title or f"Assignment #{assignment_id}"
         safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', assignment_title)[:40]
 
-        # Extract deliverables & construct deliverables ZIP archive
-        deliverables = extract_assignment_deliverables(raw_content)
+        # Extract deliverables
+        deliverables_dict = extract_assignment_deliverables(raw_content)
+        file_items = (
+            deliverables_dict.get("files", [])
+            if isinstance(deliverables_dict, dict)
+            else (deliverables_dict or [])
+        )
+        if not isinstance(file_items, list):
+            file_items = []
+        execution_results = extract_execution_metadata(raw_content) if raw_content else []
+
+        # Find Google Doc ID & URL
+        submission = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
+        gdoc_id = getattr(solution, "google_doc_id", None) or (submission.google_doc_id if submission else None)
+        gdoc_url = getattr(solution, "google_doc_url", None) or (f"https://docs.google.com/document/d/{gdoc_id}/edit" if gdoc_id else None)
+
+        # Attempt to export downloadable PDF of Google Doc
+        google_doc_pdf_bytes = None
+        if gdoc_id:
+            try:
+                docs_svc = get_google_docs_service(db, user_id=user_id)
+                if docs_svc:
+                    google_doc_pdf_bytes = docs_svc.export_document_as_pdf(gdoc_id)
+                    if google_doc_pdf_bytes:
+                        logger.info("send_solution_delivery_email: Exported Google Doc %s to PDF (%d bytes)", gdoc_id, len(google_doc_pdf_bytes))
+            except Exception as e:
+                logger.warning("send_solution_delivery_email: Could not export Google Doc %s to PDF: %s", gdoc_id, e)
+
+        # Build clean deliverables ZIP (strictly Google Doc PDF + code + diagrams, NO dump files)
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            readme_text = (
-                f"UNIFLOW ACADEMIC SOLUTION DELIVERABLES\n"
-                f"Course: {course_name}\n"
-                f"Assignment: {assignment_title}\n"
-                f"Generated At: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-                f"Recipient: {to_email}\n\n"
-                f"Contents:\n"
+            items_added = append_clean_deliverables_to_zip(
+                zf,
+                files=file_items,
+                execution_results=execution_results,
+                solution_markdown=raw_content,
+                google_doc_pdf_bytes=google_doc_pdf_bytes,
+                doc_pdf_name=f"{safe_name}_Report.pdf",
             )
-            for d in deliverables:
-                fname = d.get("filename") or f"task_{d.get('task', 1)}.py"
-                code_content = d.get("code") or ""
-                zf.writestr(fname, code_content)
-                readme_text += f"- {fname} ({d.get('language', 'code')})\n"
+        zip_bytes = zip_buffer.getvalue() if items_added > 0 else None
 
-            zf.writestr("README.txt", readme_text)
-            zf.writestr("SOLUTION_FULL.md", raw_content)
-
-        zip_bytes = zip_buffer.getvalue()
-
-        # Build clean professional HTML email body
+        # Build clean deliverable list for email HTML
         deliverable_items_html = ""
-        for d in deliverables:
-            fname = d.get("filename") or f"task_{d.get('task', 1)}.py"
-            lang = d.get("language") or "Code"
+        for f in file_items:
+            fname = f.get("name") or f.get("filename") or f"task_{f.get('task', 1)}.py"
+            fname_lower = fname.lower()
+            if any(d in fname_lower for d in ("terminal_output", "claude_reported_output", "stdout", "stderr")):
+                continue
+            lang = f.get("language") or "Code"
             deliverable_items_html += f"""
             <li style="margin-bottom: 6px; font-size: 13px; color: #374151;">
               <strong>{fname}</strong> <span style="background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 11px; color: #4b5563;">{lang}</span>
@@ -268,19 +310,25 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
             """
 
         doc_section_html = ""
-        if solution.google_doc_url:
+        if gdoc_url or google_doc_pdf_bytes:
+            pdf_note = '<span style="display: inline-block; margin-left: 10px; font-size: 11px; color: #059669; font-weight: 600; background: #ecfdf5; border: 1px solid #a7f3d0; padding: 3px 8px; border-radius: 99px;">PDF Report Attached</span>' if google_doc_pdf_bytes else ''
+            link_btn = f'<a href="{gdoc_url}" style="display: inline-block; padding: 8px 16px; background: #6657d9; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 12px; font-weight: 600;">Open Google Doc Report &rarr;</a>' if gdoc_url else ''
             doc_section_html = f"""
             <div style="margin: 20px 0; padding: 14px 18px; background: #eeeafe; border: 1px solid #dcd7fa; border-radius: 8px;">
-              <strong style="color: #5b4cc6; font-size: 14px;">Google Doc Academic Report Ready</strong>
-              <p style="margin: 4px 0 10px; font-size: 12px; color: #4b5563;">A complete formatted academic paper has been exported to your Google Drive.</p>
-              <a href="{solution.google_doc_url}" style="display: inline-block; padding: 8px 16px; background: #6657d9; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 12px; font-weight: 600;">Open Google Doc Report &rarr;</a>
+              <strong style="color: #5b4cc6; font-size: 14px;">Google Doc Academic Report Ready</strong> {pdf_note}
+              <p style="margin: 6px 0 10px; font-size: 12px; color: #4b5563;">A complete formatted academic paper has been exported to your Google Drive and attached as a downloadable PDF.</p>
+              {link_btn}
             </div>
             """
 
         # Truncated clean preview of solution text
-        preview_text = re.sub(r'```[\s\S]*?```', '[Code Block Embedded in Deliverables ZIP]', raw_content)
+        preview_text = re.sub(r'```[\s\S]*?```', '[Code Block Embedded in Deliverables]', raw_content)
         preview_text = preview_text[:600] + ("..." if len(preview_text) > 600 else "")
         preview_html = preview_text.replace("\n", "<br>")
+
+        zip_note_html = ""
+        if zip_bytes:
+            zip_note_html = f'<p style="font-size: 12px; color: #64748b; margin-bottom: 12px;">Attached deliverables bundle: <strong>{safe_name}_deliverables.zip</strong> (includes Google Doc PDF and source files).</p>'
 
         html_body = f"""<!DOCTYPE html>
 <html>
@@ -306,9 +354,9 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
         {doc_section_html}
 
         <div style="margin: 20px 0; padding: 16px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
-          <h3 style="margin: 0 0 10px; font-size: 14px; font-weight: 600; color: #0f172a;">Generated Deliverables (Attached in ZIP):</h3>
+          <h3 style="margin: 0 0 10px; font-size: 14px; font-weight: 600; color: #0f172a;">Generated Deliverables:</h3>
           <ul style="margin: 0; padding-left: 20px;">
-            {deliverable_items_html or '<li style="font-size: 13px; color: #64748b;">Comprehensive Academic Analysis & Markdown Report</li>'}
+            {deliverable_items_html or '<li style="font-size: 13px; color: #64748b;">Formatted Academic Report (Google Doc & PDF)</li>'}
           </ul>
         </div>
 
@@ -320,7 +368,7 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
         </div>
 
         <div style="margin-top: 28px; padding-top: 20px; border-top: 1px solid #e2e8f0; text-align: center;">
-          <p style="font-size: 12px; color: #64748b; margin-bottom: 12px;">The complete code bundle and documentation are attached as <strong>{safe_name}_deliverables.zip</strong>.</p>
+          {zip_note_html}
           <a href="http://localhost:3000/dashboard/assignments" style="display: inline-block; padding: 10px 20px; background: #4f46e5; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 13px; font-weight: 600;">Go to Uniflow Dashboard &rarr;</a>
         </div>
       </td>
@@ -334,13 +382,22 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
 </body>
 </html>"""
 
-        email_attachments = [
-            {
+        email_attachments = []
+        # 1. Downloadable Google Doc PDF
+        if google_doc_pdf_bytes:
+            email_attachments.append({
+                "filename": f"{safe_name}_Report.pdf",
+                "content": google_doc_pdf_bytes,
+                "type": "application/pdf",
+            })
+
+        # 2. Clean Deliverables ZIP (only code + diagrams)
+        if zip_bytes:
+            email_attachments.append({
                 "filename": f"{safe_name}_deliverables.zip",
                 "content": zip_bytes,
                 "type": "application/zip",
-            }
-        ]
+            })
 
         sent = send_email(
             to_email=to_email,

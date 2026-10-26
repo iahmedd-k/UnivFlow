@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 import Icon from '@/app/dashboard/Icon';
+import { ExtensionSetupBox } from '@/app/dashboard/CompanionExtensionModal';
 
 const AIR_UNIVERSITY_PORTAL = 'https://portals.au.edu.pk/students/';
 
@@ -95,7 +96,6 @@ export default function PortalPage() {
         if (!cancelled) {
           setSettings(result);
           setPortalUrl(result?.url || AIR_UNIVERSITY_PORTAL);
-          setSignInOpen(Boolean(result?.browser_open && result?.session_status !== 'ACTIVE'));
         }
       } catch (err) {
         if (!cancelled) setError(err.message || 'Could not load portal settings.');
@@ -107,7 +107,7 @@ export default function PortalPage() {
     return () => {
       cancelled = true;
     };
-  }, [getToken]);
+  }, []);
 
   useEffect(() => {
     if (!jobId) return undefined;
@@ -126,7 +126,6 @@ export default function PortalPage() {
           setBusy(false);
           if (result.status === 'success' || result.status === 'partial') {
             setNotice(result.message || 'Your portal data is up to date.');
-            setSignInOpen(false);
             await loadSettings();
           } else if (result.status === 'already_running') {
             setNotice(result.message || 'A portal sync is already running.');
@@ -160,25 +159,6 @@ export default function PortalPage() {
     };
   }, [jobId, getToken, loadSettings]);
 
-  const connect = async () => {
-    setBusy(true);
-    setError('');
-    setNotice('');
-    try {
-      const token = await getToken();
-      await api.savePortalUrl(portalUrl, token, { auth_method: 'google' });
-      const result = await api.openPortalBrowser(token);
-      autoSyncStarted.current = false;
-      setSignInOpen(true);
-      setNotice(result.message || 'Sign in to the university portal in the window that opened.');
-      await loadSettings();
-    } catch (err) {
-      setError(err.message || 'Could not open the university sign-in window.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const startSync = useCallback(async () => {
     setBusy(true);
     setError('');
@@ -196,118 +176,54 @@ export default function PortalPage() {
     }
   }, [getToken]);
 
-  useEffect(() => {
-    if (!signInOpen || connected || jobId || autoSyncStarted.current) return undefined;
-    let cancelled = false;
-    let timer;
-    let consecutiveAuthenticatedChecks = 0;
-    const check = async () => {
-      try {
-        const token = await getToken();
-        const result = await api.getPortalConnectionStatus(token);
-        if (cancelled) return;
-        if (result.status === 'authenticated') {
-          if (result.job_id) {
-            autoSyncStarted.current = true;
-            setJobId(result.job_id);
-            setNotice('Sign-in verified! Automatically syncing your university portal records…');
-            setSignInOpen(false);
-            return;
-          }
-          consecutiveAuthenticatedChecks += 1;
-          if (consecutiveAuthenticatedChecks >= 1) {
-            autoSyncStarted.current = true;
-            setNotice('Sign-in confirmed. Automatically starting your portal sync…');
-            await startSync();
-            return;
-          }
-        } else {
-          consecutiveAuthenticatedChecks = 0;
-        }
-      } catch (err) {
-        consecutiveAuthenticatedChecks = 0;
-        // Keep checking through temporary gateway/network issues, but don't hide
-        // authorization or server errors behind an endless "waiting" state.
-        if ([401, 403].includes(err?.status) || (err?.status >= 500 && ![502, 503, 504].includes(err.status))) {
-          if (!cancelled) {
-            setError(err.message || 'Could not verify the university sign-in.');
-            setSignInOpen(false);
-          }
-          return;
-        }
-      }
-      if (!cancelled) timer = setTimeout(check, 1800);
-    };
-    timer = setTimeout(check, 1500);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [signInOpen, connected, jobId, getToken, startSync]);
-
-  const closeBrowser = async () => {
-    setBusy(true);
-    try {
-      const token = await getToken();
-      await api.closePortalBrowser(token);
-      setSignInOpen(false);
-      autoSyncStarted.current = false;
-      await loadSettings();
-    } catch (err) {
-      setError(err.message || 'Could not close the sign-in window.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
   if (loading) {
     return <div className="mx-auto flex min-h-72 max-w-6xl items-center justify-center text-sm text-slate-500">Loading university connection…</div>;
   }
 
   return (
-    <main className="mx-auto max-w-6xl space-y-6 pb-12">
-      <header className="flex flex-col gap-4 border-b border-slate-200 pb-6 sm:flex-row sm:items-end sm:justify-between">
+    <main className="mx-auto max-w-6xl space-y-6 pb-12 text-heading">
+      <header className="flex flex-col gap-4 border-b border-border-light pb-6 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-sm font-semibold text-indigo-700">Academic integrations</p>
-          <h1 className="mt-1 text-3xl font-semibold tracking-tight text-slate-950">University portal</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">Connect once to sync your attendance, class schedule, and academic results automatically.</p>
+          <p className="text-xs font-medium uppercase tracking-wider text-label">Academic integrations</p>
+          <h1 className="my-1 text-2xl sm:text-3xl font-semibold tracking-tight text-heading">University portal</h1>
+          <p className="mt-1 max-w-2xl text-sm font-normal text-muted leading-relaxed">Connect once to sync your attendance, class schedule, and academic results automatically.</p>
         </div>
-        <div className="inline-flex w-fit items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm">
-          <span className={`h-2 w-2 rounded-full ${connected ? 'bg-emerald-500' : reconnect ? 'bg-amber-500' : 'bg-slate-400'}`} />
-          {connected ? 'Connected' : reconnect ? 'Reconnect needed' : settings?.browser_open ? 'Sign-in in progress' : 'Not connected'}
+        <div className="inline-flex w-fit items-center gap-2 rounded-full border border-border bg-surface px-3 py-1.5 text-xs font-medium text-heading shadow-xs">
+          <span className={`h-2 w-2 rounded-full ${connected ? 'bg-success' : reconnect ? 'bg-warning' : 'bg-muted'}`} />
+          {connected ? 'Connected' : reconnect ? 'Reconnect needed' : 'Not connected'}
         </div>
       </header>
 
-      {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div>}
-      {notice && <div role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">{notice}</div>}
+      {error && <div role="alert" className="rounded-xl border border-rose-border bg-rose-bg px-4 py-3 text-sm font-normal text-rose">{error}</div>}
+      {notice && <div role="status" className="rounded-xl border border-success/30 bg-success-bg px-4 py-3 text-sm font-normal text-success">{notice}</div>}
 
       <section className="grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-7 flex flex-col gap-6">
+        <div className="rounded-2xl border border-border bg-surface p-6 shadow-xs sm:p-7 flex flex-col gap-6">
           <div className="flex items-start gap-4">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-lg font-bold text-indigo-700" aria-hidden="true">U</div>
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-violet-light text-lg font-bold text-violet" aria-hidden="true">U</div>
             <div>
-              <h2 className="text-lg font-semibold text-slate-950">
+              <h2 className="text-lg font-semibold text-heading">
                 {connected ? 'Your portal is connected' : reconnect ? 'Sign in to restore automatic sync' : 'Connect your student account'}
               </h2>
-              <p className="mt-1 text-sm leading-6 text-slate-600">
+              <p className="mt-1 text-sm font-normal leading-relaxed text-muted">
                 {connected ? 'Uniflow reuses your saved university session. Attendance, schedules, and grades sync automatically.' : 'Connect via fast session cookies or automated browser to sync attendance in milliseconds.'}
               </p>
             </div>
           </div>
 
           {/* ⚡ Method 1: Instant Session Cookie Sync */}
-          <div className="rounded-xl border border-indigo-100 bg-[#faf9fe] p-4 flex flex-col gap-3">
+          <div className="rounded-xl border border-violet-light bg-surface-secondary p-4 flex flex-col gap-3">
             <div className="flex items-start justify-between gap-3 flex-wrap">
               <div>
-                <h3 className="text-xs font-bold uppercase tracking-wider text-[#483ba6]">⚡ 1-Click Fast Sync (Session Cookies)</h3>
-                <p className="mt-1 text-xs leading-relaxed text-[#686c80] max-w-xl">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-violet">⚡ 1-Click Fast Sync (Session Cookies)</h3>
+                <p className="mt-1 text-xs font-normal leading-relaxed text-muted max-w-xl">
                   Bypasses heavy browser instances. Directly queries the university portal APIs in &lt;300ms using your active session.
                 </p>
               </div>
               {settings?.has_session_cookies && (
                 <button
                   type="button"
-                  className="rounded-md border border-[#e0c4c4] bg-white px-3 py-1.5 text-xs font-semibold text-[#a04a4a] hover:bg-[#fff5f5] disabled:opacity-55"
+                  className="rounded-md border border-rose-border bg-surface px-3 py-1.5 text-xs font-medium text-rose hover:bg-rose-bg disabled:opacity-55"
                   onClick={handleDisconnectCookie}
                   disabled={syncingCookie || busy}
                 >
@@ -318,14 +234,14 @@ export default function PortalPage() {
 
             <form onSubmit={handleSyncCookie} className="mt-2 flex flex-col gap-3">
               <div className="flex flex-col gap-1">
-                <label className="text-[11px] font-semibold uppercase tracking-wider text-[#5d6170]">
+                <label className="text-xs font-medium uppercase tracking-wider text-muted">
                   1. University Portal Address
                 </label>
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                   <input
                     type="url"
                     placeholder="https://portals.au.edu.pk/students/"
-                    className="flex-1 rounded-lg border border-[#d6d4f0] bg-white px-3 py-2 text-xs text-[#292d3a] placeholder:text-[#9fa3b5] focus:border-[#6657d9] focus:outline-none"
+                    className="flex-1 rounded-lg border border-border-input bg-surface px-3 py-2 text-sm font-normal text-heading placeholder:text-muted focus:border-violet focus:outline-none"
                     value={portalUrl}
                     onChange={(e) => setPortalUrl(e.target.value)}
                     disabled={syncingCookie || busy}
@@ -334,29 +250,29 @@ export default function PortalPage() {
                     href={portalUrl || AIR_UNIVERSITY_PORTAL}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex min-h-9 items-center justify-center gap-1 rounded-lg border border-[#d6d4f0] bg-white px-3 text-xs font-semibold text-[#483ba6] hover:bg-[#f5f4fd] whitespace-nowrap"
+                    className="inline-flex min-h-9 items-center justify-center gap-1 rounded-lg border border-border-input bg-surface px-3 text-sm font-medium text-violet hover:bg-violet-light whitespace-nowrap"
                   >
-                    Open Portal <Icon name="externalLink" size={12} />
+                    Open Portal <Icon name="externalLink" size={13} />
                   </a>
                 </div>
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-[11px] font-semibold uppercase tracking-wider text-[#5d6170]">
+                <label className="text-xs font-medium uppercase tracking-wider text-muted">
                   2. Session Cookies (Full Cookie Header or .AspNetCore.Cookies)
                 </label>
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                   <input
                     type="password"
                     placeholder="Paste full Cookie header or .AspNetCore.Cookies session string"
-                    className="flex-1 rounded-lg border border-[#d6d4f0] bg-white px-3 py-2 text-xs font-mono text-[#292d3a] placeholder:text-[#9fa3b5] focus:border-[#6657d9] focus:outline-none"
+                    className="flex-1 rounded-lg border border-border-input bg-surface px-3 py-2 text-sm font-normal font-mono text-heading placeholder:text-muted focus:border-violet focus:outline-none"
                     value={cookieInput}
                     onChange={(e) => setCookieInput(e.target.value)}
                     disabled={syncingCookie || busy}
                   />
                   <button
                     type="submit"
-                    className="inline-flex min-h-9 items-center justify-center rounded-lg border border-[#6657d9] bg-[#6657d9] px-4 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55 whitespace-nowrap"
+                    className="inline-flex min-h-9 items-center justify-center rounded-lg border border-violet bg-violet px-4 text-sm font-medium text-white hover:bg-violet-dark disabled:opacity-55 whitespace-nowrap"
                     disabled={syncingCookie || busy || !cookieInput.trim()}
                   >
                     {syncingCookie ? 'Syncing…' : settings?.has_session_cookies ? 'Update & Sync' : 'Connect & Sync'}
@@ -365,8 +281,8 @@ export default function PortalPage() {
               </div>
             </form>
 
-            <details className="mt-1 rounded-lg border border-[#ececf4] bg-white p-3 text-xs text-[#6e7284]">
-              <summary className="cursor-pointer font-semibold text-[#4b4e60] hover:text-[#6657d9]">
+            <details className="mt-1 rounded-lg border border-border bg-surface p-3 text-xs text-muted">
+              <summary className="cursor-pointer font-medium text-heading hover:text-violet">
                 How to copy your session cookie in 10 seconds (click to view)
               </summary>
               <div className="mt-2 space-y-2 text-[#5d6170]">
@@ -374,7 +290,10 @@ export default function PortalPage() {
                   <strong>Important:</strong> Air University requires <code>.AspNetCore.Cookies</code> for student authentication (not just <code>ASP.NET_SessionId</code>). Follow either method below:
                 </div>
                 <div>
-                  <p className="font-semibold text-[#3b3e4a]">⚡ Method 1: Network Tab (Recommended - 2 clicks)</p>
+                  <p className="flex items-center gap-1.5 font-semibold text-[#3b3e4a]">
+                    <Icon name="zap" size={13} className="text-amber-500" />
+                    <span>Method 1: Network Tab (Recommended - 2 clicks)</span>
+                  </p>
                   <ol className="mt-1 list-decimal pl-4 space-y-1">
                     <li>Sign into <a href={portalUrl} target="_blank" rel="noreferrer" className="text-[#6657d9] underline font-medium">portals.au.edu.pk</a> in your browser.</li>
                     <li>Press <kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">F12</kbd> → click the <strong>Network</strong> tab → reload the page (<kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">Ctrl+R</kbd>).</li>
@@ -383,7 +302,10 @@ export default function PortalPage() {
                   </ol>
                 </div>
                 <div>
-                  <p className="font-semibold text-[#3b3e4a]">🍪 Method 2: Application / Storage Tab</p>
+                  <p className="flex items-center gap-1.5 font-semibold text-[#3b3e4a]">
+                    <Icon name="key" size={13} className="text-indigo-500" />
+                    <span>Method 2: Application / Storage Tab</span>
+                  </p>
                   <ol className="mt-1 list-decimal pl-4 space-y-1">
                     <li>Press <kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">F12</kbd> → click <strong>Application</strong> (or <strong>Storage</strong> in Firefox) → <strong>Cookies</strong> → <strong>https://portals.au.edu.pk</strong>.</li>
                     <li>Select all rows (<kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">Ctrl+A</kbd>) and copy (<kbd className="rounded bg-[#f0f0f4] px-1 py-0.5 font-mono text-[11px]">Ctrl+C</kbd>), or double-click and copy the value of <strong>.AspNetCore.Cookies</strong>.</li>
@@ -394,56 +316,29 @@ export default function PortalPage() {
             </details>
           </div>
 
-          {/* Method 2: Browser Profile Alternative */}
-          <details className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs">
-            <summary className="cursor-pointer font-semibold text-slate-700 hover:text-slate-900">
-              Alternative Method: Automated Browser Sign-In
-            </summary>
-            <div className="mt-3 flex flex-col gap-3 pt-3 border-t border-slate-200">
-              <label htmlFor="portal-url" className="block text-xs font-medium text-slate-800">University portal address</label>
-              <input id="portal-url" type="url" value={portalUrl} onChange={(event) => setPortalUrl(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 outline-none focus:border-indigo-500" placeholder="https://portals.au.edu.pk/students/" />
-              <div className="flex flex-wrap gap-2">
-                <button type="button" disabled={busy || !portalUrl} onClick={connect} className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-indigo-700 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-800 disabled:opacity-55">
-                  {busy && !isSyncing ? 'Opening sign-in…' : reconnect ? 'Reconnect university account' : settings?.browser_open ? 'Return to sign-in window' : 'Launch browser sign-in'}
-                </button>
-                <a href={portalUrl} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
-                  Open in new tab <Icon name="externalLink" size={12} />
-                </a>
-              </div>
-            </div>
-          </details>
-
-          {(settings?.browser_open || signInOpen) && !connected && (
-            <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 p-4">
-              <p className="text-sm font-semibold text-indigo-950">1. Sign in to your university account</p>
-              <p className="mt-1 text-xs leading-relaxed text-indigo-900">Complete Google sign-in and any university security check in the browser window. Keep this page open; Uniflow will wait for sign-in to settle, then start syncing automatically.</p>
-              <div className="mt-3 flex items-center gap-2">
-                <button type="button" disabled={busy} onClick={startSync} className="inline-flex items-center justify-center rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-semibold text-indigo-800 hover:bg-indigo-50 disabled:opacity-50">
-                  {isSyncing ? 'Finding your academic pages…' : 'Start sync now'}
-                </button>
-                {settings?.browser_open && <button type="button" disabled={busy} onClick={closeBrowser} className="rounded-lg px-3 py-2 text-xs font-medium text-slate-600 hover:bg-white">Close sign-in window</button>}
-              </div>
-            </div>
-          )}
+          {/* Automated Extension Sync */}
+          <div className="mt-2">
+            <ExtensionSetupBox onSynced={() => loadSettings()} />
+          </div>
 
           {connected && (
             <div className="flex flex-wrap items-center gap-3 pt-2">
-              <button type="button" disabled={busy || syncingCookie} onClick={startSync} className="rounded-xl bg-indigo-700 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-indigo-800 disabled:opacity-50">
+              <button type="button" disabled={busy || syncingCookie} onClick={startSync} className="rounded-xl bg-violet px-4 py-2 text-sm font-medium text-white transition hover:bg-violet-dark disabled:opacity-50">
                 {isSyncing ? 'Syncing your portal…' : 'Sync All Portal Data'}
               </button>
-              <span className="text-xs text-slate-500">Last synced {timeLabel(settings?.last_synced_at)}</span>
+              <span className="text-xs font-normal text-subtle tabular-nums">Last synced {timeLabel(settings?.last_synced_at)}</span>
             </div>
           )}
         </div>
 
-        <aside className="rounded-2xl border border-slate-200 bg-slate-50 p-6">
-          <h2 className="text-sm font-semibold text-slate-950">What syncs automatically</h2>
-          <ul className="mt-4 space-y-3 text-sm text-slate-700">
+        <aside className="rounded-2xl border border-border bg-surface-secondary p-6">
+          <h2 className="text-base font-semibold text-heading">What syncs automatically</h2>
+          <ul className="mt-4 space-y-3 text-sm text-nav font-normal">
             {['Attendance by course', 'Class timetable and schedule', 'Grades and academic summary'].map((item) => (
-              <li key={item} className="flex items-center gap-3"><span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100 text-emerald-700"><Icon name="check" size={12}/></span>{item}</li>
+              <li key={item} className="flex items-center gap-3"><span className="flex h-5 w-5 items-center justify-center rounded-full bg-success-light text-success"><Icon name="check" size={12}/></span>{item}</li>
             ))}
           </ul>
-          <div className="mt-5 border-t border-slate-200 pt-4 text-xs leading-5 text-slate-500">
+          <div className="mt-5 border-t border-border-light pt-4 text-xs font-normal leading-relaxed text-muted">
             Sign in is normally needed once. If the university expires the session or asks for verification again, reconnect to resume syncing. Your browser session is kept separate from other accounts.
           </div>
         </aside>
@@ -454,20 +349,20 @@ export default function PortalPage() {
           ['Cumulative GPA', report.cgpa == null ? '—' : Number(report.cgpa).toFixed(2)],
           ['Semester GPA', report.sgpa == null ? '—' : Number(report.sgpa).toFixed(2)],
           ['Credits earned', report.earned_credits == null ? '—' : `${report.earned_credits}`],
-          ['Last updated', settings?.last_synced_at ? new Date(settings.last_synced_at).toLocaleDateString() : '—'],
+          ['Last updated', settings?.last_synced_at ? new Date(settings?.last_synced_at).toLocaleDateString() : '—'],
         ].map(([label, value]) => (
-          <div key={label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-sm text-slate-500">{label}</p>
-            <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{value}</p>
+          <div key={label} className="rounded-2xl border border-border bg-surface p-5 shadow-xs">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted">{label}</p>
+            <p className="mt-2 text-2xl sm:text-3xl font-semibold tracking-tight text-heading tabular-nums">{value}</p>
           </div>
         ))}
       </section>
 
       {syncState?.pages_synced?.length > 0 && (
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-base font-semibold text-slate-950">Pages found</h2>
-          <div className="mt-4 divide-y divide-slate-100">
-            {syncState.pages_synced.map((page) => <div key={page.url} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm"><span className="font-medium text-slate-800">{page.title || page.url}</span><span className="text-slate-500">{page.tables} data tables</span></div>)}
+        <section className="rounded-2xl border border-border bg-surface p-6 shadow-xs">
+          <h2 className="text-lg font-semibold text-heading">Pages found</h2>
+          <div className="mt-4 divide-y divide-border-light">
+            {syncState.pages_synced.map((page) => <div key={page.url} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm"><span className="font-medium text-heading">{page.title || page.url}</span><span className="text-muted tabular-nums">{page.tables} data tables</span></div>)}
           </div>
         </section>
       )}

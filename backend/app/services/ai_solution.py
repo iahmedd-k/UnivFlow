@@ -723,6 +723,136 @@ def append_downloaded_assets_to_zip(
     return added
 
 
+def append_clean_deliverables_to_zip(
+    bundle,
+    files: Optional[List[Dict[str, Any]]] = None,
+    execution_results: Optional[List[Dict[str, Any]]] = None,
+    solution_markdown: Optional[str] = None,
+    google_doc_pdf_bytes: Optional[bytes] = None,
+    doc_pdf_name: Optional[str] = None,
+) -> int:
+    """
+    Append ONLY clean deliverables to the assignment ZIP:
+    - Downloadable Google Doc PDF (if provided)
+    - Source code files (.py, .java, .cpp, .c, .sql, .ipynb, etc.)
+    - Diagram deliverables (.drawio.xml, .drawio, .svg, .mmd, .puml, diagram images)
+    Strictly excludes dump files: no terminal output logs, no reported execution dumps,
+    no redundant README/SOLUTION_FULL copies, no claude_outputs mirror folders.
+    """
+    added = 0
+    used_names = set()
+
+    # 1. Google Doc PDF if available
+    if google_doc_pdf_bytes:
+        pdf_filename = doc_pdf_name or "Academic_Report.pdf"
+        bundle.writestr(pdf_filename, google_doc_pdf_bytes)
+        used_names.add(pdf_filename)
+        added += 1
+
+    # 2. Clean code and diagram files from deliverables
+    valid_code_exts = (
+        ".py", ".java", ".cpp", ".c", ".h", ".hpp", ".cs", ".sql", ".ipynb",
+        ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".r", ".go", ".kt",
+        ".sh", ".dart", ".rb", ".php", ".m", ".rs"
+    )
+    valid_diag_exts = (".drawio.xml", ".drawio", ".xml", ".svg", ".mmd", ".puml")
+    dump_indicators = ("terminal_output", "claude_reported_output", "stdout", "stderr", "dump")
+
+    for f in (files or []):
+        fname = f.get("name") or f.get("filename") or ""
+        if not fname:
+            continue
+        fname_lower = fname.lower()
+
+        # Filter out dump files
+        if any(d in fname_lower for d in dump_indicators):
+            continue
+        if fname_lower.endswith(".txt") and not any(k in fname_lower for k in ("prompt", "requirement")):
+            continue
+
+        # Check if it's code or diagram
+        is_code = fname_lower.endswith(valid_code_exts)
+        is_diag = fname_lower.endswith(valid_diag_exts) or (f.get("language") or "").lower() in ("drawio", "drawio.xml", "xml", "svg", "mermaid")
+
+        if is_code or is_diag:
+            code_content = f.get("content") or f.get("code") or ""
+            if isinstance(code_content, str):
+                code_content = code_content.encode("utf-8")
+            if fname not in used_names:
+                bundle.writestr(fname, code_content)
+                used_names.add(fname)
+                added += 1
+
+    # 3. Clean diagram files and visual output images only (no terminal screenshots)
+    for result in (execution_results or []):
+        assets = list(result.get("downloaded_assets") or [])
+        task_str = str(result.get("task") or (added + 1))
+        task_clean = re.sub(r"[^A-Za-z0-9_-]", "_", task_str)
+
+        img_name = result.get("diagram_image_filename")
+        diag_uri = result.get("diagram_data_uri")
+        if diag_uri and not any(a.get("data_uri") == diag_uri for a in assets):
+            assets.append({
+                "filename": img_name or f"task_{task_clean}_diagram.png",
+                "data_uri": diag_uri,
+                "is_diagram": True,
+            })
+
+        for asset in assets:
+            filename = asset.get("filename") or ""
+            data_uri = asset.get("data_uri") or ""
+            fn_lower = filename.lower()
+
+            if not filename or any(d in fn_lower for d in dump_indicators):
+                continue
+
+            # Only allow diagram files, not terminal screenshots
+            is_diag_asset = (
+                asset.get("is_diagram")
+                or "diagram" in fn_lower
+                or fn_lower.endswith(valid_diag_exts)
+            )
+            if not is_diag_asset:
+                continue
+
+            file_bytes = None
+            if data_uri.startswith("data:") and "," in data_uri:
+                try:
+                    file_bytes = base64.b64decode(data_uri.split(",", 1)[1], validate=True)
+                except Exception:
+                    continue
+            elif isinstance(asset.get("content"), (bytes, str)):
+                raw_c = asset["content"]
+                file_bytes = raw_c if isinstance(raw_c, bytes) else raw_c.encode("utf-8")
+
+            if not file_bytes:
+                continue
+
+            safe_fn = re.sub(r"[^A-Za-z0-9_.-]", "_", str(filename).replace("\\", "/").split("/")[-1])
+            dest_name = f"diagrams/{safe_fn}" if not safe_fn.startswith("diagrams/") else safe_fn
+            if dest_name not in used_names:
+                bundle.writestr(dest_name, file_bytes)
+                used_names.add(dest_name)
+                added += 1
+
+    # 4. Embedded diagram images from solution markdown
+    if solution_markdown:
+        direct_images = extract_claude_diagram_images(solution_markdown)
+        for t_id, d_uri in direct_images.items():
+            if d_uri and "base64," in d_uri:
+                try:
+                    d_bytes = base64.b64decode(d_uri.split("base64,")[1], validate=True)
+                    direct_name = f"diagrams/task_{t_id}_diagram.png"
+                    if direct_name not in used_names:
+                        bundle.writestr(direct_name, d_bytes)
+                        used_names.add(direct_name)
+                        added += 1
+                except Exception:
+                    pass
+
+    return added
+
+
 def strip_execution_metadata(markdown: str) -> str:
     return re.sub(re.escape(_EXECUTION_RESULTS_MARKER) + r"[A-Za-z0-9+/=]+\s*-->", "", markdown or "").rstrip()
 

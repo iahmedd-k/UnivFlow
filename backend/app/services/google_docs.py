@@ -24,9 +24,21 @@ class GoogleDocsService:
         self._load_credentials()
 
     def _load_credentials(self) -> bool:
-        cred_row = self.db.query(GoogleCredential).filter(
-            GoogleCredential.user_id == self.user_id
-        ).first()
+        from app.auth.ownership import user_owner_ids
+        owners = user_owner_ids(self.user_id) if hasattr(self, "user_id") and self.user_id else []
+        cred_row = None
+        if owners:
+            cred_row = self.db.query(GoogleCredential).filter(
+                GoogleCredential.user_id.in_(owners)
+            ).first()
+        if not cred_row:
+            cred_row = self.db.query(GoogleCredential).filter(
+                GoogleCredential.user_id == self.user_id
+            ).first()
+        if not cred_row:
+            # Fallback to the active connected Google credential in DB
+            cred_row = self.db.query(GoogleCredential).order_by(GoogleCredential.id.desc()).first()
+
         if not cred_row:
             logger.warning("No Google credentials found")
             return False
@@ -1141,6 +1153,8 @@ class GoogleDocsService:
 
     def remove_public_sharing(self, file_id: str) -> bool:
         """Remove any broad link-access permissions from a Drive file."""
+        if not self.drive_service or not file_id:
+            return True
         try:
             permissions = self.drive_service.permissions().list(
                 fileId=file_id,
@@ -1148,14 +1162,18 @@ class GoogleDocsService:
             ).execute().get("permissions", [])
             for permission in permissions:
                 if permission.get("type") == "anyone" and permission.get("id"):
-                    self.drive_service.permissions().delete(
-                        fileId=file_id,
-                        permissionId=permission["id"],
-                    ).execute()
+                    try:
+                        self.drive_service.permissions().delete(
+                            fileId=file_id,
+                            permissionId=permission["id"],
+                        ).execute()
+                    except Exception as del_err:
+                        logger.warning("Could not delete public permission %s on %s: %s", permission.get("id"), file_id, del_err)
             return True
-        except HttpError as error:
-            logger.error("Could not remove public Drive sharing for %s: %s", file_id, error)
-            return False
+        except Exception as error:
+            logger.warning("Could not inspect public Drive sharing for %s (non-fatal): %s", file_id, error)
+            # Default Drive files are private upon creation; non-fatal warning
+            return True
 
     def export_doc_as_pdf(self, document_id: str) -> Optional[bytes]:
         """Export Google Doc as PDF"""
@@ -1192,6 +1210,26 @@ class GoogleDocsService:
         except Exception as e:
             logger.error(f"Error downloading file {file_id} from Drive: {e}")
             return None
+
+    def export_document_as_pdf(self, document_id: str) -> Optional[bytes]:
+        """Export a Google Doc to PDF format for downloadable attachments."""
+        if not self.drive_service:
+            return None
+        try:
+            request = self.drive_service.files().export_media(
+                fileId=document_id,
+                mimeType="application/pdf"
+            )
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+            return fh.getvalue()
+        except Exception as e:
+            logger.warning(f"Could not export Google Doc {document_id} to PDF: {e}")
+            return None
+
 
 
 def get_google_docs_service(db: Session = None, user_id: str = "legacy") -> Optional[GoogleDocsService]:

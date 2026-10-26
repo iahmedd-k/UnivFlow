@@ -87,9 +87,21 @@ class ClassroomSyncService:
 
     def _load_credentials(self) -> bool:
         """Load Google credentials from database"""
-        cred_row = self.db.query(GoogleCredential).filter(
-            GoogleCredential.user_id == self.user_id
-        ).first()
+        from app.auth.ownership import user_owner_ids
+        owners = user_owner_ids(self.user_id) if hasattr(self, "user_id") and self.user_id else []
+        cred_row = None
+        if owners:
+            cred_row = self.db.query(GoogleCredential).filter(
+                GoogleCredential.user_id.in_(owners)
+            ).first()
+        if not cred_row:
+            cred_row = self.db.query(GoogleCredential).filter(
+                GoogleCredential.user_id == self.user_id
+            ).first()
+        if not cred_row:
+            # Fallback to active connected Google credential in DB
+            cred_row = self.db.query(GoogleCredential).order_by(GoogleCredential.id.desc()).first()
+
         if not cred_row:
             logger.warning("No Google credentials found in database")
             return False

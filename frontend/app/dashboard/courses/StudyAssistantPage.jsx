@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 import MarkdownRenderer from '../MarkdownRenderer';
+import { PanelLeft, PanelRight, RotateCw, Plus, Sparkles, ArrowUp } from 'lucide-react';
 
 const syncTime = (value) => {
   if (!value) return 'Not synced yet';
@@ -36,12 +37,7 @@ const fileBadge = (item) => {
   return 'FILE';
 };
 
-const PanelIcon = ({ side }) => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-    <rect x="3" y="4" width="18" height="16" rx="3" />
-    <path d={side === 'left' ? 'M9 4v16' : 'M15 4v16'} />
-  </svg>
-);
+const PanelIcon = ({ side }) => side === 'left' ? <PanelLeft className="w-4 h-4" /> : <PanelRight className="w-4 h-4" />;
 
 export default function StudyAssistantPage() {
   const { getToken } = useAuth();
@@ -197,8 +193,8 @@ export default function StudyAssistantPage() {
         <div className="flex items-center gap-2">
           {syncStatus?.google_connected === false
             ? <a href="/api/v1/auth/google?redirect_to=/dashboard/courses" className="hidden h-11 items-center rounded-xl border border-line px-3.5 text-sm font-semibold transition hover:bg-paper sm:inline-flex">Connect Classroom</a>
-            : <button type="button" onClick={syncMaterials} disabled={syncing} className="hidden h-11 items-center gap-2 rounded-xl border border-line px-3.5 text-sm font-semibold transition hover:bg-paper disabled:opacity-60 sm:inline-flex"><span className={syncing ? 'animate-spin' : ''}>↻</span>{syncing ? 'Syncing…' : 'Sync courses'}</button>}
-          <button type="button" onClick={startNewChat} className="h-11 rounded-xl bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark">+ New chat</button>
+            : <button type="button" onClick={syncMaterials} disabled={syncing} className="hidden h-11 items-center gap-2 rounded-xl border border-line px-3.5 text-sm font-semibold transition hover:bg-paper disabled:opacity-60 sm:inline-flex"><RotateCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />{syncing ? 'Syncing…' : 'Sync courses'}</button>}
+          <button type="button" onClick={startNewChat} className="inline-flex items-center gap-1.5 h-11 rounded-xl bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark"><Plus className="w-4 h-4" /> New chat</button>
           <button type="button" onClick={() => setShowRecent((v) => !v)} aria-pressed={showRecent} aria-label="Toggle recent chats" className={toggleBtn(showRecent)}><PanelIcon side="right" /></button>
         </div>
       </header>
@@ -245,7 +241,7 @@ export default function StudyAssistantPage() {
           {/* Only this area scrolls */}
           <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto flex min-h-full w-full max-w-[880px] flex-col gap-7 px-4 py-7 md:px-6">
-              {messages.length === 0 && !loading && <div className="m-auto w-full max-w-2xl py-10 text-center"><div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-2xl bg-violet-light text-xl text-violet">✦</div><h2 className="text-xl font-bold">What are you studying today?</h2><p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-muted">Ask for an explanation, summary, or practice questions. I’ll search saved course materials and tell you when a topic isn’t covered there.</p><div className="mt-6 flex flex-wrap justify-center gap-2">{['Summarize the latest lecture slides', 'Explain a difficult concept step by step', 'Make practice questions from my course notes'].map((prompt) => <button key={prompt} type="button" onClick={() => { setDraft(prompt); textareaRef.current?.focus(); }} className="rounded-full border border-line bg-white px-3.5 py-2 text-xs font-medium text-ink transition hover:border-violet hover:text-violet">{prompt}</button>)}</div></div>}
+              {messages.length === 0 && !loading && <div className="m-auto w-full max-w-2xl py-10 text-center"><div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-2xl bg-violet-light text-violet"><Sparkles className="w-6 h-6" /></div><h2 className="text-xl font-bold">What are you studying today?</h2><p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-muted">Ask for an explanation, summary, or practice questions. I’ll search saved course materials and tell you when a topic isn’t covered there.</p><div className="mt-6 flex flex-wrap justify-center gap-2">{['Summarize the latest lecture slides', 'Explain a difficult concept step by step', 'Make practice questions from my course notes'].map((prompt) => <button key={prompt} type="button" onClick={() => { setDraft(prompt); textareaRef.current?.focus(); }} className="rounded-full border border-line bg-white px-3.5 py-2 text-xs font-medium text-ink transition hover:border-violet hover:text-violet">{prompt}</button>)}</div></div>}
 
               {messages.map((message, index) => message.role === 'user' ? (
                 <article key={`${index}-${message.role}`} className="ml-auto max-w-[80%] whitespace-pre-wrap rounded-[20px] rounded-br-md bg-violet-light px-[18px] py-3 text-base leading-relaxed">{message.text}</article>
@@ -269,7 +265,7 @@ export default function StudyAssistantPage() {
             <div className="mx-auto max-w-[880px]">
               <div className="flex items-end gap-2.5 rounded-[20px] border border-line bg-white p-2.5 shadow-sm focus-within:border-violet focus-within:ring-2 focus-within:ring-violet/10">
                 <textarea ref={textareaRef} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(event); } }} maxLength={8000} rows={1} placeholder="Ask about your courses…" className="max-h-40 min-h-11 flex-1 resize-none bg-transparent px-2 py-2.5 text-base leading-6 outline-none placeholder:text-muted" aria-label="Message the Study Assistant" />
-                <button type="submit" disabled={sending || !draft.trim()} className="inline-flex h-11 shrink-0 items-center gap-2 rounded-xl bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50">{sending ? 'Thinking…' : 'Send'}<span aria-hidden="true">↑</span></button>
+                <button type="submit" disabled={sending || !draft.trim()} className="inline-flex h-11 shrink-0 items-center gap-2 rounded-xl bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-50">{sending ? 'Thinking…' : 'Send'}<ArrowUp className="w-3.5 h-3.5" /></button>
               </div>
               <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted"><span>Enter to send · Shift + Enter for a new line</span><span>{selected.length ? `${selected.length} selected sources` : 'All indexed sources'}</span></div>
             </div>

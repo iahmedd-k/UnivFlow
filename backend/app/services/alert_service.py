@@ -122,10 +122,12 @@ def get_user_recipient_email(db: Session, user_id: str = "") -> str:
         local_default = db.query(Setting).filter(Setting.key == "notification_email_default").first()
         if local_default and local_default.value and "@" in local_default.value:
             return local_default.value.strip()
-        # Local fixtures and a fresh development database may not have an email
-        # configured. Keep alert generation deterministic without borrowing an
-        # address belonging to a real account.
-        return "dev-student@localhost.invalid"
+        if getattr(settings, "notification_email", None) and "@" in settings.notification_email:
+            return settings.notification_email.strip()
+        if getattr(settings, "smtp_username", None) and "@" in settings.smtp_username:
+            return settings.smtp_username.strip()
+        if getattr(settings, "smtp_user", None) and "@" in settings.smtp_user:
+            return settings.smtp_user.strip()
 
     # Only use profile or integration emails associated with this exact user.
     clerk_s = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
@@ -147,6 +149,13 @@ def get_user_recipient_email(db: Session, user_id: str = "") -> str:
     g_email = db.query(Setting).filter(Setting.key == f"google_connected_email_{user_id}").first()
     if g_email and g_email.value and g_email.value.strip() and "@" in g_email.value:
         return g_email.value.strip()
+
+    if getattr(settings, "notification_email", None) and "@" in settings.notification_email:
+        return settings.notification_email.strip()
+    if getattr(settings, "smtp_username", None) and "@" in settings.smtp_username:
+        return settings.smtp_username.strip()
+    if getattr(settings, "smtp_user", None) and "@" in settings.smtp_user:
+        return settings.smtp_user.strip()
 
     return ""
 

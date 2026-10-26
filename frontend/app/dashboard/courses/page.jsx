@@ -6,6 +6,21 @@ import { api } from '@/app/lib/api';
 import MarkdownRenderer from '../MarkdownRenderer';
 import Icon from '@/app/dashboard/Icon';
 import StudyAssistantPage from './StudyAssistantPage';
+import {
+  UploadCloud,
+  RotateCw,
+  Plus,
+  MessageSquare,
+  FileText,
+  History,
+  Presentation,
+  FlaskConical,
+  BookOpen,
+  Lightbulb,
+  CheckCircle2,
+  HelpCircle,
+  Loader2,
+} from 'lucide-react';
 
 function LegacyCoursesPage() {
   const { getToken } = useAuth();
@@ -339,8 +354,8 @@ function LegacyCoursesPage() {
             disabled={uploading}
             title="Upload lecture slides, PPTX, PDF, or course notes"
           >
-            <span>{uploading ? '⏳' : '📁'}</span>
-            {uploading ? 'Uploading…' : 'Upload Slides / Docs'}
+            {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UploadCloud className="w-3.5 h-3.5" />}
+            <span>{uploading ? 'Uploading…' : 'Upload Slides / Docs'}</span>
           </button>
           <button
             type="button"
@@ -349,15 +364,15 @@ function LegacyCoursesPage() {
             disabled={syncing}
             title="Fetch all course materials, lecture slides, and announcements from Google Classroom"
           >
-            <span className={syncing ? 'animate-spin' : ''}>🔄</span>
-            {syncing ? 'Syncing…' : 'Sync Classroom'}
+            <RotateCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+            <span>{syncing ? 'Syncing…' : 'Sync Classroom'}</span>
           </button>
           <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-light px-2.5 py-1 text-xs font-semibold text-violet-dark border border-violet/20">
             <span className="h-1.5 w-1.5 rounded-full bg-violet" />
             {selected.length} of {materials.length} attached
           </span>
-          <button type="button" className={secondaryButtonClass} onClick={startNewConversation}>
-            + New chat
+          <button type="button" className={`${secondaryButtonClass} inline-flex items-center gap-1`} onClick={startNewConversation}>
+            <Plus className="w-3.5 h-3.5" /> New chat
           </button>
           <button
             type="button"
@@ -392,7 +407,7 @@ function LegacyCoursesPage() {
               className="text-amber-700 hover:text-amber-900 font-bold px-1.5 py-0.5 text-sm"
               title="Dismiss warning"
             >
-              ✕
+              <Icon name="close" size={14} />
             </button>
           </div>
         </div>
@@ -401,8 +416,13 @@ function LegacyCoursesPage() {
       {/* Sync Success or Error Notifications */}
       {syncNotice && (
         <div className="my-1 rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs font-medium text-emerald-800 transition flex items-center justify-between shrink-0" role="status">
-          <span>✨ {syncNotice}</span>
-          <button type="button" onClick={() => setSyncNotice('')} className="text-emerald-700 hover:text-emerald-900 font-bold ml-2">×</button>
+          <span className="flex items-center gap-1.5">
+            <Icon name="checkCircle" size={14} className="text-emerald-600 shrink-0" />
+            <span>{syncNotice}</span>
+          </span>
+          <button type="button" onClick={() => setSyncNotice('')} className="text-emerald-700 hover:text-emerald-900 ml-2" title="Dismiss notification">
+            <Icon name="close" size={13} />
+          </button>
         </div>
       )}
       {error && (
@@ -418,21 +438,21 @@ function LegacyCoursesPage() {
           onClick={() => setActiveTab('chat')}
           className={`flex-1 py-1.5 text-xs font-semibold text-center border-b-2 ${activeTab === 'chat' ? 'border-violet text-violet' : 'border-transparent text-muted'}`}
         >
-          💬 Chat
+          <span className="inline-flex items-center gap-1.5"><MessageSquare className="w-3.5 h-3.5" /> Chat</span>
         </button>
         <button
           type="button"
           onClick={() => setActiveTab('materials')}
           className={`flex-1 py-1.5 text-xs font-semibold text-center border-b-2 ${activeTab === 'materials' ? 'border-violet text-violet' : 'border-transparent text-muted'}`}
         >
-          📚 Course Files ({selected.length})
+          <span className="inline-flex items-center gap-1.5"><FileText className="w-3.5 h-3.5" /> Course Files ({selected.length})</span>
         </button>
         <button
           type="button"
           onClick={() => setActiveTab('conversations')}
           className={`flex-1 py-1.5 text-xs font-semibold text-center border-b-2 ${activeTab === 'conversations' ? 'border-violet text-violet' : 'border-transparent text-muted'}`}
         >
-          🕘 History
+          <span className="inline-flex items-center gap-1.5"><History className="w-3.5 h-3.5" /> History</span>
         </button>
       </div>
 
@@ -524,7 +544,8 @@ function LegacyCoursesPage() {
                   }`}
                   title="Lecture Slides, Handouts, PDFs, Syllabi"
                 >
-                  <span>📚 Slides</span>
+                  <Presentation className="w-3 h-3 text-indigo-500" />
+                  <span>Slides</span>
                   <span className="text-[10px] opacity-75">({categoryCounts.material})</span>
                 </button>
                 <button
@@ -535,7 +556,8 @@ function LegacyCoursesPage() {
                   }`}
                   title="Lab Manuals, Problem Sets, Quizzes, Tasks"
                 >
-                  <span>🧪 Labs</span>
+                  <FlaskConical className="w-3 h-3 text-emerald-500" />
+                  <span>Labs</span>
                   <span className="text-[10px] opacity-75">({categoryCounts.assignment})</span>
                 </button>
                 <button
@@ -546,7 +568,8 @@ function LegacyCoursesPage() {
                   }`}
                   title="Course Announcements, Notes & Guidelines"
                 >
-                  <span>📢 Notes</span>
+                  <FileText className="w-3 h-3 text-amber-500" />
+                  <span>Notes</span>
                   <span className="text-[10px] opacity-75">({categoryCounts.announcement})</span>
                 </button>
               </div>
@@ -636,7 +659,7 @@ function LegacyCoursesPage() {
                   })
                 ) : (
                   <div className="p-8 text-center text-xs text-muted flex flex-col items-center gap-2">
-                    <span className="text-2xl">📚</span>
+                    <BookOpen className="w-8 h-8 text-violet/50" />
                     <p className="font-medium text-ink">
                       {selectedCategory === 'material' ? 'No slides or handouts found' : 'No documents found for this filter'}
                     </p>
@@ -650,17 +673,19 @@ function LegacyCoursesPage() {
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
                         disabled={uploading}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-violet text-white text-xs font-semibold hover:bg-violet-dark transition"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet text-white text-xs font-semibold hover:bg-violet-dark transition"
                       >
-                        📁 Upload Slides / PDF
+                        <UploadCloud className="w-3.5 h-3.5" />
+                        <span>Upload Slides / PDF</span>
                       </button>
                       <button
                         type="button"
                         onClick={handleSyncMaterials}
                         disabled={syncing}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-line bg-white text-xs font-semibold text-ink hover:bg-paper transition"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-line bg-white text-xs font-semibold text-ink hover:bg-paper transition"
                       >
-                        🔄 {syncing ? 'Syncing…' : 'Sync Classroom'}
+                        <RotateCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+                        <span>{syncing ? 'Syncing…' : 'Sync Classroom'}</span>
                       </button>
                     </div>
                   </div>
@@ -776,8 +801,18 @@ function LegacyCoursesPage() {
           {selectedItems.length > 0 && (
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-violet/20 bg-gradient-to-r from-violet-light/60 to-purple-50/40 px-4 py-2 text-xs shrink-0">
               <div className="flex items-center gap-2 min-w-0">
-                <span className="font-semibold text-violet-dark shrink-0">
-                  {selectedItems.length === 1 ? '📄 Focused Document:' : `📚 ${selectedItems.length} Documents Selected:`}
+                <span className="font-semibold text-violet-dark shrink-0 inline-flex items-center gap-1">
+                  {selectedItems.length === 1 ? (
+                    <>
+                      <FileText className="w-3.5 h-3.5 text-violet" />
+                      <span>Focused Document:</span>
+                    </>
+                  ) : (
+                    <>
+                      <BookOpen className="w-3.5 h-3.5 text-violet" />
+                      <span>{selectedItems.length} Documents Selected:</span>
+                    </>
+                  )}
                 </span>
                 <span className="font-medium text-ink truncate max-w-[240px] sm:max-w-[340px]">
                   {selectedItems.length === 1 ? selectedItems[0].title : selectedItems.map((m) => m.title).slice(0, 2).join(', ') + (selectedItems.length > 2 ? ` (+${selectedItems.length - 2} more)` : '')}
@@ -796,27 +831,30 @@ function LegacyCoursesPage() {
                       onClick={() => {
                         setQuestion(`Summarize "${selectedItems[0].title}" into high-yield exam revision notes with key formulas and concepts.`);
                       }}
-                      className="rounded bg-white px-2 py-1 text-[11px] font-medium text-violet border border-line shadow-xs hover:bg-violet-light transition"
+                      className="inline-flex items-center gap-1 rounded bg-white px-2 py-1 text-[11px] font-medium text-violet border border-line shadow-xs hover:bg-violet-light transition"
                     >
-                      📌 Summarize doc
+                      <FileText className="w-3 h-3 text-violet" />
+                      <span>Summarize doc</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => {
                         setQuestion(`What are the core concepts, definitions, and likely exam questions from "${selectedItems[0].title}"?`);
                       }}
-                      className="rounded bg-white px-2 py-1 text-[11px] font-medium text-violet border border-line shadow-xs hover:bg-violet-light transition"
+                      className="inline-flex items-center gap-1 rounded bg-white px-2 py-1 text-[11px] font-medium text-violet border border-line shadow-xs hover:bg-violet-light transition"
                     >
-                      💡 Key concepts
+                      <Lightbulb className="w-3 h-3 text-amber-500" />
+                      <span>Key concepts</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => {
                         setQuestion(`Generate 5 practice exam questions with detailed step-by-step solutions based on "${selectedItems[0].title}".`);
                       }}
-                      className="rounded bg-white px-2 py-1 text-[11px] font-medium text-violet border border-line shadow-xs hover:bg-violet-light transition"
+                      className="inline-flex items-center gap-1 rounded bg-white px-2 py-1 text-[11px] font-medium text-violet border border-line shadow-xs hover:bg-violet-light transition"
                     >
-                      🎯 5 Practice questions
+                      <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                      <span>5 Practice questions</span>
                     </button>
                   </>
                 ) : (
@@ -826,18 +864,20 @@ function LegacyCoursesPage() {
                       onClick={() => {
                         setQuestion(`Prepare a comprehensive exam revision guide combining all key topics from my ${selectedItems.length} selected course materials.`);
                       }}
-                      className="rounded bg-white px-2 py-1 text-[11px] font-medium text-violet border border-line shadow-xs hover:bg-violet-light transition"
+                      className="inline-flex items-center gap-1 rounded bg-white px-2 py-1 text-[11px] font-medium text-violet border border-line shadow-xs hover:bg-violet-light transition"
                     >
-                      📝 Unified exam guide
+                      <BookOpen className="w-3 h-3 text-violet" />
+                      <span>Unified exam guide</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => {
                         setQuestion(`Generate a 10-question practice exam quiz covering all ${selectedItems.length} selected materials with complete answers.`);
                       }}
-                      className="rounded bg-white px-2 py-1 text-[11px] font-medium text-violet border border-line shadow-xs hover:bg-violet-light transition"
+                      className="inline-flex items-center gap-1 rounded bg-white px-2 py-1 text-[11px] font-medium text-violet border border-line shadow-xs hover:bg-violet-light transition"
                     >
-                      🎯 10-Question mock exam
+                      <HelpCircle className="w-3 h-3 text-indigo-500" />
+                      <span>10-Question mock exam</span>
                     </button>
                   </>
                 )}
@@ -887,23 +927,26 @@ function LegacyCoursesPage() {
                   <button
                     type="button"
                     onClick={() => setQuestion('Prepare a comprehensive exam revision guide and key formulas from my selected course materials.')}
-                    className="rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink shadow-sm transition hover:border-violet/40 hover:bg-violet-light/30"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink shadow-sm transition hover:border-violet/40 hover:bg-violet-light/30"
                   >
-                    📝 Exam revision sheet
+                    <FileText className="w-3.5 h-3.5 text-violet" />
+                    <span>Exam revision sheet</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setQuestion('Explain the core concepts and common exam questions from this course step by step.')}
-                    className="rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink shadow-sm transition hover:border-violet/40 hover:bg-violet-light/30"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink shadow-sm transition hover:border-violet/40 hover:bg-violet-light/30"
                   >
-                    💡 Explain key topics
+                    <Lightbulb className="w-3.5 h-3.5 text-amber-500" />
+                    <span>Explain key topics</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setQuestion('Generate a 5-question practice quiz with detailed step-by-step explanations.')}
-                    className="rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink shadow-sm transition hover:border-violet/40 hover:bg-violet-light/30"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink shadow-sm transition hover:border-violet/40 hover:bg-violet-light/30"
                   >
-                    🎯 Practice quiz
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                    <span>Practice quiz</span>
                   </button>
                 </div>
               </div>
