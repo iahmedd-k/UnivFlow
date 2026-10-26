@@ -121,9 +121,7 @@ def _capture_claude_diagram_images(raw_solution_text: str, page) -> Dict[str, st
         add_image(match.group("label"), match.group("uri"), ordinal)
 
     try:
-        messages = page.locator('[data-message-author-role="assistant"]')
-        if messages.count() == 0:
-            messages = page.locator(".font-claude-message")
+        messages = page.locator('[data-testid="assistant-message"], [data-message-author-role="assistant"], .font-claude-message')
         if messages.count() == 0:
             return images
 
@@ -133,6 +131,22 @@ def _capture_claude_diagram_images(raw_solution_text: str, page) -> Dict[str, st
             src = image.get_attribute("src") or ""
             if src.startswith("data:image/"):
                 add_image(label, src, ordinal)
+            elif src.startswith("blob:"):
+                try:
+                    data_uri = page.evaluate("""async (url) => {
+                        const resp = await fetch(url);
+                        const blob = await resp.blob();
+                        return new Promise((resolve, reject) => {
+                            const reader = new FileReader();
+                            reader.onloadend = () => resolve(reader.result);
+                            reader.onerror = reject;
+                            reader.readAsDataURL(blob);
+                        });
+                    }""", src)
+                    if data_uri:
+                        add_image(label, data_uri, ordinal)
+                except Exception:
+                    pass
             elif image.is_visible():
                 try:
                     screenshot = image.screenshot(type="png")
@@ -156,10 +170,7 @@ def _capture_claude_diagram_images(raw_solution_text: str, page) -> Dict[str, st
 
 
 def _claude_assistant_messages(page):
-    messages = page.locator('[data-message-author-role="assistant"]')
-    if messages.count() == 0:
-        messages = page.locator(".font-claude-message")
-    return messages
+    return page.locator('[data-testid="assistant-message"], [data-message-author-role="assistant"], .font-claude-message')
 
 
 def _download_claude_output_files(page, start_index: int = 0) -> Dict[str, List[Dict[str, Any]]]:
@@ -172,6 +183,9 @@ def _download_claude_output_files(page, start_index: int = 0) -> Dict[str, List[
 
         message_count = messages.count()
         first_new_message = min(max(int(start_index or 0), 0), message_count)
+        if first_new_message >= message_count:
+            first_new_message = max(0, message_count - 1)
+
         with tempfile.TemporaryDirectory(prefix="claude-diagram-download-") as download_dir:
             ordinal = 0
             for message_index in range(first_new_message, message_count):
@@ -179,14 +193,15 @@ def _download_claude_output_files(page, start_index: int = 0) -> Dict[str, List[
                 candidates = message.locator(
                     'a[download], a[href*="download" i], button[aria-label*="download" i], '
                     'button[title*="download" i], [data-testid*="download" i], '
-                    'button:has-text("Download" i), [role="button"]:has-text("Download" i), '
+                    'button:has-text("Download"), [role="button"]:has-text("Download"), '
                     'div[data-testid*="file"] button, div[data-testid*="artifact"] button, '
                     'div[role="button"]:has(svg[aria-label*="download" i]), '
                     'button:has(svg[aria-label*="download" i]), '
-                    'div:has-text(".png") button, div:has-text(".png")[role="button"]'
+                    'div:has-text(".png") button, div:has-text(".png")[role="button"], '
+                    '[data-testid="file-card-block"] button'
                 ).all()
+                clicked_keys = set()
                 for candidate in candidates:
-                    ordinal += 1
                     try:
                         label_parts = []
                         for attr in ("aria-label", "title", "download", "href", "data-testid"):
@@ -207,13 +222,50 @@ def _download_claude_output_files(page, start_index: int = 0) -> Dict[str, List[
                         except Exception:
                             pass
 
+                        btn_key = " ".join(label_parts).strip()
+                        if "download all" in btn_key.lower():
+                            continue
+                        if btn_key and btn_key in clicked_keys:
+                            continue
+                        if btn_key:
+                            clicked_keys.add(btn_key)
+
+                        ordinal += 1
                         with page.expect_download(timeout=10000) as download_info:
-                            candidate.click(timeout=3000)
+                            try:
+                                candidate.evaluate("el => el.click()")
+                            except Exception:
+                                candidate.click(force=True, timeout=3000)
                         download = download_info.value
                         suggested_name = Path(download.suggested_filename or f"claude_output_{ordinal}.bin").name
                         target_path = Path(download_dir) / f"{ordinal}_{suggested_name}"
-                        download.save_as(str(target_path))
-                        file_bytes = target_path.read_bytes()
+                        file_bytes = b""
+                        try:
+                            download.save_as(str(target_path))
+                            if target_path.exists():
+                                file_bytes = target_path.read_bytes()
+                        except Exception:
+                            file_bytes = b""
+
+                        if not file_bytes:
+                            blob_url = download.url
+                            if blob_url and blob_url.startswith("blob:"):
+                                try:
+                                    data_uri_str = page.evaluate("""async (url) => {
+                                        const resp = await fetch(url);
+                                        const blob = await resp.blob();
+                                        return new Promise((resolve, reject) => {
+                                            const reader = new FileReader();
+                                            reader.onloadend = () => resolve(reader.result);
+                                            reader.onerror = reject;
+                                            reader.readAsDataURL(blob);
+                                        });
+                                    }""", blob_url)
+                                    if data_uri_str and "," in data_uri_str:
+                                        file_bytes = base64.b64decode(data_uri_str.split(",", 1)[1])
+                                except Exception as blob_err:
+                                    logger.warning("Could not fetch blob URL from Claude page: %s", blob_err)
+
                         if not file_bytes:
                             continue
                         mime_type = mimetypes.guess_type(suggested_name)[0] or "application/octet-stream"
@@ -246,7 +298,7 @@ def _download_claude_output_files(page, start_index: int = 0) -> Dict[str, List[
                             "data_uri": f"data:{mime_type};base64,{base64.b64encode(file_bytes).decode('ascii')}",
                             "is_image": is_image,
                         })
-                        logger.info("Downloaded Claude output attachment %s for task %s", filename, task_id)
+                        logger.info("Downloaded Claude output attachment %s for task %s (%d bytes)", filename, task_id, len(file_bytes))
                     except Exception as download_error:
                         logger.debug("Could not download Claude response attachment %s: %s", ordinal, download_error)
     except Exception:
@@ -2181,7 +2233,7 @@ def solve_assignment_via_claude_browser(
         if not raw_solution_text or len(raw_solution_text.strip()) < 50:
             try:
                 raw_solution_text = page.evaluate(r"""() => {
-                    const containers = document.querySelectorAll('.font-claude-message, [data-message-author-role="assistant"], [data-testid="chat-message-content"]');
+                    const containers = document.querySelectorAll('.font-claude-message, [data-testid="assistant-message"], [data-message-author-role="assistant"], [data-testid="chat-message-content"]');
                     const msg = containers.length > 0 ? containers[containers.length - 1] : document.querySelector('main');
                     if (!msg) return "";
                     const clone = msg.cloneNode(true);
@@ -2199,7 +2251,7 @@ def solve_assignment_via_claude_browser(
 
 
         if not raw_solution_text or len(raw_solution_text.strip()) < 50:
-            message_containers = page.locator('.font-claude-message, [data-message-author-role="assistant"], div[data-is-streaming="false"], [data-testid="chat-message-content"]').all()
+            message_containers = page.locator('.font-claude-message, [data-testid="assistant-message"], [data-message-author-role="assistant"], div[data-is-streaming="false"], [data-testid="chat-message-content"]').all()
             if message_containers:
                 raw_solution_text = message_containers[-1].inner_text()
             else:
