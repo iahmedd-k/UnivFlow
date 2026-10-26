@@ -26,6 +26,12 @@ export default function SettingsPage() {
   const [profileSuccess, setProfileSuccess] = useState('');
   const [profileError, setProfileError] = useState('');
 
+  const [googleConnected, setGoogleConnected] = useState(false);
+  const [googleEmail, setGoogleEmail] = useState('');
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [gcrBrowserStatus, setGcrBrowserStatus] = useState(null);
+  const [gcrBusy, setGcrBusy] = useState(false);
+
   const loadSettingsData = useCallback(async () => {
     try {
       const token = getToken ? await getToken() : null;
@@ -105,12 +111,6 @@ export default function SettingsPage() {
       setBrowserError(err.message || 'Could not load your private Claude browser status.');
     }
   }, [getToken]);
-
-  const [googleConnected, setGoogleConnected] = useState(false);
-  const [googleEmail, setGoogleEmail] = useState('');
-  const [googleBusy, setGoogleBusy] = useState(false);
-  const [gcrBrowserStatus, setGcrBrowserStatus] = useState(null);
-  const [gcrBusy, setGcrBusy] = useState(false);
 
   const loadGoogleAuth = useCallback(async () => {
     try {

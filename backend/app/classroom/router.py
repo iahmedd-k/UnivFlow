@@ -1370,21 +1370,6 @@ def _attach_submission_files(
         files_to_add = [fid for fid in file_ids if fid and fid not in existing_drive_ids]
 
         if files_to_add:
-            # If the submission was already TURNED_IN, Google Classroom API rejects modifyAttachments with:
-            # "Cannot modify attachments on a submitted student submission." It must be reclaimed first.
-            if sub_state == "TURNED_IN":
-                try:
-                    submissions_api.reclaim(
-                        courseId=course_id,
-                        courseWorkId=coursework_id,
-                        id=submission_id,
-                        body={},
-                    ).execute()
-                    sub_state = "CREATED"
-                    logger.info("Reclaimed submission %s to attach updated deliverables.", submission_id)
-                except Exception as reclaim_err:
-                    logger.warning("Failed to reclaim submission %s before modifyAttachments: %s", submission_id, reclaim_err)
-
             try:
                 submissions_api.modifyAttachments(
                     courseId=course_id,
@@ -1395,7 +1380,7 @@ def _attach_submission_files(
             except Exception as attach_err:
                 err_str = str(attach_err)
                 logger.error(f"Failed to modifyAttachments on submission {submission_id}: {attach_err}")
-                raise HTTPException(status_code=502, detail=f"Failed to attach files to Google Classroom: {err_str}") from attach_err
+                raise HTTPException(status_code=502, detail="Failed to attach files to Google Classroom") from attach_err
 
         if return_state:
             return submission_id, sub_state

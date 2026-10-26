@@ -160,6 +160,7 @@ def test_execute_quick_turn_in_attach_only():
     fake_docs_service.upload_file.return_value = {"id": "zip-123"}
     fake_docs_service.remove_public_sharing.return_value = True
     fake_docs_service.get_file.return_value = {"name": "Solution Doc"}
+    fake_docs_service.export_document_as_pdf.return_value = b"%PDF-1.4 mock pdf bytes"
 
     with patch("app.services.ai_solution.export_solution_to_google_doc", return_value={"doc_id": "doc-123"}):
         with patch("app.classroom.router.get_classroom_service", return_value=MagicMock(service=fake_classroom_service)):

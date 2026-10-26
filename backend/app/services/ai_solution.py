@@ -743,7 +743,7 @@ def append_clean_deliverables_to_zip(
     used_names = set()
 
     # 1. Google Doc PDF if available
-    if google_doc_pdf_bytes:
+    if google_doc_pdf_bytes and isinstance(google_doc_pdf_bytes, (bytes, bytearray)):
         pdf_filename = doc_pdf_name or "Academic_Report.pdf"
         bundle.writestr(pdf_filename, google_doc_pdf_bytes)
         used_names.add(pdf_filename)

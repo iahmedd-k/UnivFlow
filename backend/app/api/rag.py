@@ -62,40 +62,82 @@ class StudyPlanSessionUpdate(BaseModel):
     notes: Optional[str] = None
 
 
-def _classify_material(material_title: str, assignment_title: str, work_type: str, mime_type: str, material_type: str):
+def _matches_category(cat_key: str, requested_category: Optional[str]) -> bool:
+    if not requested_category or requested_category == "all":
+        return True
+    req = requested_category.strip().lower()
+    cat = cat_key.strip().lower()
+    if cat == req:
+        return True
+    material_keys = {"material", "slides", "handouts", "syllabus"}
+    assignment_keys = {"assignment", "labs", "coursework"}
+    announcement_keys = {"announcement", "announcements"}
+    if req in material_keys and cat in material_keys:
+        return True
+    if req in assignment_keys and cat in assignment_keys:
+        return True
+    if req in announcement_keys and cat in announcement_keys:
+        return True
+    return False
+
+
+def _classify_material(
+    material_title: str,
+    assignment_title: str,
+    work_type: str,
+    mime_type: str,
+    material_type: str,
+    granular: bool = False,
+):
     wt = (work_type or "").upper()
     mt = (material_type or "").lower()
     t = f"{material_title or ''} {assignment_title or ''}".lower()
     m = (mime_type or "").lower()
 
-    # 1. Presentations & Slides
-    if (
-        "presentation" in m or "powerpoint" in m
-        or any(t.endswith(ext) for ext in [".ppt", ".pptx", ".key"])
-        or any(k in t for k in ["slide", "presentation", "ppt", "keynote", "lecture"])
-    ):
-        return "slides", "Lecture Slides", "presentation"
+    if granular:
+        # 1. Presentations & Slides
+        if (
+            "presentation" in m or "powerpoint" in m
+            or any(t.endswith(ext) for ext in [".ppt", ".pptx", ".key"])
+            or any(k in t for k in ["slide", "presentation", "ppt", "keynote", "lecture"])
+        ):
+            return "slides", "Lecture Slides", "presentation"
 
-    # 2. Syllabus
-    if any(k in t for k in ["syllabus", "course outline", "grading policy", "course policy"]):
-        return "syllabus", "Course Syllabus", "book-open"
+        # 2. Syllabus
+        if any(k in t for k in ["syllabus", "course outline", "grading policy", "course policy"]):
+            return "syllabus", "Course Syllabus", "book-open"
 
-    # 3. Labs
-    if any(k in t for k in ["lab ", "lab-", "lab#", "manual", "experiment", "practical", "lab task"]):
-        return "labs", "Lab Assignments", "flask"
+        # 3. Labs
+        if any(k in t for k in ["lab ", "lab-", "lab#", "manual", "experiment", "practical", "lab task"]):
+            return "labs", "Lab Assignments", "flask"
 
-    # 4. Announcements
+        # 4. Announcements
+        if wt in ("ANNOUNCEMENT", "POST") or mt == "announcement" or "announcement" in t:
+            return "announcements", "Class Announcements", "bell"
+
+        # 5. Coursework & Homework
+        if (
+            wt in ("ASSIGNMENT", "SHORT_ANSWER_QUESTION", "MULTIPLE_CHOICE_QUESTION")
+        ) or any(k in t for k in ["task", "assignment", "hw", "homework", "quiz", "midterm", "final", "exam", "project"]):
+            return "coursework", "Coursework & Tasks", "file-text"
+
+        # 6. Handouts, readings, notes
+        return "handouts", "Handouts & Readings", "book"
+
+    # Default broad classification ("material", "assignment", "announcement")
+    # 1. Announcements
     if wt in ("ANNOUNCEMENT", "POST") or mt == "announcement" or "announcement" in t:
-        return "announcements", "Class Announcements", "bell"
+        return "announcement", "Class Announcements", "bell"
 
-    # 5. Coursework & Homework
+    # 2. Labs & Coursework
     if (
         wt in ("ASSIGNMENT", "SHORT_ANSWER_QUESTION", "MULTIPLE_CHOICE_QUESTION")
-    ) or any(k in t for k in ["task", "assignment", "hw", "homework", "quiz", "midterm", "final", "exam", "project"]):
-        return "coursework", "Coursework & Tasks", "file-text"
+    ) or any(k in t for k in ["lab ", "lab-", "lab#", "manual", "task", "assignment", "hw", "homework", "quiz", "midterm", "final", "exam"]):
+        return "assignment", "Labs & Assignments", "flask"
 
-    # 6. Handouts, readings, notes
-    return "handouts", "Handouts & Readings", "book"
+    # 3. Slides & Handouts (Materials)
+    icon = "presentation" if ("presentation" in m or "slide" in t) else "book"
+    return "material", "Slides & Handouts", icon
 
 
 def _classify_file_type(mime_type: str, title: str, category: str):
@@ -173,7 +215,7 @@ def get_classroom_materials(
         )
         file_t = _classify_file_type(material.mime_type or "", material.title or assignment.title or "", cat_key)
 
-        if category and category != "all" and cat_key != category:
+        if not _matches_category(cat_key, category):
             continue
 
         result.append({
@@ -224,7 +266,7 @@ def get_classroom_materials(
             "", assignment.title, assignment.work_type, "", "assignment"
         )
         file_t = _classify_file_type("", assignment.title, cat_key)
-        if category and category != "all" and cat_key != category:
+        if not _matches_category(cat_key, category):
             continue
         result.append({
             "id": unique_key,

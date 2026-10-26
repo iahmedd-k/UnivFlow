@@ -141,11 +141,14 @@ const STATUS_CONFIG = {
 };
 
 const CATEGORY_CONFIG = {
+  material: { label: "Lecture Slides", badge: "bg-amber-50 text-amber-700 border-amber-200" },
   slides: { label: "Lecture Slides", badge: "bg-amber-50 text-amber-700 border-amber-200" },
+  assignment: { label: "Assignments & Labs", badge: "bg-emerald-50 text-emerald-700 border-emerald-200" },
   labs: { label: "Lab Assignment", badge: "bg-emerald-50 text-emerald-700 border-emerald-200" },
   coursework: { label: "Coursework", badge: "bg-blue-50 text-blue-700 border-blue-200" },
   syllabus: { label: "Syllabus", badge: "bg-purple-50 text-purple-700 border-purple-200" },
   handouts: { label: "Handout / Notes", badge: "bg-stone-100 text-stone-700 border-stone-200" },
+  announcement: { label: "Announcement", badge: "bg-indigo-50 text-indigo-700 border-indigo-200" },
   announcements: { label: "Announcement", badge: "bg-indigo-50 text-indigo-700 border-indigo-200" },
   user_upload: { label: "Uploaded File", badge: "bg-slate-100 text-slate-700 border-slate-200" },
 };
@@ -347,7 +350,7 @@ function DocSearch({ files, onSelect }) {
       {open && q.trim() && (
         <div className="absolute top-full left-0 right-0 mt-1.5 bg-white border border-stone-200 rounded-xl shadow-lg overflow-hidden z-30">
           {results.length === 0 ? (
-            <div className="px-3 py-4 text-[12.5px] text-stone-400 text-center">No documents match "{q}"</div>
+            <div className="px-3 py-4 text-[12.5px] text-stone-400 text-center">No documents match &ldquo;{q}&rdquo;</div>
           ) : (
             results.map((f, i) => (
               <button
@@ -1884,9 +1887,9 @@ function CourseGroupCard({
   const courseName = group?.courseName || propCourseName || "General Documents";
   const files = group?.files || propFiles || [];
   const total = group?.total ?? files.length;
-  const slidesCnt = group?.slidesCnt ?? files.filter((f) => f.category === "slides").length;
+  const slidesCnt = group?.slidesCnt ?? files.filter((f) => f.category === "slides" || f.category === "material").length;
   const labsCnt = group?.labsCnt ?? files.filter((f) => f.category === "labs").length;
-  const asgCnt = group?.asgCnt ?? files.filter((f) => f.category === "coursework").length;
+  const asgCnt = group?.asgCnt ?? files.filter((f) => f.category === "coursework" || f.category === "assignment").length;
   const isCourseSelected = files.length > 0 && files.every((f) => selectedIds?.has(f.id));
   const hasSomeSelected = files.some((f) => selectedIds?.has(f.id)) && !isCourseSelected;
 
@@ -2017,7 +2020,7 @@ function DeleteConfirmModal({ target, onCancel, onConfirm }) {
             <h3 className="text-[14.5px] font-semibold text-stone-900">Delete {label}?</h3>
             <p className="text-[13px] text-stone-500 mt-1">
               This removes the {isBulk ? "files" : "file"} and every chunk indexed from {isBulk ? "them" : "it"} from the
-              assistant's knowledge base. This action cannot be undone.
+              assistant&apos;s knowledge base. This action cannot be undone.
             </p>
           </div>
         </div>

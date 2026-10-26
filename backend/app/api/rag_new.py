@@ -217,7 +217,7 @@ def get_classroom_as_documents(db: Session, clerk_user_id: str) -> list[Document
         seen_keys.add(unique_key)
 
         cat_key, cat_label, cat_icon = _classify_material(
-            material.title or "", assignment.title or "", assignment.work_type, material.mime_type or "", material.material_type or ""
+            material.title or "", assignment.title or "", assignment.work_type, material.mime_type or "", material.material_type or "", granular=True
         )
         file_t = _classify_file_type(material.mime_type or "", material.title or assignment.title or "", cat_key)
 
@@ -266,7 +266,7 @@ def get_classroom_as_documents(db: Session, clerk_user_id: str) -> list[Document
         if unique_key in seen_keys:
             continue
         seen_keys.add(unique_key)
-        cat_key, cat_label, _ = _classify_material("", assignment.title or "", assignment.work_type, "", "assignment")
+        cat_key, cat_label, _ = _classify_material("", assignment.title or "", assignment.work_type, "", "assignment", granular=True)
         file_t = _classify_file_type("", assignment.title or "", cat_key)
         expected_ext = ext_map.get(file_t, ".pdf")
         raw_title = (assignment.title or "Course Assignment").strip()

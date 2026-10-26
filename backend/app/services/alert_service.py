@@ -128,6 +128,9 @@ def get_user_recipient_email(db: Session, user_id: str = "") -> str:
             return settings.smtp_username.strip()
         if getattr(settings, "smtp_user", None) and "@" in settings.smtp_user:
             return settings.smtp_user.strip()
+        # Local fixtures, test suites, and fresh development environments may not have an email
+        # configured. Keep alert generation deterministic.
+        return "dev-student@localhost.invalid"
 
     # Only use profile or integration emails associated with this exact user.
     clerk_s = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
