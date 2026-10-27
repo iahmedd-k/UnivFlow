@@ -184,7 +184,9 @@ def _download_claude_output_files(page, start_index: int = 0) -> Dict[str, List[
         message_count = messages.count()
         first_new_message = min(max(int(start_index or 0), 0), message_count)
         if first_new_message >= message_count:
-            first_new_message = max(0, message_count - 1)
+            # No new assistant messages were produced during this solve. Never fall back
+            # to older assistant messages from prior turns/labs.
+            return downloaded
 
         with tempfile.TemporaryDirectory(prefix="claude-diagram-download-") as download_dir:
             ordinal = 0
@@ -2713,24 +2715,27 @@ def solve_assignment_via_claude_browser(
                         task_result["generated_image_uri"] = image_asset["data_uri"]
                         task_result["generated_image_filename"] = image_asset["filename"]
                 else:
-                    image_asset = next((asset for asset in assets if asset.get("is_image")), None)
-                    execution_results.append({
-                        "task": str(task_id),
-                        "filename": assets[0].get("filename") or f"claude_output_task_{task_id}",
-                        "screenshot_filename": image_asset.get("filename") if image_asset else None,
-                        "diagram_image_filename": image_asset.get("filename") if image_asset else None,
-                        "screenshot_data_uri": image_asset.get("data_uri") if image_asset else None,
-                        "screenshot_data_uris": [image_asset["data_uri"]] if image_asset and image_asset.get("data_uri") else [],
-                        "language": "artifact",
-                        "command": "Claude downloadable output",
-                        "exit_code": None,
-                        "success": False,
-                        "status": "unverified",
-                        "verified": False,
-                        "terminal_output": "Downloaded Claude-generated output file(s).",
-                        "downloaded_assets": assets,
-                        "tool": "Claude Output Attachment",
-                    })
+                    # Only preserve as a standalone file result if task_id belongs to this solution
+                    task_pat = rf"(?i)\b(?:task|exercise|problem|question)\s*{re.escape(str(task_id))}\b"
+                    if re.search(task_pat, raw_solution_text):
+                        image_asset = next((asset for asset in assets if asset.get("is_image")), None)
+                        execution_results.append({
+                            "task": str(task_id),
+                            "filename": assets[0].get("filename") or f"claude_output_task_{task_id}",
+                            "screenshot_filename": image_asset.get("filename") if image_asset else None,
+                            "diagram_image_filename": image_asset.get("filename") if image_asset else None,
+                            "screenshot_data_uri": image_asset.get("data_uri") if image_asset else None,
+                            "screenshot_data_uris": [image_asset["data_uri"]] if image_asset and image_asset.get("data_uri") else [],
+                            "language": "artifact",
+                            "command": "Claude downloadable output",
+                            "exit_code": None,
+                            "success": False,
+                            "status": "unverified",
+                            "verified": False,
+                            "terminal_output": "Downloaded Claude-generated output file(s).",
+                            "downloaded_assets": assets,
+                            "tool": "Claude Output Attachment",
+                        })
 
             if execution_results:
                 final_solution_content = append_execution_metadata(final_solution_content, execution_results)

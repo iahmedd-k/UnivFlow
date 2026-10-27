@@ -971,7 +971,7 @@ def extract_post_task_sections_from_markdown(markdown: str) -> List[Tuple[str, s
         end_pos = h_matches[i + 1].start() if i + 1 < len(h_matches) else len(tail)
         body = tail[start_pos:end_pos].strip()
         body = strip_execution_metadata(body)
-        if body and len(body) > 15 and not any(k in sec_title.lower() for k in ["verification status", "chat-note"]):
+        if body and len(body) > 15 and not any(k in sec_title.lower() for k in ["verification status", "chat-note", "claude-generated", "output file", "companion deliverable"]):
             post_sections.append((sec_title, body))
     return post_sections
 
@@ -2146,11 +2146,18 @@ def export_solution_to_google_doc(
                     style_type="NORMAL",
                 )
 
+        valid_assignment_tasks = {
+            str(f.get("task")) for f in (deliverables.get("files") or []) if f.get("task")
+        } | {
+            str(t.get("task")) for t in (deliverables.get("tasks") or []) if t.get("task")
+        }
+
         claude_assets = [
             (str(result.get("task") or ""), asset)
             for result in execution_results
             for asset in result.get("downloaded_assets", [])
             if asset.get("filename") and asset.get("data_uri")
+            and (not valid_assignment_tasks or str(result.get("task") or "") in valid_assignment_tasks)
         ]
         remaining_assets = [
             (task, asset) for task, asset in claude_assets

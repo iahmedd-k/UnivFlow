@@ -477,3 +477,87 @@ def test_new_assignment_notification_and_deduplication(mock_send, db_session):
     res2 = service.notify_new_assignment(assignment, user_id="dev_student_user", send_immediately=True)
     assert res2 is None
     mock_send.assert_not_called()
+
+
+@patch("app.services.alert_service.send_email", return_value=True)
+def test_daily_class_list_email_contains_rooms(mock_send, db_session):
+    from app.db.models import Setting
+    db_session.add(Setting(key="notification_email_default", value="student@au.edu.pk"))
+    db_session.add(Setting(key="student_profile_dev_student_user", value='{"name": "Ahmed Khan", "roll_no": "232530"}'))
+
+    tt1 = TimetableEntry(
+        id=1, user_id="dev_student_user", external_id="tt1", subject="Deep Learning",
+        weekday=0, start_time="09:00", end_time="10:00", room="C-204", teacher="Mr. Mohabbat Ali"
+    )
+    tt2 = TimetableEntry(
+        id=2, user_id="dev_student_user", external_id="tt2", subject="Parallel and Distributed Computing",
+        weekday=0, start_time="10:00", end_time="11:00", room="Lab 15", teacher="Dr. Bilal"
+    )
+    db_session.add_all([tt1, tt2])
+    db_session.commit()
+
+    service = AlertService(db_session)
+    monday = date(2026, 10, 12)
+    res = service.generate_daily_class_list_email(user_id="dev_student_user", target_date=monday, send_immediately=True)
+
+    assert res is not None
+    assert res["status"] == "sent"
+    assert res["classes_count"] == 2
+    mock_send.assert_called_once()
+    _, kwargs = mock_send.call_args
+    assert "Daily Class Schedule" in kwargs["subject"]
+    assert "Room C-204" in kwargs["html_content"]
+    assert "Room Lab 15" in kwargs["html_content"]
+    assert "Room: C-204" in kwargs["text_content"]
+    assert "Room: Lab 15" in kwargs["text_content"]
+    assert "Ahmed Khan" in kwargs["html_content"]
+
+
+@patch("app.services.alert_service.send_email", return_value=True)
+def test_timetable_reminder_includes_room_in_subject_and_body(mock_send, db_session):
+    from app.db.models import Setting
+    db_session.add(Setting(key="notification_email_default", value="student@au.edu.pk"))
+
+    tt = TimetableEntry(
+        id=10, user_id="dev_student_user", external_id="tt10", subject="Software Design & Architecture",
+        weekday=0, start_time="16:00", end_time="17:00", room="C-205", teacher="Ali Arshad"
+    )
+    db_session.add(tt)
+    db_session.commit()
+
+    service = AlertService(db_session)
+    sim_time = datetime(2026, 10, 12, 15, 40, 0, tzinfo=ZoneInfo("Asia/Karachi"))
+    reminders = service.generate_upcoming_class_reminders(user_id="dev_student_user", target_dt=sim_time, send_immediately=True)
+
+    assert len(reminders) == 1
+    mock_send.assert_called_once()
+    _, kwargs = mock_send.call_args
+    assert "Room C-205" in kwargs["subject"]
+    assert "Room C-205" in kwargs["html_content"]
+    assert "Room: C-205" in kwargs["text_content"]
+
+
+@patch("app.services.alert_service.send_email", return_value=True)
+def test_daily_digest_omits_gcr_sync_status(mock_send, db_session):
+    from app.db.models import Setting
+    db_session.add(Setting(key="notification_email_default", value="student@au.edu.pk"))
+    db_session.add(Setting(key="classroom:dev_student_user:sync_status", value='{"status": "failed", "errors": ["GCR auth expired"]}'))
+
+    tt = TimetableEntry(
+        id=20, user_id="dev_student_user", external_id="tt20", subject="Principles of Marketing",
+        weekday=0, start_time="11:00", end_time="12:00", room="C-305", teacher="Faculty"
+    )
+    db_session.add(tt)
+    db_session.commit()
+
+    service = AlertService(db_session)
+    monday = date(2026, 10, 12)
+    digest = service.generate_daily_morning_digest(user_id="dev_student_user", target_date=monday, send_immediately=True)
+
+    assert digest is not None
+    mock_send.assert_called_once()
+    _, kwargs = mock_send.call_args
+    assert "Sync issues" not in kwargs["html_content"]
+    assert "GCR auth expired" not in kwargs["html_content"]
+    assert "Room C-305" in kwargs["html_content"]
+

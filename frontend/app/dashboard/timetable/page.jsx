@@ -25,7 +25,7 @@ export default function TimetablePage() {
   }, []);
 
   const [selectedDay, setSelectedDay] = useState(currentDayOfWeek);
-  const [viewMode, setViewMode] = useState('day'); // 'table' | 'day' | 'week'
+  const [viewMode, setViewMode] = useState('rows'); // 'rows' (default) | 'day' | 'table'
   const [showAddModal, setShowAddModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -258,9 +258,9 @@ export default function TimetablePage() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex rounded-lg border border-border bg-surface p-1" role="group" aria-label="Timetable view">
-            <button type="button" onClick={() => setViewMode('table')} className={`rounded-md px-3 py-1.5 text-sm font-medium ${viewMode === 'table' ? 'bg-ink text-white' : 'text-nav hover:bg-surface-secondary'}`} aria-pressed={viewMode === 'table'}>Matrix</button>
-            <button type="button" onClick={() => setViewMode('day')} className={`rounded-md px-3 py-1.5 text-sm font-medium ${viewMode === 'day' ? 'bg-ink text-white' : 'text-nav hover:bg-surface-secondary'}`} aria-pressed={viewMode === 'day'}>Day</button>
-            <button type="button" onClick={() => setViewMode('week')} className={`rounded-md px-3 py-1.5 text-sm font-medium ${viewMode === 'week' ? 'bg-ink text-white' : 'text-nav hover:bg-surface-secondary'}`} aria-pressed={viewMode === 'week'}>Week</button>
+            <button type="button" onClick={() => setViewMode('rows')} className={`rounded-md px-3 py-1.5 text-sm font-medium transition cursor-pointer ${viewMode === 'rows' ? 'bg-ink text-white font-semibold shadow-xs' : 'text-nav hover:bg-surface-secondary'}`} aria-pressed={viewMode === 'rows'}>Schedule (Rows)</button>
+            <button type="button" onClick={() => setViewMode('day')} className={`rounded-md px-3 py-1.5 text-sm font-medium transition cursor-pointer ${viewMode === 'day' ? 'bg-ink text-white font-semibold shadow-xs' : 'text-nav hover:bg-surface-secondary'}`} aria-pressed={viewMode === 'day'}>Day View</button>
+            <button type="button" onClick={() => setViewMode('table')} className={`rounded-md px-3 py-1.5 text-sm font-medium transition cursor-pointer ${viewMode === 'table' ? 'bg-ink text-white font-semibold shadow-xs' : 'text-nav hover:bg-surface-secondary'}`} aria-pressed={viewMode === 'table'}>Matrix</button>
           </div>
           <button type="button" onClick={() => setShowImportModal(true)} className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-border-input bg-surface px-3 text-sm font-medium text-nav hover:bg-surface-secondary"><Icon name="upload" size={15} />Import</button>
           <button type="button" onClick={() => setShowAddModal(true)} className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg bg-violet px-3 text-sm font-medium text-white hover:bg-violet-dark"><Icon name="fileAdd" size={15} />Add class</button>
@@ -513,49 +513,117 @@ export default function TimetablePage() {
           )}
         </div>
       ) : (
-        /* Full week agenda */
-        <div className="flex flex-col gap-3">
-          {byDay.map((day) => (
-            <section
-              key={day.name}
-              className={`overflow-hidden rounded-xl border bg-surface ${
-                day.weekday === currentDayOfWeek
-                  ? 'border-violet-light shadow-xs'
-                  : 'border-border'
-              }`}
-            >
-              <header className="flex items-center justify-between gap-3 border-b border-border-light px-4 py-3">
-                <h3 className="m-0 text-sm font-semibold text-heading">{day.name}</h3>
-                <div className="flex items-center gap-2">
-                  {day.weekday === currentDayOfWeek && (
-                    <span className="rounded-full bg-violet-light px-2 py-0.5 text-xs font-medium text-violet">Today</span>
-                  )}
-                  <span className="text-xs font-normal text-muted tabular-nums">{day.classes.length} {day.classes.length === 1 ? 'class' : 'classes'}</span>
-                </div>
-              </header>
+        /* Row-Level Week Routine View (Monday with all schedule along it, Tuesday below, Wednesday below, etc.) */
+        <div className="flex flex-col gap-3.5">
+          {byDay.map((day) => {
+            const isToday = day.weekday === currentDayOfWeek;
+            const hasClasses = day.classes.length > 0;
 
-              {day.classes.length > 0 ? (
-                <div className="flex flex-col">
-                  {day.classes.map((c) => (
-                    <div key={c.id} className="grid grid-cols-[105px_minmax(0,1fr)] items-center gap-3.5 border-b border-border-light px-4 py-3 last:border-b-0 max-sm:grid-cols-[78px_minmax(0,1fr)] max-sm:gap-2.5 max-sm:px-3 max-sm:py-2.5">
-                      <time className="flex flex-col gap-0.5 text-xs tabular-nums text-muted font-medium">
-                        <span>{c.start_time}</span>
-                        <span>{c.end_time}</span>
-                      </time>
-                      <div className="flex min-w-0 flex-col gap-1">
-                        <strong className="text-sm font-semibold leading-snug text-heading max-sm:text-xs">{c.subject}</strong>
-                        <span className="truncate text-xs font-normal text-muted">
-                          {[`Room: ${c.room && c.room.trim() ? c.room : '-'}`, c.teacher].filter(Boolean).join(' · ')}
+            return (
+              <section
+                key={day.name}
+                className={`overflow-hidden rounded-2xl border transition-all ${
+                  isToday
+                    ? 'border-violet/40 bg-gradient-to-r from-violet-light/30 via-surface to-surface shadow-xs ring-1 ring-violet/20'
+                    : 'border-border bg-surface hover:border-border-hover shadow-2xs'
+                } p-4 sm:p-5`}
+              >
+                <div className="flex flex-col lg:flex-row lg:items-center gap-4">
+                  {/* Day Anchor Column (Left side of the row) */}
+                  <div className="lg:w-44 shrink-0 flex lg:flex-col items-center lg:items-start justify-between lg:justify-center gap-1 pb-2 lg:pb-0 lg:pr-4 lg:border-r border-border-light">
+                    <div className="flex items-center gap-2">
+                      <h3 className={`m-0 text-base sm:text-lg font-bold tracking-tight ${isToday ? 'text-violet' : 'text-heading'}`}>
+                        {day.name}
+                      </h3>
+                      {isToday && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-violet px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white shadow-2xs">
+                          <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          Today
                         </span>
-                      </div>
+                      )}
                     </div>
-                  ))}
+                    <span className="text-xs font-normal text-muted tabular-nums">
+                      {hasClasses ? `${day.classes.length} ${day.classes.length === 1 ? 'session' : 'sessions'}` : 'Free Day'}
+                    </span>
+                  </div>
+
+                  {/* Along the day: Schedule Track / Cards along the row */}
+                  <div className="flex-1 min-w-0">
+                    {hasClasses ? (
+                      <div className="flex items-stretch gap-3 overflow-x-auto pb-1.5 pt-0.5 scrollbar-thin">
+                        {day.classes.map((c) => {
+                          const isLab = c.subject?.toLowerCase().includes('lab') || (c.room && c.room.toLowerCase().includes('lab'));
+                          const roomDisplay = c.room && c.room.trim() ? c.room : 'To be announced';
+
+                          return (
+                            <div
+                              key={c.id}
+                              className={`group relative flex flex-col justify-between rounded-xl border p-3.5 transition-all min-w-[240px] max-w-[290px] sm:min-w-[260px] shrink-0 ${
+                                isLab
+                                  ? 'border-emerald-200/70 bg-emerald-50/40 hover:border-emerald-400'
+                                  : 'border-border-input bg-surface-secondary/60 hover:border-violet/40 hover:bg-surface-secondary'
+                              } shadow-2xs hover:shadow-xs`}
+                            >
+                              {/* Top Bar: Time slot + Badge */}
+                              <div className="flex items-center justify-between gap-2 text-xs mb-2">
+                                <span className="inline-flex items-center gap-1 font-semibold text-heading tabular-nums bg-surface px-2 py-0.5 rounded-md border border-border-light shadow-2xs">
+                                  <Icon name="clock" size={12} className={isLab ? 'text-emerald-600' : 'text-violet'} />
+                                  <span>{c.start_time} – {c.end_time}</span>
+                                </span>
+                                <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                                  isLab ? 'bg-emerald-100 text-emerald-800' : 'bg-violet-light text-violet'
+                                }`}>
+                                  {isLab ? 'Lab' : 'Lecture'}
+                                </span>
+                              </div>
+
+                              {/* Subject Title */}
+                              <h4 className="text-sm font-bold text-heading leading-snug line-clamp-2 mb-2.5" title={c.subject}>
+                                {c.subject}
+                              </h4>
+
+                              {/* Prominent Classroom / Room & Instructor Info */}
+                              <div className="pt-2 border-t border-border-light/70 flex flex-col gap-1.5 text-xs">
+                                <div className="inline-flex items-center gap-1.5 font-semibold text-heading bg-surface px-2 py-1 rounded-md border border-border-light">
+                                  <span className="grid size-5 place-items-center rounded bg-violet-light text-violet shrink-0">
+                                    <Icon name="school" size={11} />
+                                  </span>
+                                  <span className="text-xs">
+                                    Room: <span className="text-violet-dark font-bold">{roomDisplay}</span>
+                                  </span>
+                                </div>
+                                {c.teacher && (
+                                  <div className="inline-flex items-center gap-1.5 text-muted text-[11px] truncate px-0.5">
+                                    <Icon name="graduation" size={11} />
+                                    <span className="truncate">{c.teacher}</span>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Delete action button on hover */}
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveClass(c.id, c.subject)}
+                                className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition p-1 text-muted hover:text-rose rounded-md hover:bg-rose-bg bg-surface shadow-2xs border border-border-light cursor-pointer"
+                                title="Remove from routine"
+                              >
+                                <Icon name="close" size={12} />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 py-2.5 px-3.5 rounded-xl border border-dashed border-border-input bg-surface-secondary/30 text-xs text-muted font-normal">
+                        <Icon name="calendar" size={13} className="text-subtle" />
+                        <span>No classes scheduled for {day.name} · Free day</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              ) : (
-                <p className="m-0 px-4 py-3 text-sm font-normal text-muted">No classes scheduled</p>
-              )}
-            </section>
-          ))}
+              </section>
+            );
+          })}
         </div>
       )}
 

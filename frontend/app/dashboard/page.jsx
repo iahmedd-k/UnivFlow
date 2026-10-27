@@ -689,12 +689,12 @@ export default function DashboardOverview() {
                       </span>
                     </div>
 
-                    <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted font-normal">
-                      <span>
-                        Room: {session.room && session.room.trim() ? session.room : '-'}
-                        {session.instructor ? ` • ${session.instructor}` : ''}
+                    <div className="mt-2 flex items-center justify-between text-xs text-muted font-normal">
+                      <span className="inline-flex items-center gap-1.5 font-semibold text-heading bg-surface px-2 py-0.5 rounded-md border border-border-light text-[11px]">
+                        <Icon name="school" size={11} className="text-violet" />
+                        <span>Room: <strong className="text-violet-dark font-bold">{session.room && session.room.trim() ? session.room : 'TBA'}</strong></span>
                       </span>
-                      <span className="rounded bg-surface px-1.5 py-0.5 text-[10px] font-semibold border border-border-light">
+                      <span className="rounded bg-surface px-1.5 py-0.5 text-[10px] font-semibold border border-border-light text-muted">
                         {session.type}
                       </span>
                     </div>

@@ -1205,9 +1205,100 @@ def test_terminal_renderer_authentic_prompt_prefix():
     assert isinstance(png_bytes, bytes)
     assert len(png_bytes) > 500  # Valid rendered PNG
     assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n"  # Valid PNG signature
+def test_download_claude_output_files_does_not_inspect_older_messages_when_start_index_at_count():
+    """Verify _download_claude_output_files returns empty when start_index >= message_count and never falls back to old messages."""
+    from app.services.claude_browser_solver import _download_claude_output_files
+
+    mock_page = MagicMock()
+    mock_messages = MagicMock()
+    mock_messages.count.return_value = 5
+    mock_page.locator.return_value = mock_messages
+
+    with patch("app.services.claude_browser_solver._claude_assistant_messages", return_value=mock_messages):
+        # start_index == message_count means no new messages created
+        result = _download_claude_output_files(mock_page, start_index=5)
+        assert result == {}
+        # Ensure it never tried to locate candidates on older messages
+        mock_messages.nth.assert_not_called()
 
 
+def test_export_solution_to_google_doc_rejects_leftover_assets_from_unrelated_tasks():
+    """Verify export_solution_to_google_doc will not append Claude-Generated Output Files from unrelated prior labs."""
+    mock_db = MagicMock()
+    mock_course = Course(id=1, external_id="course_1", name="Computer Networks", section="VII-A", teacher_name="Dr. Ali")
+    mock_assignment = Assignment(id=999, external_id="assign_999", course_id=1, title="Lab 3 - Sockets", description="Socket Programming")
+    mock_setting = Setting(key="student_profile_user_test", value=json.dumps({"student_name": "Test Student", "roll_no": "232530"}))
 
+    def query_side_effect(model):
+        q = MagicMock()
+        if model == Course:
+            q.filter.return_value.first.return_value = mock_course
+        elif model == Assignment:
+            q.filter.return_value.first.return_value = mock_assignment
+        elif model == Setting:
+            q.filter.return_value.first.return_value = mock_setting
+        else:
+            q.filter.return_value.first.return_value = None
+            q.filter.return_value.all.return_value = []
+        return q
 
+    mock_db.query.side_effect = query_side_effect
+
+    mock_docs_svc = MagicMock()
+    mock_docs_svc.create_document.return_value = {"documentId": "doc_clean_123"}
+    mock_docs_svc.create_academic_intro_page.return_value = True
+    mock_docs_svc.append_styled_block.return_value = True
+
+    # Solution has Task 1 only
+    current_solution = """
+# Task 1: Socket Client Implementation
+## 1. Problem Statement
+Implement client socket in Python.
+## 2. Source Code Implementation
+**File:** `task1_client.py`
+```python
+import socket
+s = socket.socket()
+```
+## 3. Terminal Output Verification
+```terminal
+$ python task1_client.py
+Connected
+```
+## 4. Discussion
+Client connects successfully.
+"""
+    # execution_results has Task 1 AND leftover Task 99 from another lab
+    fake_png_uri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    unrelated_execution_results = [
+        {
+            "task": "1",
+            "filename": "task1_client.py",
+            "terminal_output": "Connected",
+            "downloaded_assets": [{"filename": "task1_output.png", "data_uri": fake_png_uri, "is_image": True}],
+        },
+        {
+            "task": "99",
+            "filename": "old_lab_task99.png",
+            "terminal_output": "Old lab output",
+            "downloaded_assets": [{"filename": "old_lab_task99.png", "data_uri": fake_png_uri, "is_image": True}],
+        },
+    ]
+
+    with patch("app.services.ai_solution.get_google_docs_service", return_value=mock_docs_svc):
+        result = export_solution_to_google_doc(
+            db=mock_db,
+            assignment=mock_assignment,
+            solution_content=current_solution,
+            execution_results=unrelated_execution_results,
+            user_id="user_test",
+        )
+
+    assert result is not None
+    # Check that old_lab_task99 was NEVER appended or embedded into the doc
+    for call in mock_docs_svc.append_styled_block.call_args_list:
+        text_arg = str(call.args[1]) if len(call.args) > 1 else ""
+        assert "old_lab_task99" not in text_arg
+        assert "Task 99" not in text_arg
 
 

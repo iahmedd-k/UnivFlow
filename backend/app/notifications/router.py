@@ -756,6 +756,28 @@ def trigger_daily_digest(
     }
 
 
+@router.post("/daily-class-schedule", response_model=dict)
+def trigger_daily_class_schedule(
+    db: Session = Depends(get_db),
+    clerk_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Trigger the Daily 7:00 AM Class Schedule Email with room numbers on-demand."""
+    from app.services.alert_service import AlertService
+    user_id = require_user_id(clerk_user)
+    service = AlertService(db)
+    result = service.generate_daily_class_list_email(user_id=user_id, send_immediately=True)
+    if not result:
+        return {
+            "status": "already_sent_or_skipped",
+            "message": "Daily class schedule was already delivered today (idempotency enforced)."
+        }
+    return {
+        "status": "sent",
+        "result": result,
+        "message": f"Daily class schedule successfully dispatched to {result.get('recipient')} via SendGrid!"
+    }
+
+
 @router.post("/check-alerts", response_model=dict)
 def check_and_send_alerts(
     db: Session = Depends(get_db),

@@ -24,34 +24,42 @@ def _has_private_access(db, user_id: str) -> bool:
 
 
 def _run_portal_auto_sync():
-    """Automatically sync portal for all users with active sessions."""
+    """Automatically sync university portal and update attendance for configured users."""
+    logger.info("[Scheduler] Executing automated university portal sync & attendance update...")
     db = SessionLocal()
     try:
-        # Get all users with active portal sessions
-        active_users = db.query(Setting).filter(
-            Setting.key.like("portal:%:portal_session_status"),
-            Setting.value == "ACTIVE"
+        # Find all candidate users with active session status or saved session cookies
+        portal_settings = db.query(Setting).filter(
+            (Setting.key.like("portal:%:portal_session_status") & (Setting.value == "ACTIVE"))
+            | (Setting.key.like("portal:%:portal_session_cookies"))
+            | (Setting.key.like("portal:%:university_portal_url"))
         ).all()
         
-        for setting in active_users:
-            # Extract user_id from key: portal:{user_id}:portal_session_status
-            key_parts = setting.key.split(":")
-            if len(key_parts) >= 2:
-                user_id = key_parts[1]
-                if user_id and user_id != "dev_student_user" and _has_private_access(db, user_id):
-                    try:
-                        repo = PortalSyncJobRepository(db)
-                        active_job = repo.get_active_job(user_id)
-                        if not active_job:
-                            job_id = sha256(f"{user_id}:{time.time_ns()}".encode()).hexdigest()[:20]
-                            repo.create(user_id, job_id, sync_type="auto")
-                            db.commit()
-                            # Run sync in background thread
-                            threading.Thread(target=_run_portal_sync_job, args=(user_id, job_id), daemon=True).start()
-                            logger.info(f"[Scheduler] Started auto portal sync for user {user_id}")
-                    except Exception as e:
-                        logger.warning(f"[Scheduler] Failed to start auto portal sync for user {user_id}: {e}")
-                        db.rollback()
+        user_ids = set()
+        for s in portal_settings:
+            parts = s.key.split(":")
+            if len(parts) >= 3 and parts[0] == "portal" and parts[1]:
+                user_ids.add(parts[1])
+
+        for user_id in sorted(user_ids):
+            if not user_id:
+                continue
+            if settings.is_production and user_id != "dev_student_user" and not _has_private_access(db, user_id):
+                continue
+
+            try:
+                repo = PortalSyncJobRepository(db)
+                active_job = repo.get_active_job(user_id)
+                if not active_job:
+                    job_id = sha256(f"{user_id}:{time.time_ns()}".encode()).hexdigest()[:20]
+                    repo.create(user_id, job_id, sync_type="auto")
+                    db.commit()
+                    # Run sync in background thread
+                    threading.Thread(target=_run_portal_sync_job, args=(user_id, job_id), daemon=True).start()
+                    logger.info(f"[Scheduler] Dispatched portal auto-sync job {job_id} for user {user_id}")
+            except Exception as e:
+                logger.warning(f"[Scheduler] Failed to dispatch portal auto-sync for user {user_id}: {e}")
+                db.rollback()
     except Exception as e:
         logger.warning(f"[Scheduler] Portal auto sync job error: {e}")
     finally:
@@ -59,18 +67,23 @@ def _run_portal_auto_sync():
 
 
 def _run_portal_sync_job(uid: str, job_id: str):
-    """Run portal sync for a specific user and job."""
+    """Run portal sync and attendance update for a specific user and job."""
     from app.portal.router import _sync_portal_for_user
     
     db = SessionLocal()
     try:
         repo = PortalSyncJobRepository(db)
-        repo.complete_job(job_id, error=None)  # Mark as running
+        repo.claim_job(job_id)  # Mark as running
         
         result = _sync_portal_for_user(uid)
-        
-        repo.complete_job(job_id, result=result, error=None)
+        logger.info(f"[Scheduler] Portal sync finished for user {uid}: status={result.get('status')}")
+
+        if result.get("status") in ("success", "partial"):
+            repo.complete_job(job_id, result=result, error=None)
+        else:
+            repo.complete_job(job_id, error=result.get("error") or "Portal sync failed.")
     except Exception as error:
+        logger.error(f"[Scheduler] Portal sync job exception for user {uid}: {error}")
         repo = PortalSyncJobRepository(db)
         repo.complete_job(job_id, error=str(error))
     finally:
@@ -173,13 +186,13 @@ def _run_daily_morning_digest_job():
                 user_zone = ZoneInfo(timezone_name)
             except ZoneInfoNotFoundError:
                 user_zone = ZoneInfo(settings.timezone)
-            run_time = str(saved.get("time", "07:30"))
+            run_time = str(saved.get("time", "07:00"))
             try:
                 from datetime import time as datetime_time
                 hour, minute = map(int, run_time.split(":"))
                 scheduled_time = datetime_time(hour, minute)
             except (ValueError, TypeError):
-                scheduled_time = datetime_time(7, 30)
+                scheduled_time = datetime_time(7, 0)
             user_now = datetime.now(user_zone)
             if user_now.time().replace(tzinfo=None) < scheduled_time:
                 continue
@@ -539,6 +552,30 @@ def start_scheduler():
             name="Zombie Background Job Reaper (Every 10m)",
             replace_existing=True,
             misfire_grace_time=60,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # 12. Daily Class Schedule at 7:00 AM: Dispatches daily list of all classes with room numbers
+        scheduler.add_job(
+            _run_daily_class_list_email,
+            CronTrigger(hour=7, minute=0, timezone=settings.timezone),
+            id="daily_class_schedule_7am",
+            name="Daily Class Schedule at 7:00 AM (All Classes with Rooms)",
+            replace_existing=True,
+            misfire_grace_time=300,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # 13. Daily Portal & Attendance Sync at 5:00 AM: Dispatches portal sync and updates attendance every morning
+        scheduler.add_job(
+            _run_portal_auto_sync,
+            CronTrigger(hour=5, minute=0, timezone=settings.timezone),
+            id="daily_portal_sync_5am",
+            name="Daily University Portal & Attendance Sync at 5:00 AM",
+            replace_existing=True,
+            misfire_grace_time=600,
             max_instances=1,
             coalesce=True,
         )

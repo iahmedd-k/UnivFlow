@@ -437,7 +437,7 @@ def build_attendance_warning_email(
     threshold: float = 75.0,
 ) -> Tuple[str, str]:
     """Generate institutional HTML and plain-text email for low attendance advisory on scheduled class days."""
-    room_str = room if (room and room.strip() and room.lower() != "none") else "Main Campus (Consult Portal)"
+    room_str = room if (room and room.strip() and room.lower() not in ("none", "-", "venue to be confirmed via portal")) else "Room to be announced"
     teacher_str = teacher if (teacher and teacher.strip() and teacher.lower() != "none") else "Department Faculty"
     recovery_classes = calculate_attendance_recovery(attended, total, threshold)
 
@@ -452,12 +452,12 @@ def build_attendance_warning_email(
             f"Attending today's scheduled session is critical to avoid slipping below the institutional threshold of {threshold:.0f}%."
         )
 
-    preheader = f"Academic Advisory: Your attendance in {course_name} is currently at {percentage:.1f}%, below the required {threshold:.0f}% threshold."
+    preheader = f"Academic Advisory: Your attendance in {course_name} is currently at {percentage:.1f}%, below the required {threshold:.0f}% threshold. Class today in Room {room_str}."
     status_badge_html = f'<div class="status-badge" style="background:#fef2f2; color:#991b1b; border:1px solid #fecaca;">ATTENDANCE DEFICIT · BELOW {threshold:.0f}%</div>'
 
     body_html = f"""
       <p style="font-size:14px; color:#334155; margin:0 0 20px 0; line-height:1.6;">
-        A lecture session for <strong>{escape(course_name)}</strong> is scheduled today at <strong>{escape(class_time)}</strong>.
+        A lecture session for <strong>{escape(course_name)}</strong> is scheduled today at <strong>{escape(class_time)}</strong> in <strong>Room {escape(room_str)}</strong>.
         Your current cumulative attendance is below the university's examination eligibility requirement.
       </p>
 
@@ -482,8 +482,8 @@ def build_attendance_warning_email(
           <td><strong>{escape(class_time)}</strong></td>
         </tr>
         <tr>
-          <td class="label-col">Classroom / Venue</td>
-          <td>{escape(room_str)}</td>
+          <td class="label-col">Room / Classroom</td>
+          <td><strong style="color:#0f172a; font-size:13px; background:#f1f5f9; padding:2px 8px; border-radius:4px; border:1px solid #cbd5e1;">Room {escape(room_str)}</strong></td>
         </tr>
         <tr>
           <td class="label-col">Instructor</td>
@@ -524,7 +524,7 @@ Minimum Required: {threshold:.0f}%
 
 Class Scheduled Today:
 - Time: {class_time}
-- Location: {room_str}
+- Room: {room_str}
 - Instructor: {teacher_str}
 
 ACTION REQUIRED:
@@ -546,10 +546,10 @@ def build_timetable_reminder_email(
     session_type: str = "Lecture",
 ) -> Tuple[str, str]:
     """Generate institutional HTML and plain-text email for 10-minute prior class reminder."""
-    room_str = room if (room and room.strip() and room.lower() != "none") else "Venue to be confirmed via Portal"
+    room_str = room if (room and room.strip() and room.lower() not in ("none", "-", "venue to be confirmed via portal")) else "Room to be announced"
     teacher_str = teacher if (teacher and teacher.strip() and teacher.lower() != "none") else "Department Faculty"
 
-    preheader = f"Schedule Notice: {course_name} starts in ~{minutes_left} minutes ({start_time} - {end_time}) in {room_str}."
+    preheader = f"Class Reminder: {course_name} starts in ~{minutes_left} minutes ({start_time} - {end_time}) in Room {room_str}."
     status_badge_html = f'<div class="status-badge" style="background:#eef2ff; color:#3730a3; border:1px solid #c7d2fe;">SCHEDULE NOTICE · STARTING IN ~{minutes_left} MINUTES</div>'
 
     body_html = f"""
@@ -563,8 +563,8 @@ def build_timetable_reminder_email(
           <td><strong>{escape(start_time)} - {escape(end_time)}</strong></td>
         </tr>
         <tr>
-          <td class="label-col">Classroom / Venue</td>
-          <td>{escape(room_str)}</td>
+          <td class="label-col">Room / Classroom</td>
+          <td><strong style="color:#0f172a; font-size:14px; background:#f1f5f9; padding:2px 8px; border-radius:4px; border:1px solid #cbd5e1;">Room {escape(room_str)}</strong></td>
         </tr>
         <tr>
           <td class="label-col">Instructor</td>
@@ -577,7 +577,7 @@ def build_timetable_reminder_email(
       </table>
 
       <div class="preparation-box">
-        <strong>Preparation Notice:</strong> Please proceed to {escape(room_str)} now to ensure on-time arrival.
+        <strong>Preparation Notice:</strong> Please proceed to <strong>Room {escape(room_str)}</strong> now to ensure on-time arrival.
         Verify that you have your course notes, student ID, and any relevant lab materials ready.
       </div>
     """
@@ -601,11 +601,11 @@ def build_timetable_reminder_email(
 
 Course: {course_name}
 Time: {start_time} - {end_time}
-Classroom / Venue: {room_str}
+Room: {room_str}
 Instructor: {teacher_str}
 Session Type: {session_type}
 
-Please proceed to {room_str} now to ensure on-time arrival.
+Please proceed to Room {room_str} now to ensure on-time arrival.
 
 ---
 Sent by Uniflow Academic Suite for Air University students.
@@ -702,20 +702,21 @@ def build_daily_morning_digest_email(
 ) -> Tuple[str, str]:
     """
     Generate an executive HTML and plain-text email for the daily morning academic briefing.
-    Delivers today's complete schedule, attendance status for each course, safe bunk / recovery metrics,
-    and approaching coursework deadlines.
+    Delivers today's complete schedule with room numbers, attendance status for each course,
+    safe bunk / recovery metrics, and approaching coursework deadlines.
     """
     classes_count = len(classes_today)
     advisories_count = len(urgent_warnings)
     tasks_count = len(upcoming_tasks)
 
-    # Build classes rows
+    # Build classes rows with room numbers highlighted
     if classes_today:
         class_rows_html = ""
         for item in classes_today:
             course = escape(str(item.get("course", "")))
             time_str = escape(str(item.get("time", "")))
-            room = escape(str(item.get("room") or "Main Campus"))
+            raw_room = str(item.get("room") or "").strip()
+            room = escape(raw_room) if raw_room and raw_room.lower() not in ("none", "-", "main campus") else "Room to be announced"
             teacher = escape(str(item.get("teacher") or "Department Faculty"))
             pct = item.get("percentage")
             attended = item.get("attended", 0)
@@ -734,9 +735,9 @@ def build_daily_morning_digest_email(
 
             class_rows_html += f"""
             <tr>
-              <td style="padding:14px 16px; border-bottom:1px solid #f1f5f9; vertical-align:top; width:32%; background:#fafafa;">
+              <td style="padding:14px 16px; border-bottom:1px solid #f1f5f9; vertical-align:top; width:34%; background:#fafafa;">
                 <div style="font-weight:700; color:#0f172a; font-size:13px;">{time_str}</div>
-                <div style="font-size:11px; color:#64748b; margin-top:3px;">{room}</div>
+                <div style="margin-top:5px;"><span style="display:inline-block; font-size:11px; font-weight:700; color:#0f172a; background:#e2e8f0; padding:2px 8px; border-radius:4px; border:1px solid #cbd5e1;">Room {room}</span></div>
               </td>
               <td style="padding:14px 16px; border-bottom:1px solid #f1f5f9; vertical-align:top;">
                 <div style="font-weight:600; color:#1e293b; font-size:13px;">{course}</div>
@@ -810,14 +811,8 @@ def build_daily_morning_digest_email(
         </div>
         """
 
-    sync_warnings = sync_warnings or []
-    sync_warnings_html = ""
-    if sync_warnings:
-        sync_items = "".join(f"<li style=\"margin:6px 0;\"><strong>{escape(str(item.get('service', 'Sync')))}</strong>: {escape(str(item.get('message', 'Recent sync failed.')))}</li>" for item in sync_warnings)
-        sync_warnings_html = f"<div style=\"margin:20px 0; padding:14px 18px; background:#fff7ed; border:1px solid #fed7aa; border-left:4px solid #f97316; border-radius:8px; color:#9a3412; font-size:13px;\"><strong>Sync issues</strong><ul style=\"margin:8px 0 0; padding-left:18px;\">{sync_items}</ul></div>"
-
     dashboard_url = escape(settings.frontend_url.rstrip("/") + "/dashboard", quote=True)
-    preheader = f"Morning Academic Briefing for {date_str}: {classes_count} classes scheduled, {advisories_count} attendance warnings, {tasks_count} active tasks."
+    preheader = f"Morning Academic Briefing for {date_str}: {classes_count} classes scheduled (with rooms), {advisories_count} attendance warnings, {tasks_count} active tasks."
     status_badge_html = f'<div class="status-badge" style="background:#eef2ff; color:#3730a3; border:1px solid #c7d2fe;">DAILY BRIEFING · {escape(date_str.upper())}</div>'
 
     body_html = f"""
@@ -845,14 +840,13 @@ def build_daily_morning_digest_email(
       {advisories_html}
 
       <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:#64748b; margin:24px 0 10px 0;">
-        Today's Class Schedule &amp; Course Attendance
+        Today's Class Schedule (with Classroom Locations)
       </div>
       <table style="width:100%; border-collapse:separate; border-spacing:0; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden; background:#ffffff;" role="presentation">
         {class_rows_html}
       </table>
 
       {tasks_html}
-      {sync_warnings_html}
 
       <table class="btn-table" role="presentation" border="0" cellspacing="0" cellpadding="0">
         <tr>
@@ -883,13 +877,13 @@ def build_daily_morning_digest_email(
         "",
         f"Classes Today: {classes_count} | Attendance Advisories: {advisories_count} | Active Tasks: {tasks_count}",
         "",
-        "--- TODAY'S CLASS SCHEDULE ---",
+        "--- TODAY'S CLASS SCHEDULE (WITH ROOMS) ---",
     ]
     if classes_today:
         for item in classes_today:
             c = item.get("course", "")
             t = item.get("time", "")
-            r = item.get("room") or "Main Campus"
+            r = item.get("room") or "Room to be announced"
             p = item.get("percentage")
             att = item.get("attended", 0)
             tot = item.get("total", 0)
@@ -900,7 +894,7 @@ def build_daily_morning_digest_email(
                 att_info += f" [CRITICAL: Need {rec} classes to recover]"
             elif sb > 0:
                 att_info += f" [{sb} safe bunks]"
-            text_lines.append(f"• {t}: {c} in {r} | Attendance: {att_info}")
+            text_lines.append(f"• {t}: {c} | Room: {r} | Attendance: {att_info}")
     else:
         text_lines.append("No classes scheduled for today.")
 
@@ -913,10 +907,6 @@ def build_daily_morning_digest_email(
         text_lines.extend(["", "--- UPCOMING DEADLINES ---"])
         for t in upcoming_tasks:
             text_lines.append(f"• {t.get('title')} ({t.get('course')}) - Due: {t.get('due')}")
-
-    if sync_warnings:
-        text_lines.extend(["", "--- RECENT SYNC ISSUES ---"])
-        text_lines.extend(f"• {item.get('service', 'Sync')}: {item.get('message', 'Recent sync failed.')[:240]}" for item in sync_warnings)
 
     text_lines.extend(["", "---", "Sent by Uniflow Academic Suite for Air University students."])
     text = "\n".join(text_lines)
@@ -1012,7 +1002,8 @@ def build_daily_class_list_email(
     classes_today: List[Dict],
 ) -> Tuple[str, str]:
     """
-    Generate an executive HTML and plain-text email for the daily class schedule list.
+    Generate an executive HTML and plain-text email for the daily 7:00 AM class schedule list.
+    Lists all classes of the day with their scheduled time window, room number, and instructor.
     """
     classes_count = len(classes_today)
     day_of_week = date_str.split(",")[0] if "," in date_str else date_str
@@ -1022,18 +1013,19 @@ def build_daily_class_list_email(
         for item in classes_today:
             course = escape(str(item.get("course", "")))
             time_str = escape(str(item.get("time", "")))
-            room = escape(str(item.get("room") or "Main Campus"))
+            raw_room = str(item.get("room") or "").strip()
+            room = escape(raw_room) if raw_room and raw_room.lower() not in ("none", "-", "main campus") else "Room to be announced"
             teacher = escape(str(item.get("teacher") or "Department Faculty"))
 
             class_rows_html += f"""
             <tr>
-              <td style="padding:14px 16px; border-bottom:1px solid #f1f5f9; vertical-align:top; width:32%; background:#fafafa;">
+              <td style="padding:14px 16px; border-bottom:1px solid #f1f5f9; vertical-align:top; width:34%; background:#fafafa;">
                 <div style="font-weight:700; color:#0f172a; font-size:13px;">{time_str}</div>
-                <div style="font-size:11px; color:#64748b; margin-top:3px;">{room}</div>
+                <div style="margin-top:5px;"><span style="display:inline-block; font-size:11px; font-weight:700; color:#0f172a; background:#e2e8f0; padding:2px 8px; border-radius:4px; border:1px solid #cbd5e1;">Room {room}</span></div>
               </td>
               <td style="padding:14px 16px; border-bottom:1px solid #f1f5f9; vertical-align:top;">
                 <div style="font-weight:600; color:#1e293b; font-size:13px;">{course}</div>
-                <div style="font-size:11px; color:#64748b; margin-top:2px;">{teacher}</div>
+                <div style="font-size:11px; color:#64748b; margin-top:3px;">Instructor: {teacher}</div>
               </td>
             </tr>
             """
@@ -1046,19 +1038,19 @@ def build_daily_class_list_email(
         </tr>
         """
 
-    preheader = f"Class Schedule for {day_of_week}, {date_str}: {classes_count} class{'es' if classes_count != 1 else ''} scheduled."
+    preheader = f"Daily Class Schedule for {day_of_week}, {date_str}: {classes_count} class{'es' if classes_count != 1 else ''} scheduled with room numbers."
     status_badge_html = f'<div class="status-badge" style="background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe;">DAILY SCHEDULE · {escape(date_str.upper())}</div>'
 
     body_html = f"""
       <p style="margin:0 0 18px 0; font-size:14px; color:#334155; line-height:1.6;">
-        Good morning, <strong>{escape(student_name)}</strong>! Here is your class schedule for <strong>{escape(day_of_week)}</strong>, <strong>{escape(date_str)}</strong>.
+        Good morning, <strong>{escape(student_name)}</strong>! Here is your official daily class schedule for <strong>{escape(day_of_week)}</strong>, <strong>{escape(date_str)}</strong>.
       </p>
 
       <table class="details-table" style="margin-top:14px;" role="presentation">
         <thead>
           <tr>
-            <th style="width:32%; background:#f8fafc; padding:12px 16px; text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:#475569; border-bottom:1px solid #e2e8f0;">Time &amp; Room</th>
-            <th style="background:#f8fafc; padding:12px 16px; text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:#475569; border-bottom:1px solid #e2e8f0;">Course &amp; Faculty</th>
+            <th style="width:34%; background:#f8fafc; padding:12px 16px; text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:#475569; border-bottom:1px solid #e2e8f0;">Time &amp; Room</th>
+            <th style="background:#f8fafc; padding:12px 16px; text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:#475569; border-bottom:1px solid #e2e8f0;">Course &amp; Instructor</th>
           </tr>
         </thead>
         <tbody>
@@ -1067,7 +1059,7 @@ def build_daily_class_list_email(
       </table>
 
       <div style="margin-top:22px; padding:14px 18px; background:#f0fdf4; border:1px solid #bbf7d0; border-left:4px solid #16a34a; border-radius:8px; font-size:13px; color:#166534;">
-        <strong>Schedule Summary:</strong> {classes_count} class{'es' if classes_count != 1 else ''} scheduled today.
+        <strong>Schedule Summary:</strong> {classes_count} class{'es' if classes_count != 1 else ''} scheduled today. Please arrive at your respective rooms on time.
       </div>
     """
 
@@ -1079,7 +1071,7 @@ def build_daily_class_list_email(
     html = _render_uniflow_email_shell(
         preheader=preheader,
         brand_title="Uniflow Academic Suite · Daily Schedule",
-        header_title="Today's Class Schedule",
+        header_title="Today's Class Schedule & Room Numbers",
         status_badge_html=status_badge_html,
         body_html=body_html,
         footer_lines=footer_lines,
@@ -1098,12 +1090,13 @@ def build_daily_class_list_email(
         for item in classes_today:
             course = item.get("course", "")
             time_str = item.get("time", "")
-            room = item.get("room") or "Main Campus"
+            raw_room = str(item.get("room") or "").strip()
+            r = raw_room if raw_room and raw_room.lower() not in ("none", "-", "main campus") else "Room to be announced"
             teacher = item.get("teacher") or "Department Faculty"
             text_lines.extend([
                 f"• {course}",
                 f"  Time: {time_str}",
-                f"  Room: {room}",
+                f"  Room: {r}",
                 f"  Instructor: {teacher}",
                 "",
             ])
@@ -1213,13 +1206,14 @@ class AlertService:
                 continue
 
             recovery_needed = calculate_attendance_recovery(attended_count, total_held, threshold)
-            subject_title = f"[Uniflow] Academic Advisory: Low Attendance in {entry.subject} ({pct:.1f}%)"
+            room_suffix = f" • Room {entry.room}" if (entry.room and entry.room.strip() and entry.room.lower() not in ("none", "-")) else ""
+            subject_title = f"[Uniflow] Academic Advisory: Low Attendance in {entry.subject} ({pct:.1f}%){room_suffix}"
             payload_summary = (
                 f"Course: {entry.subject}\n"
                 f"Current Attendance: {pct:.1f}% ({attended_count}/{total_held} classes attended)\n"
                 f"Minimum Required: {threshold:.0f}%\n"
                 f"Consecutive Classes Needed to Recover: {recovery_needed}\n"
-                f"Scheduled Time: {entry.start_time} - {entry.end_time} in {entry.room or 'Main Campus'}\n"
+                f"Scheduled Time: {entry.start_time} - {entry.end_time} in {entry.room or 'Room to be announced'}\n"
                 f"Instructor: {entry.teacher or 'Department Faculty'}"
             )
 
@@ -1398,51 +1392,27 @@ class AlertService:
                     "url": a.url or "https://classroom.google.com",
                 })
 
-        # Recent failures are actionable: include only this account's sync state.
-        sync_warnings = []
-        gcr_status_row = self.db.query(Setting).filter(Setting.key == f"classroom:{user_id}:sync_status").first()
-        if gcr_status_row and gcr_status_row.value:
+        profile_row = self.db.query(Setting).filter(Setting.key == f"student_profile_{user_id}").first()
+        if not profile_row:
+            profile_row = self.db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
+        student_name = "Student"
+        if profile_row and profile_row.value:
             try:
-                gcr_status = json.loads(gcr_status_row.value)
-                finished_at = datetime.fromisoformat(str(gcr_status.get("finished_at", "")).replace("Z", "+00:00"))
-                if finished_at.tzinfo is None:
-                    finished_at = finished_at.replace(tzinfo=timezone.utc)
-                if gcr_status.get("status") in {"partial", "failed", "error"} and finished_at >= datetime.now(timezone.utc) - timedelta(hours=24):
-                    errors = gcr_status.get("errors") or []
-                    sync_warnings.append({
-                        "service": "Google Classroom",
-                        "message": "; ".join(str(error) for error in errors[:2])[:240] or "The latest sync was incomplete.",
-                    })
-            except (TypeError, ValueError, json.JSONDecodeError):
-                sync_warnings.append({"service": "Google Classroom", "message": "The latest sync status could not be read."})
-
-        recent_portal_failure = (
-            self.db.query(PortalSyncJob)
-            .filter(
-                PortalSyncJob.user_id == user_id,
-                PortalSyncJob.status == "failed",
-                PortalSyncJob.created_at >= datetime.now(timezone.utc) - timedelta(days=1),
-            )
-            .order_by(PortalSyncJob.created_at.desc())
-            .first()
-        )
-        if recent_portal_failure:
-            sync_warnings.append({
-                "service": "University portal",
-                "message": (recent_portal_failure.error or "A recent portal sync failed.")[:240],
-            })
+                prof_data = json.loads(profile_row.value)
+                student_name = prof_data.get("name") or prof_data.get("student_name") or "Student"
+            except Exception:
+                pass
 
         date_formatted = target_date.strftime("%A, %d %B %Y")
         html_content, text_content = build_daily_morning_digest_email(
-            student_name="Student",
+            student_name=student_name,
             date_str=date_formatted,
             classes_today=classes_data,
             urgent_warnings=urgent_warnings,
             upcoming_tasks=upcoming_tasks,
-            sync_warnings=sync_warnings,
         )
 
-        subject = f"[Uniflow] Morning Briefing: Today's Classes & Attendance ({date_formatted})"
+        subject = f"[Uniflow] Daily Academic Briefing: Today's Classes & Attendance ({date_formatted})"
         notification = Notification(
             user_id=user_id,
             notification_type="daily_morning_digest",
@@ -1527,23 +1497,34 @@ class AlertService:
             .all()
         )
 
+        profile_row = self.db.query(Setting).filter(Setting.key == f"student_profile_{user_id}").first()
+        if not profile_row:
+            profile_row = self.db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
+        student_name = "Student"
+        if profile_row and profile_row.value:
+            try:
+                prof_data = json.loads(profile_row.value)
+                student_name = prof_data.get("name") or prof_data.get("student_name") or "Student"
+            except Exception:
+                pass
+
         classes_data = []
         for entry in scheduled_today:
             classes_data.append({
                 "course": entry.subject,
                 "time": f"{entry.start_time} - {entry.end_time}",
-                "room": entry.room or "Main Campus",
+                "room": entry.room or "Room to be announced",
                 "teacher": entry.teacher or "Department Faculty",
             })
 
         date_formatted = target_date.strftime("%A, %d %B %Y")
         html_content, text_content = build_daily_class_list_email(
-            student_name="Student",
+            student_name=student_name,
             date_str=date_formatted,
             classes_today=classes_data,
         )
 
-        subject = f"[Uniflow] Today's Class Schedule ({date_formatted})"
+        subject = f"[Uniflow] Daily Class Schedule — {date_formatted} (All Classes & Rooms)"
         notification = Notification(
             user_id=user_id,
             notification_type="daily_class_list",
@@ -1689,16 +1670,17 @@ class AlertService:
                 continue
 
             session_type = "Laboratory Practical" if is_lab_subject(entry.subject) else "Lecture"
+            room_suffix = f" • Room {entry.room}" if (entry.room and entry.room.strip() and entry.room.lower() not in ("none", "-")) else ""
             subject_title = (
-                f"[Uniflow] Starting Shortly (5m): {entry.subject} at {entry.start_time}"
+                f"[Uniflow] Urgent Class Reminder: {entry.subject} at {entry.start_time}{room_suffix} (Starts in ~5m)"
                 if milestone == "5m"
-                else f"[Uniflow] Class in 20 Minutes: {entry.subject} at {entry.start_time}"
+                else f"[Uniflow] Upcoming Class Reminder: {entry.subject} at {entry.start_time}{room_suffix}"
             )
             payload_summary = (
                 f"Course: {entry.subject}\n"
                 f"Session Type: {session_type}\n"
                 f"Time: {entry.start_time} - {entry.end_time} (Starting in ~{minutes_label} mins)\n"
-                f"Venue: {entry.room or 'Main Campus (Consult Portal)'}\n"
+                f"Room: {entry.room or 'Room to be announced'}\n"
                 f"Instructor: {entry.teacher or 'Department Faculty'}"
             )
 
@@ -1827,7 +1809,7 @@ class AlertService:
             is_quiz = assignment.is_quiz or (assignment.work_type and "quiz" in assignment.work_type.lower())
             work_label = "Quiz" if is_quiz else "Assignment"
             due_formatted = due.strftime("%A, %d %b %Y at %I:%M %p")
-            subject_title = f"[Uniflow] Deadline Notice: {assignment.title} ({course_name})"
+            subject_title = f"[Uniflow] Coursework Deadline Reminder: {assignment.title} ({course_name})"
             payload_summary = (
                 f"Course: {course_name}\n"
                 f"Task: {assignment.title} ({work_label})\n"
@@ -1917,7 +1899,7 @@ class AlertService:
         due = assignment.due_at or assignment.due_date
         due_formatted = due.strftime("%A, %d %b %Y at %I:%M %p") if due else "No due date specified"
 
-        subject = f"[Uniflow] New Task: {assignment.title} ({course_name})"
+        subject = f"[Uniflow] New Coursework Assigned: {assignment.title} ({course_name})"
         html_content, text_content = build_new_assignment_email(
             assignment_title=assignment.title,
             course_name=course_name,

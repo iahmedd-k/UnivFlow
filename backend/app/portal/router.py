@@ -1797,16 +1797,21 @@ def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_
         # 1. Upsert TimetableEntry
         identity = f"{subj.lower()}|{weekday}|{st}|{et}"
         tt_ext_id = "portal-tt:" + sha256(identity.encode("utf-8")).hexdigest()[:32]
-        tt_entry = db.query(TimetableEntry).filter(
+        raw_clean = re.sub(r"\s*\([A-Za-z0-9\s_-]+\)\s*", "", subj).strip().lower()
+        candidates = db.query(TimetableEntry).filter(
             TimetableEntry.user_id.in_(user_owner_ids(user_id)),
-            or_(
-                TimetableEntry.external_id == tt_ext_id,
-                (func.lower(TimetableEntry.subject) == subj.lower()) &
-                (TimetableEntry.weekday == weekday) &
-                (TimetableEntry.start_time == st) &
-                (TimetableEntry.end_time == et),
+            TimetableEntry.weekday == weekday,
+        ).all()
+        tt_entry = next(
+            (
+                e for e in candidates
+                if e.external_id == tt_ext_id
+                or e.subject.strip().lower() == subj.lower()
+                or (raw_clean and raw_clean in re.sub(r"\s*\([A-Za-z0-9\s_-]+\)\s*", "", e.subject).strip().lower())
+                or (raw_clean and re.sub(r"\s*\([A-Za-z0-9\s_-]+\)\s*", "", e.subject).strip().lower() in raw_clean)
             ),
-        ).first()
+            None,
+        )
         if not tt_entry:
             tt_entry = TimetableEntry(
                 user_id=user_id,
@@ -1822,9 +1827,11 @@ def _sync_timetable_to_schedules(db: Session, timetable_entries: list, semester_
             )
             db.add(tt_entry)
         else:
-            tt_entry.user_id = user_id
-            tt_entry.subject = subj
-            tt_entry.room = room or tt_entry.room
+            # Preserve existing specific room number if it's already set to a classroom/lab
+            if room and room != "Main Campus":
+                tt_entry.room = room
+            elif not tt_entry.room:
+                tt_entry.room = room
             tt_entry.teacher = teacher or tt_entry.teacher
             tt_entry.semester_name = semester_name or tt_entry.semester_name
             if sem_start_dt and not tt_entry.semester_start:
