@@ -26,32 +26,32 @@ const DEFAULT_METRICS = {
 const DEFAULT_SCHEDULE = [
   {
     id: 'sch-1',
-    subject: 'Operating Systems',
-    code: 'CS-301',
-    time: '09:00 – 09:50 AM',
-    room: 'Hall 204',
-    instructor: 'Dr. Tariq Mahmood',
+    subject: 'Parallel and Distributed Computing (CS426)',
+    code: 'CS-426',
+    time: '04:00 – 05:00 PM',
+    room: 'C-305',
+    instructor: 'CS Faculty',
     type: 'Lecture',
     status: 'completed',
   },
   {
     id: 'sch-2',
-    subject: 'Artificial Intelligence Lab',
-    code: 'AI-401L',
-    time: '10:00 – 11:40 AM',
-    room: 'Computing Lab 3',
-    instructor: 'Engr. Bilal Khan',
-    type: 'Lab Session',
+    subject: 'Deep Learning (CS455)',
+    code: 'CS-455',
+    time: '05:00 – 06:00 PM',
+    room: 'C-204',
+    instructor: 'CS Faculty',
+    type: 'Lecture',
     status: 'next',
   },
   {
     id: 'sch-3',
-    subject: 'Database Systems',
-    code: 'CS-202',
-    time: '01:30 – 02:20 PM',
-    room: 'Auditorium B',
-    instructor: 'Dr. Ayesha Malik',
-    type: 'Lecture',
+    subject: 'Software Design & Architecture Lab',
+    code: 'CS-401L',
+    time: '06:00 – 09:00 PM',
+    room: 'Lab 5',
+    instructor: 'Lab Instructor',
+    type: 'Lab Session',
     status: 'upcoming',
   },
 ];
@@ -109,6 +109,7 @@ export default function DashboardOverview() {
 
   const [overview, setOverview] = useState(null);
   const [upcoming, setUpcoming] = useState(null);
+  const [todayClasses, setTodayClasses] = useState(null);
   const [activeTab, setActiveTab] = useState('all'); // 'all' | 'dueSoon' | 'labs'
   const [promptInput, setPromptInput] = useState('');
   const [solvingId, setSolvingId] = useState(null);
@@ -121,9 +122,10 @@ export default function DashboardOverview() {
     async function loadData() {
       try {
         const token = getToken ? await getToken() : null;
-        const [overviewRes, upcomingRes] = await Promise.allSettled([
+        const [overviewRes, upcomingRes, todayRes] = await Promise.allSettled([
           api.getOverview(token, false),
           api.getUpcoming(7, token),
+          api.getTodaysClasses(token),
         ]);
 
         if (cancelled) return;
@@ -133,6 +135,9 @@ export default function DashboardOverview() {
         }
         if (upcomingRes.status === 'fulfilled' && upcomingRes.value) {
           setUpcoming(upcomingRes.value);
+        }
+        if (todayRes.status === 'fulfilled' && Array.isArray(todayRes.value)) {
+          setTodayClasses(todayRes.value);
         }
       } catch (err) {
         console.warn('Dashboard data sync fallback to static:', err);
@@ -228,6 +233,53 @@ export default function DashboardOverview() {
     }
     return DEFAULT_DEADLINES;
   }, [upcoming]);
+
+  // Dynamic today schedule from database timetable with fallback
+  const todaySchedule = useMemo(() => {
+    if (todayClasses && todayClasses.length > 0) {
+      const now = new Date();
+      const currentMinutes = now.getHours() * 60 + now.getMinutes();
+      let nextFound = false;
+
+      return todayClasses.map((item, idx) => {
+        let status = 'upcoming';
+        let startMinutes = 0;
+        let endMinutes = 1440;
+
+        if (item.start_time) {
+          const [sh, sm] = item.start_time.split(':').map(Number);
+          startMinutes = sh * 60 + (sm || 0);
+        }
+        if (item.end_time) {
+          const [eh, em] = item.end_time.split(':').map(Number);
+          endMinutes = eh * 60 + (em || 0);
+        }
+
+        if (currentMinutes >= endMinutes) {
+          status = 'completed';
+        } else if (currentMinutes >= startMinutes && currentMinutes < endMinutes) {
+          status = 'next';
+          nextFound = true;
+        } else if (!nextFound && currentMinutes < startMinutes) {
+          status = 'next';
+          nextFound = true;
+        }
+
+        const isLab = (item.subject || '').toLowerCase().includes('lab');
+
+        return {
+          id: item.id || `live-class-${idx}`,
+          subject: item.subject,
+          time: `${item.start_time} – ${item.end_time}`,
+          room: item.room && item.room.trim() ? item.room.trim() : null,
+          instructor: item.teacher || null,
+          type: isLab ? 'Lab Session' : 'Lecture',
+          status,
+        };
+      });
+    }
+    return DEFAULT_SCHEDULE;
+  }, [todayClasses]);
 
   // Filter deadlines based on active tab
   const filteredDeadlines = useMemo(() => {
@@ -608,7 +660,7 @@ export default function DashboardOverview() {
             </header>
 
             <div className="mt-3.5 space-y-3">
-              {DEFAULT_SCHEDULE.map((session) => {
+              {todaySchedule.map((session) => {
                 const isNext = session.status === 'next';
                 const isCompleted = session.status === 'completed';
 
@@ -638,7 +690,10 @@ export default function DashboardOverview() {
                     </div>
 
                     <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted font-normal">
-                      <span>{session.room} • {session.instructor}</span>
+                      <span>
+                        Room: {session.room && session.room.trim() ? session.room : '-'}
+                        {session.instructor ? ` • ${session.instructor}` : ''}
+                      </span>
                       <span className="rounded bg-surface px-1.5 py-0.5 text-[10px] font-semibold border border-border-light">
                         {session.type}
                       </span>

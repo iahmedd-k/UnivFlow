@@ -119,6 +119,7 @@ export default function TimetablePage() {
         courseMap.set(key, {
           subject: key,
           teacher: c.teacher || '',
+          room: c.room || '',
           isLab,
           days: { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: [] },
         });
@@ -127,10 +128,21 @@ export default function TimetablePage() {
       if (c.teacher && !item.teacher) {
         item.teacher = c.teacher;
       }
-      const slot = `${c.start_time} – ${c.end_time}`;
+      if (c.room && !item.room) {
+        item.room = c.room;
+      }
+      const slotTime = `${c.start_time} – ${c.end_time}`;
       const dayNum = Number(c.weekday);
-      if (item.days[dayNum] && !item.days[dayNum].includes(slot)) {
-        item.days[dayNum].push(slot);
+      if (item.days[dayNum]) {
+        const exists = item.days[dayNum].some(
+          (s) => (typeof s === 'string' ? s : s.time) === slotTime
+        );
+        if (!exists) {
+          item.days[dayNum].push({
+            time: slotTime,
+            room: c.room ? c.room.trim() : '',
+          });
+        }
       }
     });
     return Array.from(courseMap.values());
@@ -303,7 +315,10 @@ export default function TimetablePage() {
             <small className="text-xs font-medium text-violet uppercase tracking-wider">Up next today · <span className="tabular-nums">{nextClassToday.start_time}–{nextClassToday.end_time}</span></small>
             <strong className="text-base font-semibold text-heading">{nextClassToday.subject}</strong>
           </div>
-          {nextClassToday.room && <span className="inline-flex items-center gap-1.5 text-xs font-medium text-violet-dark bg-white px-2.5 py-1 rounded-md border border-violet-light"><Icon name="school" size={14} />{nextClassToday.room}</span>}
+          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-violet-dark bg-white px-2.5 py-1 rounded-md border border-violet-light">
+            <Icon name="school" size={14} />
+            Room: {nextClassToday.room && nextClassToday.room.trim() ? nextClassToday.room : '-'}
+          </span>
           {nextClassToday.teacher && <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted"><Icon name="graduation" size={14} />{nextClassToday.teacher}</span>}
         </section>
       )}
@@ -382,13 +397,25 @@ export default function TimetablePage() {
                       {WEEKDAYS.map((_, d) => {
                         const slots = row.days[d] || [];
                         return (
-                          <td key={d} className="py-3.5 px-3 text-center">
+                          <td key={d} className="py-3.5 px-3 text-center align-middle">
                             {slots.length > 0 ? (
-                              slots.map((s, i) => (
-                                <span key={i} className="inline-block px-2.5 py-1 rounded-md bg-surface-secondary text-xs font-medium tabular-nums text-heading my-0.5 whitespace-nowrap border border-border-input">
-                                  {s}
-                                </span>
-                              ))
+                              <div className="flex flex-col items-center gap-1">
+                                {slots.map((s, i) => {
+                                  const timeStr = typeof s === 'string' ? s : s.time;
+                                  const roomStr = typeof s === 'object' && s.room ? s.room : '';
+                                  return (
+                                    <div
+                                      key={i}
+                                      className="inline-flex flex-col items-center px-2.5 py-1 rounded-md bg-surface-secondary text-xs font-medium tabular-nums text-heading border border-border-input"
+                                    >
+                                      <span>{timeStr}</span>
+                                      <span className="text-[11px] font-normal text-muted mt-0.5">
+                                        Room: {roomStr && roomStr.trim() ? roomStr : '-'}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
                             ) : (
                               <span className="text-subtle font-normal tabular-nums">—</span>
                             )}
@@ -434,12 +461,10 @@ export default function TimetablePage() {
                         {item.subject}
                       </h3>
                       <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-muted">
-                        {item.room && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-surface-secondary border border-border-input font-medium text-heading">
-                            <Icon name="school" size={12} />
-                            {item.room}
-                          </span>
-                        )}
+                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-surface-secondary border border-border-input font-medium text-heading">
+                          <Icon name="school" size={12} />
+                          Room: {item.room && item.room.trim() ? item.room : '-'}
+                        </span>
                         {item.teacher && (
                           <span className="inline-flex items-center gap-1 text-muted">
                             <Icon name="graduation" size={12} />
@@ -519,11 +544,9 @@ export default function TimetablePage() {
                       </time>
                       <div className="flex min-w-0 flex-col gap-1">
                         <strong className="text-sm font-semibold leading-snug text-heading max-sm:text-xs">{c.subject}</strong>
-                        {(c.room || c.teacher) && (
-                          <span className="truncate text-xs font-normal text-muted">
-                            {[c.room, c.teacher].filter(Boolean).join(' · ')}
-                          </span>
-                        )}
+                        <span className="truncate text-xs font-normal text-muted">
+                          {[`Room: ${c.room && c.room.trim() ? c.room : '-'}`, c.teacher].filter(Boolean).join(' · ')}
+                        </span>
                       </div>
                     </div>
                   ))}
