@@ -875,6 +875,10 @@ def strip_disclaimers(text: str) -> str:
         r"(?i)AI-generated draft;?\s*code was not executed or independently verified by Uniflow\.?",
         r"(?i)AI-generated image\s*·\s*review before including in a submission",
         r"(?i)Claude-generated diagram artifact \(not rendered or verified by Uniflow\)",
+        r"(?im)^\s*I'll check whether[^\n]*\n*",
+        r"(?im)^\s*Source launcher works[^\n]*\n*",
+        r"(?im)^\s*Still working:[^\n]*\n*",
+        r"(?im)^\s*How the outputs were produced:[^\n]*\n*",
     ]
     cleaned = text
     for pat in patterns:
@@ -976,9 +980,32 @@ def extract_task_discussion_from_markdown(markdown: str, task_id: str) -> str:
 
 
 def extract_post_task_sections_from_markdown(markdown: str) -> List[Tuple[str, str]]:
-    """Extract any overall sections at the end of the markdown (Viva questions, Conclusion, Lab Summary)."""
+    """Extract genuine overall wrap-up sections at the end of the markdown (Viva questions, Conclusion, Lab Summary, Combined Analysis).
+    Crucially ignores task-internal subheadings (Problem Statement, Source Code, Terminal Output, Discussion) so task contents
+    are never duplicated as a redundant report at the document tail.
+    """
     if not markdown:
         return []
+
+    # Internal subheadings belonging to an individual task deliverable
+    _TASK_SUBSECTION_RE = re.compile(
+        r"(?i)^\s*(?:\d+[\.\)]\s*)?(?:"
+        r"problem\s*statement|question|source\s*code|code\s*implementation|implementation|"
+        r"terminal\s*output|program\s*output|output\s*verification|execution\s*verification|output|"
+        r"discussion|complexity(?:\s*analysis)?|observation(?:s|\s*questions?)?|"
+        r"results?\s*table|comparison\s*table|deliverable(?:s)?"
+        r")\b"
+    )
+
+    # Keywords for genuine post-task document-level sections
+    _POST_TASK_KEYWORD_RE = re.compile(
+        r"(?i)\b(?:"
+        r"conclusion|summary|combined\s*analysis|overall\s*analysis|comprehensive\s*analysis|"
+        r"expected\s*findings|overall\s*findings|checklist|completion\s*checklist|"
+        r"viva(?:\s*voce|\s*questions?)?|oral\s*questions?|references|appendix|bibliography"
+        r")\b"
+    )
+
     matches = list(re.finditer(
         r"(?m)^\s*#{1,2}\s*.*?\b(?:Task|Exercise|Problem|Question)\s*\d+\b[^\n]*\n",
         markdown,
@@ -988,17 +1015,42 @@ def extract_post_task_sections_from_markdown(markdown: str) -> List[Tuple[str, s
         return []
     last_task = matches[-1]
     tail = markdown[last_task.end():]
+
     post_sections: List[Tuple[str, str]] = []
-    heading_pattern = re.compile(r"(?m)^\s*(#{1,2})\s+(?!(?:Task|Exercise|Problem|Question)\b)([^\n]+)\n", re.I)
+    heading_pattern = re.compile(r"(?m)^\s*(#{1,3})\s+([^\n]+)\n")
     h_matches = list(heading_pattern.finditer(tail))
+
     for i, hm in enumerate(h_matches):
         sec_title = hm.group(2).strip()
+
+        # Reject any heading that is a task heading or an internal task subsection
+        if re.search(r"(?i)\b(?:Task|Exercise|Problem|Question)\s*\d+\b", sec_title):
+            continue
+        if _TASK_SUBSECTION_RE.search(sec_title):
+            continue
+
+        # Reject metadata / disclaimer artifacts
+        if any(k in sec_title.lower() for k in [
+            "verification status", "chat-note", "claude-generated", "output file",
+            "companion deliverable", "execution verification", "@air-desktop", "status:"
+        ]):
+            continue
+
+        # Must either match recognized post-task topics OR be a major top-level (#) section
+        h_level = len(hm.group(1))
+        is_recognized = bool(_POST_TASK_KEYWORD_RE.search(sec_title))
+        if not is_recognized and h_level > 1:
+            continue
+
         start_pos = hm.end()
         end_pos = h_matches[i + 1].start() if i + 1 < len(h_matches) else len(tail)
         body = tail[start_pos:end_pos].strip()
         body = strip_execution_metadata(body)
-        if body and len(body) > 15 and not any(k in sec_title.lower() for k in ["verification status", "chat-note", "claude-generated", "output file", "companion deliverable"]):
+        body = strip_disclaimers(body)
+
+        if body and len(body) > 15:
             post_sections.append((sec_title, body))
+
     return post_sections
 
 
@@ -1858,13 +1910,64 @@ def export_solution_to_google_doc(
                     docs_service.insert_page_break(doc_id)
                     time.sleep(0.5)
 
-            # 6. Post-task sections (Viva questions, Conclusion, Lab Summary)
+            # 6. Post-task sections (Viva questions, Conclusion, Lab Summary, Combined Analysis)
             post_task_sections = extract_post_task_sections_from_markdown(solution_content)
             if post_task_sections:
                 docs_service.insert_page_break(doc_id)
                 for sec_title, sec_body in post_task_sections:
                     docs_service.append_styled_block(doc_id, f"\n{sec_title}\n", style_type="HEADING_1")
-                    docs_service.append_styled_block(doc_id, f"{sec_body}\n\n", style_type="NORMAL")
+                    # Render tables cleanly if present in sec_body
+                    lines = sec_body.splitlines()
+                    curr_lines = []
+                    t_lines = []
+                    in_tbl = False
+                    for l in lines:
+                        if re.match(r'^\s*\|.*\|\s*$', l):
+                            if curr_lines:
+                                docs_service.append_styled_block(doc_id, f"{chr(10).join(curr_lines).strip()}\n\n", style_type="NORMAL")
+                                curr_lines = []
+                            in_tbl = True
+                            t_lines.append(l)
+                        else:
+                            if in_tbl and t_lines:
+                                h_row = []
+                                d_rows = []
+                                for tl in t_lines:
+                                    cells = [c.strip() for c in tl.strip().strip('|').split('|')]
+                                    if all(re.match(r'^:?-+:?$', c) for c in cells if c):
+                                        continue
+                                    if not h_row:
+                                        h_row = cells
+                                    else:
+                                        d_rows.append(cells)
+                                in_tbl = False
+                                t_lines = []
+                                if h_row:
+                                    try:
+                                        docs_service.insert_table(doc_id, headers=h_row, rows=d_rows)
+                                    except Exception:
+                                        pass
+                            curr_lines.append(l)
+                    if in_tbl and t_lines:
+                        h_row = []
+                        d_rows = []
+                        for tl in t_lines:
+                            cells = [c.strip() for c in tl.strip().strip('|').split('|')]
+                            if all(re.match(r'^:?-+:?$', c) for c in cells if c):
+                                continue
+                            if not h_row:
+                                h_row = cells
+                            else:
+                                d_rows.append(cells)
+                        if h_row:
+                            try:
+                                docs_service.insert_table(doc_id, headers=h_row, rows=d_rows)
+                            except Exception:
+                                pass
+                    if curr_lines:
+                        text_rem = "\n".join(curr_lines).strip()
+                        if text_rem:
+                            docs_service.append_styled_block(doc_id, f"{text_rem}\n\n", style_type="NORMAL")
         else:
             # Theoretical or hybrid solution with diagrams
             clean_markdown = strip_execution_metadata(report_content)

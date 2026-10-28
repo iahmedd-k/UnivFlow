@@ -300,3 +300,57 @@ def test_export_solution_to_google_doc_omits_execution_verification_and_environm
     assert not any("@air-desktop" in text for text in appended_texts)
 
 
+def test_extract_post_task_sections_does_not_duplicate_task_subsections():
+    """Verify that extract_post_task_sections_from_markdown excludes task subheadings
+    (e.g., 1. Problem Statement, 2. Source Code, 3. Terminal Output, 4. Discussion)
+    and only captures genuine post-task wrap-up sections (Combined Analysis, Conclusion).
+    """
+    from app.services.ai_solution import extract_post_task_sections_from_markdown
+
+    sample_markdown = """
+# Task 1: Basic
+## 1. Problem Statement / Question
+Task 1 problem.
+## 2. Source Code Implementation
+```java
+class A {}
+```
+
+# Task 2: Advanced Locking
+## 1. Problem Statement / Question
+Task 2 problem.
+## 2. Source Code Implementation
+```java
+class B {}
+```
+## 3. Terminal Output Verification
+```terminal
+ahmed@air-desktop:~$ java B
+Output 2
+```
+## 4. Discussion & Complexity Analysis
+Time complexity is O(1).
+
+---
+
+# Combined Analysis
+Overall system throughput improves.
+
+## Conclusion
+Deadlock avoidance guarantees completion.
+"""
+    sections = extract_post_task_sections_from_markdown(sample_markdown)
+    titles = [s[0] for s in sections]
+
+    # Verify task subheadings are NEVER extracted
+    assert not any("Problem Statement" in t for t in titles)
+    assert not any("Source Code" in t for t in titles)
+    assert not any("Terminal Output" in t for t in titles)
+    assert not any("Discussion" in t for t in titles)
+
+    # Verify genuine post-task sections ARE extracted
+    assert "Combined Analysis" in titles
+    assert "Conclusion" in titles
+
+
+
