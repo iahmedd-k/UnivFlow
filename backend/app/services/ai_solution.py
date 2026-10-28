@@ -865,8 +865,8 @@ def strip_disclaimers(text: str) -> str:
         r"(?i)2\.\s*Claude-reported output\s*\([^)]*\)",
         r"(?i)Claude-reported output\s*\([^)]*\):?",
         r"(?i)Status:\s*Not executed by Uniflow[^\n]*",
-        r"(?i)Status:\s*Executed[^\n]*@air-desktop[^\n]*",
-        r"(?i)Status:\s*Executed\s*\(Verified\)[^\n]*",
+        r"(?i)Status:\s*Executed[^\n]*",
+        r"(?i)Environment:\s*[^\n]*",
         r"(?i)&\s*Execution Verification",
         r"(?i)Engine:\s*Claude-reported content[^\n]*",
         r"(?i)Uniflow did not execute this code[^\n\.]*\.?",
@@ -883,6 +883,7 @@ def strip_disclaimers(text: str) -> str:
     cleaned = text
     for pat in patterns:
         cleaned = re.sub(pat, "", cleaned)
+    cleaned = re.sub(r"@air-desktop", "@pc", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned
 
@@ -1032,7 +1033,7 @@ def extract_post_task_sections_from_markdown(markdown: str) -> List[Tuple[str, s
         # Reject metadata / disclaimer artifacts
         if any(k in sec_title.lower() for k in [
             "verification status", "chat-note", "claude-generated", "output file",
-            "companion deliverable", "execution verification", "@air-desktop", "status:"
+            "companion deliverable", "execution verification", "@air-desktop", "@pc", "@desktop", "status:"
         ]):
             continue
 
@@ -1715,6 +1716,11 @@ def export_solution_to_google_doc(
         clean_roll = re.sub(r"[^\w\s-]", "", roll_no).strip()
         doc_title = f"{clean_name}_{clean_title}_{clean_roll}" if clean_roll else f"{clean_name}_{clean_title}"
 
+        clean_user = re.sub(r"[^a-zA-Z0-9]+", "", student_name.split()[0].lower()) if (student_name and student_name.strip().lower() != "student") else "user"
+        if not clean_user:
+            clean_user = "user"
+        term_dir = f"{clean_roll}_{clean_title.lower()}" if clean_roll else clean_title.lower()
+
         uni_name = profile.get("university") or "AIR UNIVERSITY , ISLAMABAD"
         instructor = (course.teacher_name if course and hasattr(course, "teacher_name") and isinstance(course.teacher_name, str) and course.teacher_name.strip() else "") or "Ali Arshad"
         course_sec = (course.section if course and hasattr(course, "section") and isinstance(course.section, str) and course.section.strip() else "") or "BSCS VII-A"
@@ -1815,7 +1821,7 @@ def export_solution_to_google_doc(
                         if not cmd:
                             if claude_term and claude_term.startswith("$"):
                                 cmd = claude_term.splitlines()[0].lstrip("$ ").strip()
-                            elif claude_term and "@air-desktop" in claude_term:
+                            elif claude_term and ("@" in claude_term.splitlines()[0] or "$" in claude_term.splitlines()[0]):
                                 cmd_line = claude_term.splitlines()[0]
                                 cmd = cmd_line.split("$", 1)[1].strip() if "$" in cmd_line else cmd_line
                             else:
@@ -1824,7 +1830,7 @@ def export_solution_to_google_doc(
                             cmd,
                             terminal_output,
                             title=f"Terminal Output — {source_file['name']}",
-                            prompt_prefix=f"{clean_roll or 'student'}@air-desktop:~/{clean_title.lower()}$"
+                            prompt_prefix=f"{clean_user}@pc:~/{term_dir}$"
                         )
                         for p_bytes in png_list:
                             all_screenshot_uris.append(f"data:image/png;base64,{base64.b64encode(p_bytes).decode('ascii')}")
@@ -2115,7 +2121,7 @@ def export_solution_to_google_doc(
                                         "./run",
                                         code_content,
                                         title="Terminal Output",
-                                        prompt_prefix=f"{clean_roll or 'student'}@air-desktop:~/{clean_title.lower()}$"
+                                        prompt_prefix=f"{clean_user}@pc:~/{term_dir}$"
                                     )
                                     inserted_any = False
                                     for p_idx, p_bytes in enumerate(png_list):

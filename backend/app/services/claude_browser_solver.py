@@ -1710,16 +1710,16 @@ def solve_assignment_via_claude_browser(
 
         # Compute authentic student terminal username and lab working directory
         student_raw_name = meta.get("student_name") or "Student"
-        student_user = re.sub(r"[^a-zA-Z0-9]+", "", student_raw_name.split()[0].lower()) if student_raw_name else "student"
+        student_user = re.sub(r"[^a-zA-Z0-9]+", "", student_raw_name.split()[0].lower()) if (student_raw_name and student_raw_name.strip().lower() != "student") else "user"
         if not student_user:
-            student_user = "student"
+            student_user = "user"
 
         roll_no_clean = re.sub(r"[^a-zA-Z0-9]+", "", str(meta.get("roll_no") or "").strip().lower())
         lab_dir_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", (assignment.title or "lab_tasks").strip().lower()).strip("_")
         lab_dir_slug = lab_dir_slug[:28] if lab_dir_slug else "lab_tasks"
 
-        terminal_dir = f"{roll_no_clean}_{lab_dir_slug}" if roll_no_clean else f"{student_user}_{lab_dir_slug}"
-        shell_prompt = f"{student_user}@air-desktop:~/{terminal_dir}$"
+        terminal_dir = f"{roll_no_clean}_{lab_dir_slug}" if roll_no_clean else lab_dir_slug
+        shell_prompt = f"{student_user}@pc:~/{terminal_dir}$"
 
         # 5. Classify assignment domain & build tailored academic prompt
         questions_block = ""
@@ -1757,7 +1757,7 @@ def solve_assignment_via_claude_browser(
         logger.info(f"Classified assignment {assignment_id} domain as: '{domain}'")
 
         university_name = meta.get("university") or "Air University, Islamabad"
-        student_prompt = f"{student_user}@air-desktop:~/{terminal_dir}"
+        student_prompt = f"{student_user}@pc:~/{terminal_dir}"
 
         if domain == DOMAIN_HEAVY_ML:
             job1_instructions = (
@@ -2611,6 +2611,9 @@ def solve_assignment_via_claude_browser(
                                 terminal_out = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
                             elif first_line.startswith("$"):
                                 cmd_str = first_line.lstrip("$ ").strip()
+                                terminal_out = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+                            elif "@" in first_line and "$" in first_line:
+                                cmd_str = first_line.split("$", 1)[1].strip()
                                 terminal_out = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
                             else:
                                 terminal_out = claude_term

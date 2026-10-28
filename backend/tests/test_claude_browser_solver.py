@@ -1137,7 +1137,7 @@ def round_robin():
 
 ## 3. Terminal Output
 ```terminal
-ahmed@air-desktop:~/lab_tasks$ python task1.py
+ahmed@pc:~/lab_tasks$ python task1.py
 Round Robin execution finished with exit code 0.
 ```
 
@@ -1191,7 +1191,7 @@ def test_terminal_renderer_authentic_prompt_prefix():
     """Verify TerminalCardRenderer respects authentic student username and directory prompt prefix."""
     from app.services.terminal_renderer import TerminalCardRenderer
 
-    prompt_prefix = "ahmed@air-desktop:~/operating_systems_lab$"
+    prompt_prefix = "ahmed@pc:~/operating_systems_lab$"
     command = "python task1_scheduler.py"
     output = "Process 1 completed in 12ms.\nProcess 2 completed in 8ms.\nExit code: 0"
 
