@@ -865,6 +865,9 @@ def strip_disclaimers(text: str) -> str:
         r"(?i)2\.\s*Claude-reported output\s*\([^)]*\)",
         r"(?i)Claude-reported output\s*\([^)]*\):?",
         r"(?i)Status:\s*Not executed by Uniflow[^\n]*",
+        r"(?i)Status:\s*Executed[^\n]*@air-desktop[^\n]*",
+        r"(?i)Status:\s*Executed\s*\(Verified\)[^\n]*",
+        r"(?i)&\s*Execution Verification",
         r"(?i)Engine:\s*Claude-reported content[^\n]*",
         r"(?i)Uniflow did not execute this code[^\n\.]*\.?",
         r"(?i)Any example output from Claude is unverified[^\n\.]*\.?",
@@ -1021,8 +1024,7 @@ def format_code_report(markdown: str, deliverables: Dict[str, Any], execution_re
             f"{question_text}\n\n"
             f"2. Source Code Implementation ({source_file['name']}):\n"
             f"{source_file['content'].rstrip()}\n\n"
-            f"3. Execution Verification & Terminal Output:\n"
-            f"Status: {run_summary} (Exit Code: {exit_code if exit_code is not None else '0'})\n"
+            f"3. Terminal Output:\n"
             f"Command: {result.get('command') or 'gcc/python runtime'}\n\n"
             f"Console Output:\n{terminal_output}"
         )
@@ -1745,16 +1747,11 @@ def export_solution_to_google_doc(
                     style_type="NORMAL"
                 )
 
-                # 3. Execution / Visual Diagram Output (Heading 2 + Status Badge + Image + Output)
+                # 3. Program Output / Visual Diagram Output (Heading 2 + Image + Output)
                 docs_service.append_styled_block(
                     doc_id,
-                    "2. Program Output & Execution Verification\n" if not is_diagram else "2. Architecture Diagram Deliverable\n",
+                    "2. Program Output\n" if not is_diagram else "2. Architecture Diagram Deliverable\n",
                     style_type="HEADING_2"
-                )
-                docs_service.append_styled_block(
-                    doc_id,
-                    f"Status: Executed (Verified) | Exit Code: {exit_code} | Environment: {student_name or 'student'}@air-desktop\n\n",
-                    style_type="BOLD_LABEL"
                 )
 
                 # Embed all screenshot image parts (with on-the-fly rendering fallback if needed)
@@ -2014,7 +2011,7 @@ def export_solution_to_google_doc(
                                     png_list = TerminalCardRenderer.generate_terminal_pngs(
                                         "./run",
                                         code_content,
-                                        title="Terminal Output — Execution Verification",
+                                        title="Terminal Output",
                                         prompt_prefix=f"{clean_roll or 'student'}@air-desktop:~/{clean_title.lower()}$"
                                     )
                                     inserted_any = False

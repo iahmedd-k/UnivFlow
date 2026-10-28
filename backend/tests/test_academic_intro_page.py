@@ -225,3 +225,78 @@ Final thoughts.
         assert "|---|" not in text_arg
         assert text_arg.strip() != "---"
 
+
+def test_export_solution_to_google_doc_omits_execution_verification_and_environment_metadata():
+    """Verify Google Doc export permanently omits 'Status: Executed (Verified)...' and '& Execution Verification'."""
+    from app.services.ai_solution import strip_disclaimers
+
+    # 1. Test strip_disclaimers removes them from markdown
+    legacy_text = (
+        "## 2. Program Output & Execution Verification\n"
+        "Status: Executed (Verified) | Exit Code: 0 | Environment: Ahmed Khan@air-desktop\n"
+        "Output content here"
+    )
+    cleaned = strip_disclaimers(legacy_text)
+    assert "& Execution Verification" not in cleaned
+    assert "Status: Executed" not in cleaned
+    assert "@air-desktop" not in cleaned
+
+    # 2. Test export_solution_to_google_doc does not insert them into Google Doc blocks
+    mock_db = MagicMock()
+    mock_assignment = Assignment(id=5, title="Lab 04: Threads", course_id=101)
+    mock_course = Course(id=101, name="Operating Systems")
+
+    def query_side_effect(model):
+        q = MagicMock()
+        if model == Course:
+            q.filter.return_value.first.return_value = mock_course
+        elif model == Assignment:
+            q.filter.return_value.first.return_value = mock_assignment
+        else:
+            q.filter.return_value.first.return_value = None
+            q.filter.return_value.all.return_value = []
+        return q
+
+    mock_db.query.side_effect = query_side_effect
+
+    mock_docs_service = MagicMock()
+    mock_docs_service.create_document.return_value = {"documentId": "doc_no_exec_verif"}
+    mock_docs_service.create_academic_intro_page.return_value = True
+    mock_docs_service.append_styled_block.return_value = True
+
+    execution_results = [{
+        "task": 1,
+        "name": "thread_test.c",
+        "exit_code": 0,
+        "stdout": "Thread 1 completed",
+        "stderr": "",
+        "screenshot_data_uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    }]
+
+    solution_markdown = (
+        "### Task 1: Thread Test\n"
+        "Question: Implement pthread join.\n\n"
+        "```c\n"
+        "#include <stdio.h>\n"
+        "int main() { return 0; }\n"
+        "```\n"
+    )
+
+    with patch("app.services.ai_solution.get_google_docs_service", return_value=mock_docs_service):
+        res = export_solution_to_google_doc(
+            mock_db,
+            assignment=mock_assignment,
+            solution_content=solution_markdown,
+            execution_results=execution_results
+        )
+
+    assert res is not None
+    appended_texts = [call.args[1] for call in mock_docs_service.append_styled_block.call_args_list]
+
+    # Verify heading is '2. Program Output' and not '2. Program Output & Execution Verification'
+    assert any("2. Program Output\n" in text for text in appended_texts)
+    assert not any("Execution Verification" in text for text in appended_texts)
+    assert not any("Status: Executed (Verified)" in text for text in appended_texts)
+    assert not any("@air-desktop" in text for text in appended_texts)
+
+
