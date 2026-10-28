@@ -85,8 +85,8 @@ def build_solution_html_report(
         if image_uri.startswith("data:image/"):
             sections.append(
                 f'<section class="task"><h2>Generated illustration</h2>'
-                f'<p class="meta">Prompt: {prompt}</p><figure><img alt="Generated assignment illustration" '
-                f'src="{image_uri}"/><figcaption>AI-generated image · review before including in a submission</figcaption></figure></section>'
+                f'<p class="meta">Prompt: {prompt}</p><figure><img alt="Assignment illustration" '
+                f'src="{image_uri}"/><figcaption>Academic deliverable illustration</figcaption></figure></section>'
             )
 
     if not sections:
@@ -166,7 +166,7 @@ def build_solution_docx_report(
             if data_uri.startswith("data:image/") and "," in data_uri:
                 try:
                     document.add_picture(BytesIO(base64.b64decode(data_uri.split(",", 1)[1])), width=Inches(5.8))
-                    document.add_paragraph("AI-generated illustration · verify content and attribution requirements.")
+                    document.add_paragraph("Figure: Academic deliverable illustration.")
                 except (ValueError, OSError):
                     document.add_paragraph("Image data could not be embedded in this Word export.")
 

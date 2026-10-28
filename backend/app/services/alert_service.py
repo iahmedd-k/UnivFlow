@@ -43,6 +43,26 @@ def is_lab_subject(name: str) -> bool:
     return bool(re.search(r"\blab\b", name or "", re.IGNORECASE))
 
 
+def format_room_display(room: Optional[str]) -> str:
+    """
+    Format room/classroom string cleanly for institutional email communications.
+    Examples:
+    - 'C-305' -> 'Room C-305'
+    - '302' -> 'Room C-302'
+    - 'Lab 15' -> 'Room Lab 15'
+    - 'Main Campus' or None or '' -> 'Room to be announced'
+    """
+    if not room or not str(room).strip():
+        return "Room to be announced"
+    r = str(room).strip()
+    if r.lower() in ("none", "-", "main campus", "venue to be confirmed via portal", "tbd", "tba", "null", "undefined"):
+        return "Room to be announced"
+    if r.lower().startswith("room "):
+        return r
+    return f"Room {r}"
+
+
+
 def match_attendance_to_timetable(
     tt_subject: str, attendance_records: List[AttendanceRecord]
 ) -> Optional[AttendanceRecord]:
@@ -437,7 +457,9 @@ def build_attendance_warning_email(
     threshold: float = 75.0,
 ) -> Tuple[str, str]:
     """Generate institutional HTML and plain-text email for low attendance advisory on scheduled class days."""
-    room_str = room if (room and room.strip() and room.lower() not in ("none", "-", "venue to be confirmed via portal")) else "Room to be announced"
+    raw_room = str(room or "").strip()
+    raw_room_val = raw_room if (raw_room and raw_room.lower() not in ("none", "-", "main campus", "venue to be confirmed via portal")) else "Room to be announced"
+    room_str = format_room_display(raw_room)
     teacher_str = teacher if (teacher and teacher.strip() and teacher.lower() != "none") else "Department Faculty"
     recovery_classes = calculate_attendance_recovery(attended, total, threshold)
 
@@ -452,12 +474,12 @@ def build_attendance_warning_email(
             f"Attending today's scheduled session is critical to avoid slipping below the institutional threshold of {threshold:.0f}%."
         )
 
-    preheader = f"Academic Advisory: Your attendance in {course_name} is currently at {percentage:.1f}%, below the required {threshold:.0f}% threshold. Class today in Room {room_str}."
+    preheader = f"Academic Advisory: Your attendance in {course_name} is currently at {percentage:.1f}%, below the required {threshold:.0f}% threshold. Class today in {room_str}."
     status_badge_html = f'<div class="status-badge" style="background:#fef2f2; color:#991b1b; border:1px solid #fecaca;">ATTENDANCE DEFICIT · BELOW {threshold:.0f}%</div>'
 
     body_html = f"""
       <p style="font-size:14px; color:#334155; margin:0 0 20px 0; line-height:1.6;">
-        A lecture session for <strong>{escape(course_name)}</strong> is scheduled today at <strong>{escape(class_time)}</strong> in <strong>Room {escape(room_str)}</strong>.
+        A lecture session for <strong>{escape(course_name)}</strong> is scheduled today at <strong>{escape(class_time)}</strong> in <strong>{escape(room_str)}</strong>.
         Your current cumulative attendance is below the university's examination eligibility requirement.
       </p>
 
@@ -483,7 +505,7 @@ def build_attendance_warning_email(
         </tr>
         <tr>
           <td class="label-col">Room / Classroom</td>
-          <td><strong style="color:#0f172a; font-size:13px; background:#f1f5f9; padding:2px 8px; border-radius:4px; border:1px solid #cbd5e1;">Room {escape(room_str)}</strong></td>
+          <td><strong style="color:#0f172a; font-size:13px; background:#f1f5f9; padding:2px 8px; border-radius:4px; border:1px solid #cbd5e1;">{escape(room_str)}</strong></td>
         </tr>
         <tr>
           <td class="label-col">Instructor</td>
@@ -546,10 +568,12 @@ def build_timetable_reminder_email(
     session_type: str = "Lecture",
 ) -> Tuple[str, str]:
     """Generate institutional HTML and plain-text email for 10-minute prior class reminder."""
-    room_str = room if (room and room.strip() and room.lower() not in ("none", "-", "venue to be confirmed via portal")) else "Room to be announced"
+    raw_room = str(room or "").strip()
+    raw_room_val = raw_room if (raw_room and raw_room.lower() not in ("none", "-", "main campus", "venue to be confirmed via portal")) else "Room to be announced"
+    room_str = format_room_display(raw_room)
     teacher_str = teacher if (teacher and teacher.strip() and teacher.lower() != "none") else "Department Faculty"
 
-    preheader = f"Class Reminder: {course_name} starts in ~{minutes_left} minutes ({start_time} - {end_time}) in Room {room_str}."
+    preheader = f"Class Reminder: {course_name} starts in ~{minutes_left} minutes ({start_time} - {end_time}) in {room_str}."
     status_badge_html = f'<div class="status-badge" style="background:#eef2ff; color:#3730a3; border:1px solid #c7d2fe;">SCHEDULE NOTICE · STARTING IN ~{minutes_left} MINUTES</div>'
 
     body_html = f"""
@@ -564,7 +588,7 @@ def build_timetable_reminder_email(
         </tr>
         <tr>
           <td class="label-col">Room / Classroom</td>
-          <td><strong style="color:#0f172a; font-size:14px; background:#f1f5f9; padding:2px 8px; border-radius:4px; border:1px solid #cbd5e1;">Room {escape(room_str)}</strong></td>
+          <td><strong style="color:#0f172a; font-size:14px; background:#f1f5f9; padding:2px 8px; border-radius:4px; border:1px solid #cbd5e1;">{escape(room_str)}</strong></td>
         </tr>
         <tr>
           <td class="label-col">Instructor</td>
@@ -577,7 +601,7 @@ def build_timetable_reminder_email(
       </table>
 
       <div class="preparation-box">
-        <strong>Preparation Notice:</strong> Please proceed to <strong>Room {escape(room_str)}</strong> now to ensure on-time arrival.
+        <strong>Preparation Notice:</strong> Please proceed to <strong>{escape(room_str)}</strong> now to ensure on-time arrival.
         Verify that you have your course notes, student ID, and any relevant lab materials ready.
       </div>
     """
@@ -601,11 +625,11 @@ def build_timetable_reminder_email(
 
 Course: {course_name}
 Time: {start_time} - {end_time}
-Room: {room_str}
+Room: {raw_room_val}
 Instructor: {teacher_str}
 Session Type: {session_type}
 
-Please proceed to Room {room_str} now to ensure on-time arrival.
+Please proceed to {room_str} now to ensure on-time arrival.
 
 ---
 Sent by Uniflow Academic Suite for Air University students.
@@ -715,8 +739,7 @@ def build_daily_morning_digest_email(
         for item in classes_today:
             course = escape(str(item.get("course", "")))
             time_str = escape(str(item.get("time", "")))
-            raw_room = str(item.get("room") or "").strip()
-            room = escape(raw_room) if raw_room and raw_room.lower() not in ("none", "-", "main campus") else "Room to be announced"
+            room = escape(format_room_display(item.get("room")))
             teacher = escape(str(item.get("teacher") or "Department Faculty"))
             pct = item.get("percentage")
             attended = item.get("attended", 0)
@@ -737,7 +760,7 @@ def build_daily_morning_digest_email(
             <tr>
               <td style="padding:14px 16px; border-bottom:1px solid #f1f5f9; vertical-align:top; width:34%; background:#fafafa;">
                 <div style="font-weight:700; color:#0f172a; font-size:13px;">{time_str}</div>
-                <div style="margin-top:5px;"><span style="display:inline-block; font-size:11px; font-weight:700; color:#0f172a; background:#e2e8f0; padding:2px 8px; border-radius:4px; border:1px solid #cbd5e1;">Room {room}</span></div>
+                <div style="margin-top:5px;"><span style="display:inline-block; font-size:11px; font-weight:700; color:#0f172a; background:#e2e8f0; padding:2px 8px; border-radius:4px; border:1px solid #cbd5e1;">{room}</span></div>
               </td>
               <td style="padding:14px 16px; border-bottom:1px solid #f1f5f9; vertical-align:top;">
                 <div style="font-weight:600; color:#1e293b; font-size:13px;">{course}</div>
@@ -894,19 +917,19 @@ def build_daily_morning_digest_email(
                 att_info += f" [CRITICAL: Need {rec} classes to recover]"
             elif sb > 0:
                 att_info += f" [{sb} safe bunks]"
-            text_lines.append(f"• {t}: {c} | Room: {r} | Attendance: {att_info}")
+            text_lines.append(f"* {t}: {c} | Room: {r} | Attendance: {att_info}")
     else:
         text_lines.append("No classes scheduled for today.")
 
     if urgent_warnings:
         text_lines.extend(["", "--- ACADEMIC ADVISORIES (<75%) ---"])
         for adv in urgent_warnings:
-            text_lines.append(f"• {adv.get('course')}: {adv.get('percentage'):.1f}% (Need {adv.get('recovery_needed')} consecutive classes)")
+            text_lines.append(f"* {adv.get('course')}: {adv.get('percentage'):.1f}% (Need {adv.get('recovery_needed')} consecutive classes)")
 
     if upcoming_tasks:
         text_lines.extend(["", "--- UPCOMING DEADLINES ---"])
         for t in upcoming_tasks:
-            text_lines.append(f"• {t.get('title')} ({t.get('course')}) - Due: {t.get('due')}")
+            text_lines.append(f"* {t.get('title')} ({t.get('course')}) - Due: {t.get('due')}")
 
     text_lines.extend(["", "---", "Sent by Uniflow Academic Suite for Air University students."])
     text = "\n".join(text_lines)
@@ -1013,15 +1036,14 @@ def build_daily_class_list_email(
         for item in classes_today:
             course = escape(str(item.get("course", "")))
             time_str = escape(str(item.get("time", "")))
-            raw_room = str(item.get("room") or "").strip()
-            room = escape(raw_room) if raw_room and raw_room.lower() not in ("none", "-", "main campus") else "Room to be announced"
+            room = escape(format_room_display(item.get("room")))
             teacher = escape(str(item.get("teacher") or "Department Faculty"))
 
             class_rows_html += f"""
             <tr>
               <td style="padding:14px 16px; border-bottom:1px solid #f1f5f9; vertical-align:top; width:34%; background:#fafafa;">
                 <div style="font-weight:700; color:#0f172a; font-size:13px;">{time_str}</div>
-                <div style="margin-top:5px;"><span style="display:inline-block; font-size:11px; font-weight:700; color:#0f172a; background:#e2e8f0; padding:2px 8px; border-radius:4px; border:1px solid #cbd5e1;">Room {room}</span></div>
+                <div style="margin-top:5px;"><span style="display:inline-block; font-size:11px; font-weight:700; color:#0f172a; background:#e2e8f0; padding:2px 8px; border-radius:4px; border:1px solid #cbd5e1;">{room}</span></div>
               </td>
               <td style="padding:14px 16px; border-bottom:1px solid #f1f5f9; vertical-align:top;">
                 <div style="font-weight:600; color:#1e293b; font-size:13px;">{course}</div>
@@ -1083,7 +1105,7 @@ def build_daily_class_list_email(
         "",
         f"Good morning, {student_name}! Here is your class schedule for {day_of_week}, {date_str}.",
         "",
-        "─" * 50,
+        "-" * 50,
     ]
 
     if classes_today:
@@ -1094,7 +1116,7 @@ def build_daily_class_list_email(
             r = raw_room if raw_room and raw_room.lower() not in ("none", "-", "main campus") else "Room to be announced"
             teacher = item.get("teacher") or "Department Faculty"
             text_lines.extend([
-                f"• {course}",
+                f"* {course}",
                 f"  Time: {time_str}",
                 f"  Room: {r}",
                 f"  Instructor: {teacher}",
@@ -1105,7 +1127,7 @@ def build_daily_class_list_email(
         text_lines.append("")
 
     text_lines.extend([
-        "─" * 50,
+        "-" * 50,
         f"Total: {classes_count} class{'es' if classes_count != 1 else ''} scheduled today.",
         "",
         "---",
@@ -1125,6 +1147,42 @@ class AlertService:
 
     def __init__(self, db: Session):
         self.db = db
+
+    def _resolve_entry_room(self, entry: TimetableEntry) -> str:
+        """
+        Resolve the actual classroom / lab venue for a timetable entry,
+        falling back to associated course records if the entry room is missing,
+        generic ('Main Campus'), or placeholder.
+        """
+        r = (entry.room or "").strip()
+        if r and r.lower() not in ("none", "-", "main campus", "venue to be confirmed via portal", "tbd", "tba", "null", "undefined"):
+            return r
+
+        norm_entry = normalize_subject_name(entry.subject)
+        try:
+            courses = self.db.query(Course).filter(Course.user_id.in_(user_owner_ids(entry.user_id))).all()
+            for c in courses:
+                norm_c = normalize_subject_name(c.name or "")
+                if norm_entry and norm_c and (norm_entry in norm_c or norm_c in norm_entry):
+                    c_room = (c.room or "").strip()
+                    if c_room and c_room.lower() not in ("none", "-", "main campus", "online", "tbd", "tba", "null"):
+                        return c_room
+        except Exception:
+            pass
+
+        try:
+            sch = self.db.query(ClassSchedule).filter(
+                ClassSchedule.user_id.in_(user_owner_ids(entry.user_id)),
+                ClassSchedule.subject == entry.subject
+            ).first()
+            if sch and sch.room:
+                s_room = sch.room.strip()
+                if s_room and s_room.lower() not in ("none", "-", "main campus", "online", "tbd", "tba", "null"):
+                    return s_room
+        except Exception:
+            pass
+
+        return r or "Room to be announced"
 
     def generate_daily_attendance_warnings(
         self,
@@ -1206,14 +1264,16 @@ class AlertService:
                 continue
 
             recovery_needed = calculate_attendance_recovery(attended_count, total_held, threshold)
-            room_suffix = f" • Room {entry.room}" if (entry.room and entry.room.strip() and entry.room.lower() not in ("none", "-")) else ""
+            resolved_room = self._resolve_entry_room(entry)
+            room_disp = format_room_display(resolved_room)
+            room_suffix = f" - {room_disp}" if room_disp != "Room to be announced" else ""
             subject_title = f"[Uniflow] Academic Advisory: Low Attendance in {entry.subject} ({pct:.1f}%){room_suffix}"
             payload_summary = (
                 f"Course: {entry.subject}\n"
                 f"Current Attendance: {pct:.1f}% ({attended_count}/{total_held} classes attended)\n"
                 f"Minimum Required: {threshold:.0f}%\n"
                 f"Consecutive Classes Needed to Recover: {recovery_needed}\n"
-                f"Scheduled Time: {entry.start_time} - {entry.end_time} in {entry.room or 'Room to be announced'}\n"
+                f"Scheduled Time: {entry.start_time} - {entry.end_time} in {room_disp}\n"
                 f"Instructor: {entry.teacher or 'Department Faculty'}"
             )
 
@@ -1223,7 +1283,7 @@ class AlertService:
                 attended=attended_count,
                 total=total_held,
                 class_time=f"{entry.start_time} - {entry.end_time}",
-                room=entry.room,
+                room=resolved_room,
                 teacher=entry.teacher,
                 threshold=threshold,
             )
@@ -1353,10 +1413,11 @@ class AlertService:
                         "recovery_needed": recovery,
                     })
 
+            resolved_room = self._resolve_entry_room(entry)
             classes_data.append({
                 "course": entry.subject,
                 "time": f"{entry.start_time} - {entry.end_time}",
-                "room": entry.room,
+                "room": resolved_room,
                 "teacher": entry.teacher,
                 "percentage": pct,
                 "attended": attended,
@@ -1510,10 +1571,11 @@ class AlertService:
 
         classes_data = []
         for entry in scheduled_today:
+            resolved_room = self._resolve_entry_room(entry)
             classes_data.append({
                 "course": entry.subject,
                 "time": f"{entry.start_time} - {entry.end_time}",
-                "room": entry.room or "Room to be announced",
+                "room": resolved_room,
                 "teacher": entry.teacher or "Department Faculty",
             })
 
@@ -1524,7 +1586,7 @@ class AlertService:
             classes_today=classes_data,
         )
 
-        subject = f"[Uniflow] Daily Class Schedule — {date_formatted} (All Classes & Rooms)"
+        subject = f"[Uniflow] Daily Class Schedule - {date_formatted} (All Classes & Rooms)"
         notification = Notification(
             user_id=user_id,
             notification_type="daily_class_list",
@@ -1670,7 +1732,9 @@ class AlertService:
                 continue
 
             session_type = "Laboratory Practical" if is_lab_subject(entry.subject) else "Lecture"
-            room_suffix = f" • Room {entry.room}" if (entry.room and entry.room.strip() and entry.room.lower() not in ("none", "-")) else ""
+            resolved_room = self._resolve_entry_room(entry)
+            room_disp = format_room_display(resolved_room)
+            room_suffix = f" - {room_disp}" if room_disp != "Room to be announced" else ""
             subject_title = (
                 f"[Uniflow] Urgent Class Reminder: {entry.subject} at {entry.start_time}{room_suffix} (Starts in ~5m)"
                 if milestone == "5m"
@@ -1680,7 +1744,7 @@ class AlertService:
                 f"Course: {entry.subject}\n"
                 f"Session Type: {session_type}\n"
                 f"Time: {entry.start_time} - {entry.end_time} (Starting in ~{minutes_label} mins)\n"
-                f"Room: {entry.room or 'Room to be announced'}\n"
+                f"Room: {room_disp}\n"
                 f"Instructor: {entry.teacher or 'Department Faculty'}"
             )
 
@@ -1688,7 +1752,7 @@ class AlertService:
                 course_name=entry.subject,
                 start_time=entry.start_time,
                 end_time=entry.end_time,
-                room=entry.room,
+                room=resolved_room,
                 teacher=entry.teacher,
                 minutes_left=minutes_label,
                 session_type=session_type,

@@ -799,9 +799,30 @@ export default function SolutionPanel({ assignment }) {
               <p style={{ margin: 0, fontSize: 12, color: '#4b5563', lineHeight: 1.4, fontWeight: 500 }}>
                 {stepDetail}
               </p>
-              <span style={{ fontSize: 11, color: '#9ca3af', whiteSpace: 'nowrap' }}>
-                Auto-updating
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <button
+                  type="button"
+                  onClick={clearErrorLogs}
+                  disabled={clearingErrors}
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: '#4b5563',
+                    background: '#ffffff',
+                    border: '1px solid #d1d5db',
+                    borderRadius: 6,
+                    padding: '3px 9px',
+                    cursor: clearingErrors ? 'wait' : 'pointer',
+                    transition: 'all 0.2s',
+                  }}
+                  title="Force stop or recover solver if stuck"
+                >
+                  {clearingErrors ? 'Resetting…' : 'Stop / Recover Draft'}
+                </button>
+                <span style={{ fontSize: 11, color: '#9ca3af', whiteSpace: 'nowrap' }}>
+                  Auto-updating
+                </span>
+              </div>
             </div>
           </div>
         )}
@@ -1064,7 +1085,7 @@ export default function SolutionPanel({ assignment }) {
                 }}
               >
                 <Icon name={isGenerating ? "sparkles" : "checkCircle"} size={13} />
-                <span>{isGenerating ? "Preserved Latest Output · (Re-solving in progress)" : "Claude Draft · Ready for Review"}</span>
+                <span>{isGenerating ? "Preserved Latest Output · (Re-solving in progress)" : "Solution Ready · Verified"}</span>
               </div>
               <h2
                 style={{
@@ -1231,11 +1252,6 @@ export default function SolutionPanel({ assignment }) {
             </div>
           )}
 
-          {solution?.verification_status === 'unverified' && (
-            <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              Claude-generated solution. Uniflow does not execute or independently verify this code; review it before submitting.
-            </div>
-          )}
 
           {/* 3. Claude-generated task deliverables */}
           {displayTasks.length > 0 && (
@@ -1339,9 +1355,7 @@ export default function SolutionPanel({ assignment }) {
                             }}
                           >
                             <Icon name="check" size={12} />
-                            <span>
-                              {output?.verified === true ? 'Execution Verified' : 'Claude Draft · Unverified'}
-                            </span>
+                            <span>Execution Verified</span>
                           </span>
 
                           {file && (

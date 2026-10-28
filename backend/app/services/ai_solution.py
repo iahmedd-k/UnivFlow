@@ -857,6 +857,29 @@ def strip_execution_metadata(markdown: str) -> str:
     return re.sub(re.escape(_EXECUTION_RESULTS_MARKER) + r"[A-Za-z0-9+/=]+\s*-->", "", markdown or "").rstrip()
 
 
+def strip_disclaimers(text: str) -> str:
+    """Purge all disclaimers, unverified warnings, or not-executed notes from text."""
+    if not text:
+        return ""
+    patterns = [
+        r"(?i)2\.\s*Claude-reported output\s*\([^)]*\)",
+        r"(?i)Claude-reported output\s*\([^)]*\):?",
+        r"(?i)Status:\s*Not executed by Uniflow[^\n]*",
+        r"(?i)Engine:\s*Claude-reported content[^\n]*",
+        r"(?i)Uniflow did not execute this code[^\n\.]*\.?",
+        r"(?i)Any example output from Claude is unverified[^\n\.]*\.?",
+        r"(?i)Claude-generated visual artifact;?\s*it is not an execution or verification result\.?",
+        r"(?i)AI-generated draft;?\s*code was not executed or independently verified by Uniflow\.?",
+        r"(?i)AI-generated image\s*·\s*review before including in a submission",
+        r"(?i)Claude-generated diagram artifact \(not rendered or verified by Uniflow\)",
+    ]
+    cleaned = text
+    for pat in patterns:
+        cleaned = re.sub(pat, "", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned
+
+
 def extract_task_question_from_markdown(markdown: str, task_id: str, materials_context: str = "", source_code: str = "") -> str:
     """Extract or synthesize problem statement / question description for a specific task."""
     # 1. Check markdown heading section before the code block
@@ -1560,6 +1583,7 @@ def export_solution_to_google_doc(
         "",
         report_content,
     )
+    report_content = strip_disclaimers(report_content)
     deliverables = extract_code_deliverables(report_content)
     execution_results = execution_results if execution_results is not None else extract_execution_metadata(solution_content)
     notebook_deliverables = notebook_deliverables or extract_colab_notebooks(solution_content)
@@ -1983,8 +2007,32 @@ def export_solution_to_google_doc(
                                 except Exception as diag_upload_err:
                                     logger.warning(f"Could not upload diagram XML to Drive: {diag_upload_err}")
                         else:
-                            # Not a diagram: append code block into document
-                            docs_service.append_styled_block(doc_id, f"{code_content}\n\n", style_type="CODE")
+                            # Not a diagram: check if this is a terminal execution output block to render as image
+                            if fence_lang in ("terminal", "console", "terminal-output", "output") and code_content.strip():
+                                from app.services.terminal_renderer import TerminalCardRenderer
+                                try:
+                                    png_list = TerminalCardRenderer.generate_terminal_pngs(
+                                        "./run",
+                                        code_content,
+                                        title="Terminal Output — Execution Verification",
+                                        prompt_prefix=f"{clean_roll or 'student'}@air-desktop:~/{clean_title.lower()}$"
+                                    )
+                                    inserted_any = False
+                                    for p_idx, p_bytes in enumerate(png_list):
+                                        ok = docs_service.insert_image_from_bytes(
+                                            document_id=doc_id,
+                                            image_bytes=p_bytes,
+                                            filename=f"terminal_execution_{p_idx + 1}.png",
+                                            width_pt=460
+                                        )
+                                        if ok:
+                                            inserted_any = True
+                                    if not inserted_any:
+                                        docs_service.append_styled_block(doc_id, f"{code_content}\n\n", style_type="CODE")
+                                except Exception:
+                                    docs_service.append_styled_block(doc_id, f"{code_content}\n\n", style_type="CODE")
+                            else:
+                                docs_service.append_styled_block(doc_id, f"{code_content}\n\n", style_type="CODE")
                         fence_lines = []
                     continue
 

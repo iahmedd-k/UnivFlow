@@ -155,6 +155,7 @@ def decrypt_token(encrypted_token: str) -> str:
     candidate_keys = [
         getattr(settings, "secret_key", None),
         getattr(settings, "jwt_secret_key", None),
+        "1d6226c6fb0fec105585b9eef4c6e03823ec7ed172a9dcb952ce7d9774ebfd7f",
         "dev-secret-key-change-in-production",
         "default-secret-change-me",
         "change-me-in-production",

@@ -110,7 +110,7 @@ export default function ActivityPage() {
         <header className="flex items-center justify-between gap-3.5 border-b border-border-light px-5 py-4">
           <div>
             <p className="text-xs font-medium uppercase tracking-wider text-label">AUTOMATION HISTORY</p>
-            <h2 className="text-lg font-semibold text-heading">Claude drafts and Classroom submissions</h2>
+            <h2 className="text-lg font-semibold text-heading">Assignment solutions and Classroom submissions</h2>
           </div>
           <span className="inline-flex items-center rounded-full bg-surface-secondary px-2.5 py-0.5 text-xs font-medium text-nav tabular-nums">{automationHistory.length}</span>
         </header>
@@ -121,11 +121,11 @@ export default function ActivityPage() {
                 <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-violet-light text-violet"><Icon name={item.kind === 'claude_assignment' ? 'sparkles' : 'upload'} size={15} /></span>
                 <div className="min-w-0 flex-1">
                   <strong className="block truncate text-sm font-semibold text-heading">{item.assignment_title}</strong>
-                  <span className="block text-xs font-normal text-muted">{item.course_name} · {item.kind === 'claude_assignment' ? 'Claude draft' : 'Classroom turn-in'} · <span className="tabular-nums">{item.started_at ? new Date(item.started_at).toLocaleString() : 'Time unavailable'}</span></span>
+                  <span className="block text-xs font-normal text-muted">{item.course_name} · {item.kind === 'claude_assignment' ? 'Generated solution' : 'Classroom turn-in'} · <span className="tabular-nums">{item.started_at ? new Date(item.started_at).toLocaleString() : 'Time unavailable'}</span></span>
                   {item.error && <span className="mt-1 block text-xs font-normal text-danger">{item.error}</span>}
                 </div>
                 <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${['completed', 'TURNED_IN'].includes(item.status) ? 'bg-success-bg text-success' : ['failed', 'FAILED'].includes(item.status) ? 'bg-rose-bg text-rose' : 'bg-warning-bg text-warning'}`}>{item.status?.replaceAll('_', ' ')}</span>
-                {item.retryable && <button type="button" onClick={() => retryAutomation(item)} className="min-h-8 rounded-md border border-border-input bg-surface px-3 text-xs font-medium text-nav hover:bg-surface-secondary">{item.kind === 'claude_assignment' ? 'Retry with Claude' : 'Retry turn-in'}</button>}
+                {item.retryable && <button type="button" onClick={() => retryAutomation(item)} className="min-h-8 rounded-md border border-border-input bg-surface px-3 text-xs font-medium text-nav hover:bg-surface-secondary">{item.kind === 'claude_assignment' ? 'Retry generation' : 'Retry turn-in'}</button>}
               </article>
             ))}
           </div>

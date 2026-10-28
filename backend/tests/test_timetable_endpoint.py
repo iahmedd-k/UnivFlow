@@ -17,15 +17,15 @@ CLASSES_DATA = [
     {"weekday": 0, "subject": "Software Design & Architecture Lab", "start_time": "18:00", "end_time": "21:00", "room": "Lab 5"},
     
     # Tuesday (1)
-    {"weekday": 1, "subject": "Computer Organization and Assembly Language", "start_time": "12:00", "end_time": "12:50", "room": "Main Campus"},
+    {"weekday": 1, "subject": "Computer Organization and Assembly Language", "start_time": "12:00", "end_time": "12:50", "room": "C-302"},
     {"weekday": 1, "subject": "Professional Practices (CS470)", "start_time": "14:00", "end_time": "15:00", "room": "C-305"},
     {"weekday": 1, "subject": "Software Design & Architecture", "start_time": "15:00", "end_time": "16:00", "room": "C-201"},
     {"weekday": 1, "subject": "Parallel and Distributed Computing Lab (CS426L)", "start_time": "17:00", "end_time": "20:00", "room": "Lab 15"},
     {"weekday": 1, "subject": "Principles of Marketing (MK101)", "start_time": "20:00", "end_time": "21:00", "room": "C-305"},
     
     # Wednesday (2)
-    {"weekday": 2, "subject": "Computer Organization and Assembly Language", "start_time": "13:00", "end_time": "13:50", "room": "Main Campus"},
-    {"weekday": 2, "subject": "Computer Organization and Assembly Language Lab", "start_time": "14:00", "end_time": "16:40", "room": "Main Campus"},
+    {"weekday": 2, "subject": "Computer Organization and Assembly Language", "start_time": "13:00", "end_time": "13:50", "room": "C-302"},
+    {"weekday": 2, "subject": "Computer Organization and Assembly Language Lab", "start_time": "14:00", "end_time": "16:40", "room": "Lab 13"},
     {"weekday": 2, "subject": "Parallel and Distributed Computing (CS426)", "start_time": "16:00", "end_time": "17:00", "room": "C-301"},
     {"weekday": 2, "subject": "Principles of Marketing (MK101)", "start_time": "17:00", "end_time": "18:00", "room": "C-204"},
     {"weekday": 2, "subject": "Entrepreneurship (BA353)", "start_time": "19:00", "end_time": "20:00", "room": "C-302"},
@@ -100,7 +100,7 @@ def test_timetable_endpoints():
         # Check that rooms are populated correctly
         rooms = {c.get("room") for c in classes}
         print(f"Distinct rooms returned: {rooms}")
-        expected_rooms = {"C-305", "C-204", "Lab 5", "C-201", "Lab 15", "C-301", "C-302", "C-205", "Lab 6", "C-203", "Main Campus"}
+        expected_rooms = {"C-305", "C-204", "Lab 5", "C-201", "Lab 15", "C-301", "C-302", "C-205", "Lab 6", "C-203", "Lab 13"}
         for r in expected_rooms:
             assert r in rooms, f"Expected room {r} to be in {rooms}"
 

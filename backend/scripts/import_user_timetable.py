@@ -15,15 +15,15 @@ CLASSES_DATA = [
     {"weekday": 0, "subject": "Software Design & Architecture Lab", "start_time": "18:00", "end_time": "21:00", "room": "Lab 5", "teacher": "Mr. Shakir Hussain"},
     
     # Tuesday (1)
-    {"weekday": 1, "subject": "Computer Organization and Assembly Language", "start_time": "12:00", "end_time": "12:50", "room": "Main Campus", "teacher": "Mr. Ali Arshad"},
+    {"weekday": 1, "subject": "Computer Organization and Assembly Language", "start_time": "12:00", "end_time": "12:50", "room": "C-302", "teacher": "Mr. Ali Arshad"},
     {"weekday": 1, "subject": "Professional Practices (CS470)", "start_time": "14:00", "end_time": "15:00", "room": "C-305", "teacher": "Mr. Qadeer Yasin"},
     {"weekday": 1, "subject": "Software Design & Architecture", "start_time": "15:00", "end_time": "16:00", "room": "C-201", "teacher": "Dr. Bilal Ahmad"},
     {"weekday": 1, "subject": "Parallel and Distributed Computing Lab (CS426L)", "start_time": "17:00", "end_time": "20:00", "room": "Lab 15", "teacher": "Dr. Saeed Akbar"},
     {"weekday": 1, "subject": "Principles of Marketing (MK101)", "start_time": "20:00", "end_time": "21:00", "room": "C-305", "teacher": "Dr. Muhammad Nawaz Khan"},
     
     # Wednesday (2)
-    {"weekday": 2, "subject": "Computer Organization and Assembly Language", "start_time": "13:00", "end_time": "13:50", "room": "Main Campus", "teacher": "Mr. Ali Arshad"},
-    {"weekday": 2, "subject": "Computer Organization and Assembly Language Lab", "start_time": "14:00", "end_time": "16:40", "room": "Main Campus", "teacher": "Mr. Ali Arshad"},
+    {"weekday": 2, "subject": "Computer Organization and Assembly Language", "start_time": "13:00", "end_time": "13:50", "room": "C-302", "teacher": "Mr. Ali Arshad"},
+    {"weekday": 2, "subject": "Computer Organization and Assembly Language Lab", "start_time": "14:00", "end_time": "16:40", "room": "Lab 13", "teacher": "Mr. Ali Arshad"},
     {"weekday": 2, "subject": "Parallel and Distributed Computing (CS426)", "start_time": "16:00", "end_time": "17:00", "room": "C-301", "teacher": "Dr. Saeed Akbar"},
     {"weekday": 2, "subject": "Principles of Marketing (MK101)", "start_time": "17:00", "end_time": "18:00", "room": "C-204", "teacher": "Dr. Muhammad Nawaz Khan"},
     {"weekday": 2, "subject": "Entrepreneurship (BA353)", "start_time": "19:00", "end_time": "20:00", "room": "C-302", "teacher": "Dr. Muhammad Nawaz Khan"},

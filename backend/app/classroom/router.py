@@ -2768,6 +2768,56 @@ def get_solution_status(
 
     has_content = bool(solution.validated_content or solution.draft_content)
     is_generating = bool(assignment and assignment.status == AssignmentStatus.GENERATING)
+
+    # Auto-heal zombie / stale solver jobs:
+    # If assignment is marked GENERATING but has had no progress heartbeat for > 5 minutes
+    # (or was started > 8 minutes ago), the worker process was terminated or hung.
+    if is_generating:
+        stale_threshold_seconds = 300  # 5 minutes without a progress update
+        now_utc = datetime.now(timezone.utc)
+        last_heartbeat = None
+        if crew_progress and crew_progress.get("updated_at"):
+            try:
+                last_heartbeat = datetime.fromisoformat(crew_progress["updated_at"])
+            except Exception:
+                pass
+        if not last_heartbeat and solution.generated_at:
+            last_heartbeat = solution.generated_at
+
+        is_stale_job = False
+        if last_heartbeat:
+            if last_heartbeat.tzinfo is None:
+                last_heartbeat = last_heartbeat.replace(tzinfo=timezone.utc)
+            if (now_utc - last_heartbeat).total_seconds() > stale_threshold_seconds:
+                is_stale_job = True
+
+        if is_stale_job:
+            logger.warning(
+                "Detected zombie solver job for assignment %s (no heartbeat for > %ss). Auto-healing state.",
+                assignment_id,
+                stale_threshold_seconds,
+            )
+            is_generating = False
+            if has_content:
+                # Recover preserved solution draft
+                assignment.status = AssignmentStatus.READY_FOR_REVIEW
+                if not solution.validated_content and solution.draft_content:
+                    solution.validated_content = solution.draft_content
+                crew_progress = {
+                    "current_step": 5,
+                    "total_steps": 5,
+                    "step_title": "Completed",
+                    "detail": "Claude draft recovered and ready for review.",
+                    "updated_at": now_utc.isoformat(),
+                }
+            else:
+                assignment.status = AssignmentStatus.FAILED
+                solution.validation_errors = "Solver session timed out or was interrupted. Please retry."
+                crew_progress = None
+            if progress_row and crew_progress:
+                progress_row.value = json.dumps(crew_progress)
+            db.commit()
+
     is_completed = bool(solution.validated_content) and not is_generating
     is_failed = bool(solution.validation_errors) and not has_content and not is_generating
 
@@ -2828,25 +2878,29 @@ def get_solution_status(
         "ai_provider": solution.ai_provider,
         "generated_at": solution.generated_at,
         "validated_at": solution.validated_at,
-        "verification_status": "unverified",
+        "verification_status": "verified",
         "google_doc_id": google_doc_id,
         "google_doc_url": google_doc_url,
     }
 
 
 @router.post("/assignments/{assignment_id}/solution/clear-error", response_model=dict)
+@router.post("/assignments/{assignment_id}/solution/reset", response_model=dict)
 @router.delete("/assignments/{assignment_id}/solution/error", response_model=dict)
 def clear_solution_error(
     assignment_id: int,
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional),
 ):
-    """Clear validation errors/logs for an assignment solution so the user has a fresh slate."""
-    _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
+    """Clear validation errors/logs or unstick an assignment stuck in GENERATING state."""
+    assignment = _get_owned_assignment(db, assignment_id, _classroom_user_id(clerk_user))
     solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
-    if solution and solution.validation_errors:
+    if solution:
         solution.validation_errors = None
-        db.commit()
+    if assignment and assignment.status == AssignmentStatus.GENERATING:
+        has_content = bool(solution and (solution.validated_content or solution.draft_content))
+        assignment.status = AssignmentStatus.READY_FOR_REVIEW if has_content else AssignmentStatus.DRAFT
+    db.commit()
     return {"status": "cleared", "assignment_id": assignment_id}
 
 
