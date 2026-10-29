@@ -13,8 +13,6 @@ import {
   MoreVertical,
   Paperclip,
   ArrowUp,
-  ThumbsUp,
-  ThumbsDown,
   RotateCw,
   Star,
   UploadCloud,
@@ -703,18 +701,80 @@ function SourceCard({ source, active, onSelect }) {
   );
 }
 
+async function copyToClipboard(text) {
+  if (!text) return false;
+  try {
+    if (typeof navigator !== "undefined" && navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (err) {
+    console.warn("navigator.clipboard failed, using fallback:", err);
+  }
+  try {
+    if (typeof document !== "undefined") {
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.style.position = "fixed";
+      textArea.style.left = "-999999px";
+      textArea.style.top = "-999999px";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      const successful = document.execCommand("copy");
+      document.body.removeChild(textArea);
+      return successful;
+    }
+  } catch (fallbackErr) {
+    console.error("Clipboard copy fallback failed:", fallbackErr);
+  }
+  return false;
+}
+
 function UserTurn({ text }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    if (!text) return;
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
   return (
-    <div className="py-3">
+    <div className="py-3 group relative flex items-start justify-between gap-3">
       <p className="text-[15px] font-medium text-stone-900 leading-snug">{text}</p>
+      <button
+        type="button"
+        onClick={handleCopy}
+        className={`opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity p-1 rounded-md text-stone-400 hover:text-stone-700 hover:bg-stone-100 cursor-pointer shrink-0 mt-0.5 ${
+          copied ? "!opacity-100 text-emerald-600 bg-emerald-50" : ""
+        }`}
+        title={copied ? "Copied!" : "Copy question"}
+        aria-label="Copy question"
+      >
+        {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+      </button>
     </div>
   );
 }
 
-function AssistantTurn({ turn, documents, onRegenerate, isLast, regenerateLocked }) {
+function AssistantTurn({ turn, documents, onRegenerate, isGenerating, isLast, regenerateLocked }) {
   const [activeCite, setActiveCite] = useState(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
-  const [feedback, setFeedback] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    const textToCopy = turn.answer || turn.abstention_reason || "";
+    if (!textToCopy) return;
+    const ok = await copyToClipboard(textToCopy);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
 
   const sources = (turn.sources || []).map((s, i) => {
     const doc = documents.find((d) => d.id === s.document_id);
@@ -788,32 +848,44 @@ function AssistantTurn({ turn, documents, onRegenerate, isLast, regenerateLocked
         </>
       )}
 
-      <div className="flex items-center gap-2 mt-3">
+      <div className="flex items-center gap-1.5 mt-3 pt-1">
         <button
-          onClick={() => setFeedback(feedback === "up" ? null : "up")}
-          className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors cursor-pointer ${
-            feedback === "up" ? "bg-emerald-50 text-emerald-600" : "hover:bg-stone-100 text-stone-400"
+          type="button"
+          onClick={handleCopy}
+          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] transition-all cursor-pointer select-none ${
+            copied
+              ? "bg-emerald-50 text-emerald-700 font-medium border border-emerald-200/60 shadow-2xs"
+              : "text-stone-400 hover:text-stone-700 hover:bg-stone-100/90 border border-transparent"
           }`}
-          title="Helpful"
+          title={copied ? "Copied to clipboard!" : "Copy response"}
+          aria-label="Copy response"
         >
-          <ThumbsUp className="w-3.5 h-3.5" />
+          {copied ? (
+            <>
+              <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>Copied!</span>
+            </>
+          ) : (
+            <>
+              <Copy className="w-3.5 h-3.5 shrink-0" />
+              <span>Copy</span>
+            </>
+          )}
         </button>
-        <button
-          onClick={() => setFeedback(feedback === "down" ? null : "down")}
-          className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors cursor-pointer ${
-            feedback === "down" ? "bg-rose-50 text-rose-600" : "hover:bg-stone-100 text-stone-400"
-          }`}
-          title="Not helpful"
-        >
-          <ThumbsDown className="w-3.5 h-3.5" />
-        </button>
-        {isLast && !regenerateLocked && (
+
+        {!regenerateLocked && onRegenerate && (
           <button
+            type="button"
             onClick={onRegenerate}
-            className="flex items-center gap-1.5 text-[12px] text-stone-400 hover:text-stone-600 ml-1 cursor-pointer"
+            disabled={isGenerating}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] text-stone-400 hover:text-stone-700 hover:bg-stone-100/90 transition-all cursor-pointer select-none border border-transparent ${
+              isGenerating ? "opacity-50 cursor-not-allowed" : ""
+            }`}
+            title="Regenerate response"
+            aria-label="Regenerate response"
           >
-            <RotateCw className="w-3.5 h-3.5" />
-            Regenerate
+            <RotateCw className={`w-3.5 h-3.5 shrink-0 ${isGenerating ? "animate-spin text-indigo-500" : ""}`} />
+            <span>Regenerate</span>
           </button>
         )}
       </div>
@@ -1308,12 +1380,38 @@ function ChatInboxDashboard({
     }
   };
 
-  const regenerate = async () => {
+  const regenerate = async (turnIndex = null) => {
     if (pipeline || queryLimitReached || !activeId) return;
-    const lastUser = [...turns].reverse().find((t) => t.role === "user");
-    if (!lastUser) return;
 
-    setTurnsById((prev) => ({ ...prev, [activeId]: prev[activeId].slice(0, -1) }));
+    const currentTurns = turnsById[activeId] || [];
+    let targetIdx = turnIndex !== null && turnIndex !== undefined ? turnIndex : currentTurns.length - 1;
+
+    // Find the user query associated with this assistant response
+    let userQuery = "";
+    if (targetIdx >= 0 && currentTurns[targetIdx]) {
+      if (currentTurns[targetIdx].role === "assistant" && currentTurns[targetIdx].query) {
+        userQuery = currentTurns[targetIdx].query;
+      } else if (targetIdx > 0 && currentTurns[targetIdx - 1]?.role === "user") {
+        userQuery = currentTurns[targetIdx - 1].text;
+      }
+    }
+
+    // Fallback: search backwards for the closest user turn
+    if (!userQuery) {
+      const preceding = currentTurns.slice(0, targetIdx + 1);
+      const lastUser = [...preceding].reverse().find((t) => t.role === "user");
+      if (lastUser) userQuery = lastUser.text;
+    }
+
+    if (!userQuery) return;
+
+    const targetChatId = activeId;
+
+    // Remove the target assistant turn (and any subsequent turns)
+    setTurnsById((prev) => ({
+      ...prev,
+      [targetChatId]: (prev[targetChatId] || []).slice(0, targetIdx),
+    }));
 
     let stage = 0;
     setPipeline({ stageIndex: 0 });
@@ -1326,11 +1424,29 @@ function ChatInboxDashboard({
 
     try {
       const docIds = scopedDocIds.length > 0 ? scopedDocIds : null;
-      const result = await sendChat({
-        query: lastUser.text,
-        conversation_id: activeId,
-        document_ids: docIds,
-      });
+      let validConvId = typeof targetChatId === "number" && targetChatId < 1000000000000 ? targetChatId : null;
+
+      let result;
+      try {
+        result = await sendChat({
+          query: userQuery,
+          conversation_id: validConvId,
+          document_ids: docIds,
+        });
+      } catch (chatErr) {
+        if (validConvId) {
+          result = await sendChat({
+            query: userQuery,
+            conversation_id: null,
+            document_ids: docIds,
+          });
+          if (result?.conversation_id) {
+            setActiveId(result.conversation_id);
+          }
+        } else {
+          throw chatErr;
+        }
+      }
 
       clearInterval(stageTimer);
       setPipeline(null);
@@ -1343,15 +1459,35 @@ function ChatInboxDashboard({
         abstained: result.abstained,
         abstention_reason: result.abstention_reason,
         abstention_suggestion: result.abstention_suggestion,
-        query: lastUser.text,
-        attempts: [{ query: lastUser.text, sufficient: !result.abstained }],
+        query: userQuery,
+        attempts: [{ query: userQuery, sufficient: !result.abstained }],
       };
 
-      setTurnsById((prev) => ({ ...prev, [activeId]: [...prev[activeId], assistantTurn] }));
+      setTurnsById((prev) => ({
+        ...prev,
+        [targetChatId]: [...(prev[targetChatId] || []), assistantTurn],
+      }));
+      setConversations((prev) =>
+        prev.map((c) => (c.id === targetChatId ? { ...c, updated_at: new Date().toISOString() } : c))
+      );
       if (refreshUsage) refreshUsage();
-    } catch {
+    } catch (err) {
       clearInterval(stageTimer);
       setPipeline(null);
+      const errorTurn = {
+        role: "assistant",
+        answer: "Sorry, regenerating the answer failed. Please check your connection and try again.",
+        sources: [],
+        confidence: 0,
+        abstained: true,
+        abstention_reason: err?.message || "Regeneration failed",
+        query: userQuery,
+        attempts: [{ query: userQuery, sufficient: false, reason: "Regeneration failed" }],
+      };
+      setTurnsById((prev) => ({
+        ...prev,
+        [targetChatId]: [...(prev[targetChatId] || []), errorTurn],
+      }));
     }
   };
 
@@ -1590,7 +1726,8 @@ function ChatInboxDashboard({
                     key={i}
                     turn={t}
                     documents={files}
-                    onRegenerate={regenerate}
+                    onRegenerate={() => regenerate(i)}
+                    isGenerating={!!pipeline}
                     isLast={i === turns.length - 1}
                     regenerateLocked={queryLimitReached}
                   />
