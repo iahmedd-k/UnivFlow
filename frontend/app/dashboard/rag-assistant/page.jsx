@@ -1700,7 +1700,7 @@ function ChatInboxDashboard({
                 </p>
                 {[
                   "Summarize the main points and key takeaways",
-                  "What are the critical risks, obligations, or timelines?",
+                  "List down all the topics discussed in the slides and the examples discussed or any questions",
                   "Extract all important facts, metrics, and dates",
                 ].map((suggestion, idx) => (
                   <button
