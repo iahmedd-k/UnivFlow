@@ -3,6 +3,8 @@
  * Enables seamless, 1-click consent & session synchronization from web app to Chrome extension.
  */
 
+import { API_BASE_URL } from '@/app/lib/api-config';
+
 export const EXTENSION_VERSION = '1.3.6';
 
 export function isExtensionInstalled() {
@@ -70,7 +72,7 @@ export async function getExtensionStatus() {
  * Sync Google Classroom cookies directly from the active Chrome profile
  */
 export async function syncGcrViaExtension({ apiUrl, token, autoVisit = false } = {}) {
-  const targetApiUrl = apiUrl || process.env.NEXT_PUBLIC_API_URL || '';
+  const targetApiUrl = apiUrl || API_BASE_URL;
   return sendExtensionMessage('SYNC_GCR', {
     apiUrl: targetApiUrl,
     token: token || '',
@@ -82,7 +84,7 @@ export async function syncGcrViaExtension({ apiUrl, token, autoVisit = false } =
  * Auto-visit Google Classroom tab, wait for cookies, and sync
  */
 export async function autoVisitAndSyncGcr({ apiUrl, token } = {}) {
-  const targetApiUrl = apiUrl || process.env.NEXT_PUBLIC_API_URL || '';
+  const targetApiUrl = apiUrl || API_BASE_URL;
   return sendExtensionMessage('AUTO_VISIT_GCR', {
     apiUrl: targetApiUrl,
     token: token || '',
@@ -104,7 +106,7 @@ export async function syncSelectedViaExtension({
   forcePortal = false,
   autoVisit = false,
 } = {}) {
-  const targetApiUrl = apiUrl || process.env.NEXT_PUBLIC_API_URL || '';
+  const targetApiUrl = apiUrl || API_BASE_URL;
   return sendExtensionMessage('SYNC_SELECTED', {
     apiUrl: targetApiUrl,
     token: token || '',
@@ -120,10 +122,37 @@ export async function syncSelectedViaExtension({
 }
 
 /**
+ * Automatically fetch cookies & reconnect all services via companion extension on login
+ */
+export async function autoSyncAllServicesViaExtension({
+  apiUrl,
+  token,
+  syncGcr = true,
+  syncClaude = true,
+  syncPortal = true,
+  forceClaude = true,
+  forcePortal = true,
+  autoVisit = false,
+} = {}) {
+  return syncSelectedViaExtension({
+    apiUrl,
+    token,
+    syncGcr,
+    syncClaude,
+    syncPortal,
+    claudeAlreadyConnected: false,
+    portalAlreadyConnected: false,
+    forceClaude,
+    forcePortal,
+    autoVisit,
+  });
+}
+
+/**
  * Execute native Turn In on Google Classroom using student's authentic Chrome session
  */
 export async function turnInViaExtension({ classroomUrl, assignmentId, apiUrl, token } = {}) {
-  const targetApiUrl = apiUrl || process.env.NEXT_PUBLIC_API_URL || '';
+  const targetApiUrl = apiUrl || API_BASE_URL;
   return sendExtensionMessage('TURN_IN_CLASSROOM', {
     classroom_url: classroomUrl,
     assignment_id: assignmentId,

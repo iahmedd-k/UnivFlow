@@ -14,7 +14,7 @@ from app.main import app
 from app.db.database import get_db, Base
 from app.auth.clerk_auth import get_current_user_optional, require_current_user
 from app.db.models import TimetableEntry, ClassSchedule, Course, Setting
-from app.timetable.router import _validate_timetable_candidate
+from app.api.endpoints.timetable import _validate_timetable_candidate
 
 
 @pytest.fixture(scope="module")

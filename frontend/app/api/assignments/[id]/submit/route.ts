@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+import { API_BASE_URL } from "@/app/lib/api-config";
 
 export async function POST(
   request: NextRequest,
@@ -10,7 +9,7 @@ export async function POST(
   const authHeader = request.headers.get("authorization");
 
   try {
-    const backendRes = await fetch(`${API_BASE}/assignments/${id}/submit`, {
+    const backendRes = await fetch(`${API_BASE_URL}/assignments/${id}/submit`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

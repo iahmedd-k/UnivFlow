@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import MarkdownRenderer from '../MarkdownRenderer';
 import Icon from '@/app/dashboard/Icon';
 import StudyAssistantPage from './StudyAssistantPage';
@@ -22,10 +24,31 @@ import {
   Loader2,
 } from 'lucide-react';
 
+const EMPTY_ROWS = [];
+
 function LegacyCoursesPage() {
-  const { getToken } = useAuth();
-  const [courses, setCourses] = useState([]);
-  const [materials, setMaterials] = useState([]);
+  const { getToken, userId } = useAuth();
+  const ownerKey = getQueryOwnerKey(userId);
+  const queryClient = useQueryClient();
+  const coursesKey = ['classroom', 'courses', ownerKey];
+  const materialsKey = ['classroom', ownerKey, 'study-materials', 'all'];
+  const conversationsKey = ['rag', ownerKey, 'conversations', 0, 20];
+  const coursesQuery = useQuery({
+    queryKey: coursesKey,
+    queryFn: async ({ signal }) => api.getCourses(await api.getRequestToken(getToken), null, { signal, direct: true }),
+  });
+  const materialsQuery = useQuery({
+    queryKey: materialsKey,
+    queryFn: async ({ signal }) => api.getClassroomStudyMaterials(await api.getRequestToken(getToken), { limit: 500, signal, direct: true }),
+  });
+  const conversationsQuery = useQuery({
+    queryKey: conversationsKey,
+    queryFn: async ({ signal }) => api.getRagConversations(await api.getRequestToken(getToken), 0, 20, { signal }),
+  });
+  const courses = coursesQuery.data || EMPTY_ROWS;
+  const materials = materialsQuery.data || EMPTY_ROWS;
+  const conversations = conversationsQuery.data || EMPTY_ROWS;
+  const queryError = coursesQuery.error?.message || materialsQuery.error?.message || conversationsQuery.error?.message;
   const [selected, setSelected] = useState([]);
   const [selectedCourseFilter, setSelectedCourseFilter] = useState('all');
   const [selectedCategory, setSelectedCategory] = useState('all'); // 'all' | 'material' | 'assignment' | 'announcement'
@@ -34,12 +57,10 @@ function LegacyCoursesPage() {
   const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'materials' | 'conversations'
   const [question, setQuestion] = useState('');
   const [messages, setMessages] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncNotice, setSyncNotice] = useState('');
   const [error, setError] = useState('');
-  const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
@@ -62,51 +83,36 @@ function LegacyCoursesPage() {
     }
   };
 
+  const { refetch: refetchCourses } = coursesQuery;
+  const { refetch: refetchMaterials } = materialsQuery;
+  const { refetch: refetchConversations } = conversationsQuery;
   const load = useCallback(async () => {
-    const token = await getToken();
-    const [courseRows, materialRows, conversationRows] = await Promise.all([
-      api.getCourses(token).catch(() => []),
-      api.getClassroomStudyMaterials(token).catch(() => []),
-      api.getRagConversations(token).catch(() => []),
-    ]);
-
-    setCourses(courseRows || []);
-    setMaterials(materialRows || []);
-    setConversations(conversationRows || []);
-
-    if (!initializedSelection.current) {
-      initializedSelection.current = true;
-      // Pre-select top 6 most recent materials by default for immediate grounding
-      const initialIds = (materialRows || []).slice(0, 6).map((item) => item.id);
-      setSelected(initialIds);
-    } else {
-      setSelected((current) => current.filter((id) => (materialRows || []).some((item) => item.id === id)));
-    }
-
-    if (!initializedConversation.current) {
-      initializedConversation.current = true;
-      const latest = (conversationRows || [])[0] || null;
-      setActiveConversationId(latest ? latest.id : null);
-      if (latest) {
-        loadMessages(latest.id, token);
-      }
-    }
-  }, [getToken]);
+    await Promise.allSettled([refetchCourses(), refetchMaterials(), refetchConversations()]);
+  }, [refetchConversations, refetchCourses, refetchMaterials]);
 
   useEffect(() => {
-    let active = true;
-    const init = async () => {
-      try {
-        await load();
-      } catch (e) {
-        if (active) setError(e.message || 'Could not load course materials.');
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
-    init();
-    return () => { active = false; };
-  }, [load]);
+    if (!Array.isArray(materialsQuery.data)) return;
+    if (!initializedSelection.current) {
+      initializedSelection.current = true;
+      // Pre-select a small recent subset so a first question does not load every source.
+      setSelected(materialsQuery.data.slice(0, 6).map((item) => item.id));
+      return;
+    }
+    setSelected((current) => current.filter((id) => materialsQuery.data.some((item) => item.id === id)));
+  }, [materialsQuery.data]);
+
+  useEffect(() => {
+    if (!Array.isArray(conversationsQuery.data) || initializedConversation.current) return;
+    initializedConversation.current = true;
+    const latest = conversationsQuery.data[0] || null;
+    setActiveConversationId(latest ? latest.id : null);
+    if (latest) {
+      api.getRequestToken(getToken)
+        .then((token) => api.getRagConversationMessages(latest.id, token))
+        .then((rows) => setMessages((rows || []).map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'you', text: m.content }))))
+        .catch((e) => setError(e.message || 'Could not load conversation history.'));
+    }
+  }, [conversationsQuery.data, getToken]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
@@ -159,7 +165,7 @@ function LegacyCoursesPage() {
       const res = await api.uploadStudyMaterial(targetCourseId, file, token);
       if (res && res.material) {
         setSyncNotice(`Uploaded "${res.material.title}" successfully!`);
-        setMaterials((prev) => [res.material, ...prev]);
+        queryClient.setQueryData(materialsKey, (previous = []) => [res.material, ...previous.filter((item) => item.id !== res.material.id)]);
         setSelected((prev) => Array.from(new Set([res.material.id, ...prev])));
         setTimeout(() => setSyncNotice(''), 6000);
       }
@@ -275,7 +281,7 @@ function LegacyCoursesPage() {
       const assistant = { role: 'assistant', text: result.answer || 'No answer returned.' };
       setMessages([...nextMessages, assistant]);
       if (!conversations.find((c) => c.id === conversationId)) {
-        setConversations((prev) => [{ id: conversationId, title: prompt.slice(0, 60), source: 'rag' }, ...prev]);
+        queryClient.setQueryData(conversationsKey, (previous = []) => [{ id: conversationId, title: prompt.slice(0, 60), source: 'rag' }, ...previous]);
         setActiveConversationId(conversationId);
       }
     } catch (e) {
@@ -425,9 +431,9 @@ function LegacyCoursesPage() {
           </button>
         </div>
       )}
-      {error && (
+      {(error || queryError) && (
         <div className="my-1 rounded-lg border border-rose-border bg-rose-bg px-3.5 py-2 text-xs text-rose shrink-0" role="alert">
-          {error}
+          {error || queryError}<button type="button" className="ml-2 font-semibold underline" onClick={load}>Retry</button>
         </div>
       )}
 
@@ -599,7 +605,7 @@ function LegacyCoursesPage() {
 
               {/* Materials Scrollable List */}
               <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-line rounded-lg border border-line bg-white shadow-inner">
-                {loading ? (
+                {materialsQuery.isPending ? (
                   <div className="p-8 text-center text-xs text-muted">Loading Classroom files…</div>
                 ) : filteredMaterials.length ? (
                   filteredMaterials.map((item) => {
@@ -887,7 +893,7 @@ function LegacyCoursesPage() {
 
           {/* Messages Scroll Area */}
           <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-5 bg-[#fafafd]">
-            {loading ? (
+            {conversationsQuery.isPending ? (
               <div className="m-auto py-10 text-center text-sm text-muted" role="status">
                 Loading study assistant & course materials…
               </div>

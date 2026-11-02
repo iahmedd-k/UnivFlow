@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.classroom.router import (
+from app.api.endpoints.classroom import (
     sync_claude_session,
     disconnect_claude_session,
     get_claude_browser_status,

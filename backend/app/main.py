@@ -1,5 +1,8 @@
 import sys
 import asyncio
+import re
+import time
+from uuid import uuid4
 
 if sys.platform == "win32":
     try:
@@ -17,9 +20,9 @@ from app.core.logging import logger
 from app.db.database import init_db, get_db
 from app.db.supabase_client import init_supabase
 from app.db.s3_client import init_s3
-from app.v1.api.router import api_router as v1_api_router
+from app.api.endpoints.router import api_router
 # Uniflow FastAPI Main Application - Updated
-from app.auth.router import google_callback
+from app.api.endpoints.auth import google_callback
 
 
 from app.services.scheduler import start_scheduler, shutdown_scheduler
@@ -43,10 +46,13 @@ async def lifespan(app: FastAPI):
         logger.info("S3 client initialized")
     except Exception as e:
         logger.warning(f"S3 initialization failed: {e}")
-    try:
-        start_scheduler()
-    except Exception as e:
-        logger.warning(f"Scheduler start failed: {e}")
+    if settings.should_run_scheduler:
+        try:
+            start_scheduler()
+        except Exception as e:
+            logger.warning(f"Scheduler start failed: {e}")
+    else:
+        logger.info("In-process scheduler disabled for this environment.")
     yield
     shutdown_scheduler()
     logger.info("Shutting down Uniflow...")
@@ -63,7 +69,7 @@ app = FastAPI(
 )
 
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, TimeoutError as SQLAlchemyTimeoutError
 
 raw_cors = getattr(settings, "cors_origins", None)
 if isinstance(raw_cors, list):
@@ -94,7 +100,41 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
+
+
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next):
+    supplied_id = request.headers.get("x-request-id", "")
+    request_id = supplied_id if re.fullmatch(r"[A-Za-z0-9._-]{1,80}", supplied_id) else str(uuid4())
+    request.state.request_id = request_id
+    started_at = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        logger.exception(
+            "Unhandled request failure request_id=%s method=%s path=%s duration_ms=%.2f",
+            request_id,
+            request.method,
+            request.url.path,
+            duration_ms,
+        )
+        raise
+
+    duration_ms = (time.perf_counter() - started_at) * 1000
+    response.headers["X-Request-ID"] = request_id
+    if request.url.path.startswith(settings.api_prefix):
+        logger.info(
+            "API request completed request_id=%s method=%s path=%s status=%s duration_ms=%.2f",
+            request_id,
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration_ms,
+        )
+    return response
 
 
 def _cors_headers(request: Request) -> dict:
@@ -125,6 +165,21 @@ async def database_unavailable_handler(request: Request, exc: OperationalError):
     )
 
 
+@app.exception_handler(SQLAlchemyTimeoutError)
+async def database_pool_timeout_handler(request: Request, exc: SQLAlchemyTimeoutError):
+    logger.error(
+        "Database connection pool timed out on %s %s: %s",
+        request.method,
+        request.url.path,
+        exc,
+    )
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "The service is busy. Please retry shortly."},
+        headers={"Retry-After": "3", **_cors_headers(request)},
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled server error on {request.method} {request.url.path}: {exc}", exc_info=True)
@@ -136,7 +191,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # API routes under /api/v1
-app.include_router(v1_api_router, prefix="/api/v1")
+app.include_router(api_router, prefix="/api/v1")
 
 
 # Direct alias for Google OAuth callback matching standard redirect URIs

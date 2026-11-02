@@ -1,35 +1,26 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
+import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import Icon from '@/app/dashboard/Icon';
 
 export default function AnnouncementsPage() {
-  const { getToken } = useAuth();
-  const [announcements, setAnnouncements] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const token = await getToken();
-        const data = await api.getAnnouncements(token);
-        setAnnouncements(data);
-      } catch (e) {
-        setError(e.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
-  }, [getToken]);
+  const { getToken, userId } = useAuth();
+  const ownerKey = getQueryOwnerKey(userId);
+  const announcementsQuery = useQuery({
+    queryKey: ['announcements', ownerKey, 'university'],
+    queryFn: async ({ signal }) => api.getAnnouncements(await api.getRequestToken(getToken), null, { signal, direct: true }),
+  });
+  const announcements = Array.isArray(announcementsQuery.data) ? announcementsQuery.data : [];
+  const loading = announcementsQuery.isPending;
+  const error = announcementsQuery.error?.message;
 
   if (loading) return <div className="flex min-h-64 items-center justify-center text-sm text-muted" role="status">Loading announcements…</div>;
-  if (error) return <div className="rounded-lg border border-rose-border bg-rose-bg p-4 text-sm text-rose" role="alert">Error: {error}</div>;
+  if (error) return <div className="rounded-lg border border-rose-border bg-rose-bg p-4 text-sm text-rose" role="alert">Error: {error}<button type="button" className="ml-2 font-semibold underline" onClick={() => announcementsQuery.refetch()}>Retry</button></div>;
 
   return (
     <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-ink">

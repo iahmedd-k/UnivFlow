@@ -2830,7 +2830,7 @@ def solve_assignment_via_claude_browser(
 
         # 14. Check if student opted in to auto-submission/attachment on dashboard
         try:
-            from app.classroom.router import auto_turn_in_completed_solution
+            from app.api.endpoints.classroom import auto_turn_in_completed_solution
             submission_result = auto_turn_in_completed_solution(db, assignment_id, user_id)
             if submission_result and submission_result.get("success"):
                 logger.info("Auto submission/attachment completed for assignment %s: %s", assignment_id, submission_result)

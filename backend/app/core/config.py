@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     debug: bool = False
     timezone: str = "Asia/Karachi"
+    scheduler_enabled: bool | None = None
     secret_key: str = Field(
         default="dev-secret-key-change-in-production",
         validation_alias=AliasChoices("secret_key", "SECRET_KEY"),
@@ -44,6 +45,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("database_url", "DATABASE_URL"),
     )
     database_echo: bool = False
+    database_pool_size: int = Field(default=5, ge=1, le=100)
+    database_max_overflow: int = Field(default=2, ge=0, le=100)
+    database_pool_timeout_seconds: int = Field(default=5, ge=1, le=120)
+    database_statement_timeout_ms: int = Field(default=10_000, ge=1_000, le=120_000)
 
     # Auth / JWT
     jwt_secret_key: str = Field(
@@ -337,6 +342,10 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def should_run_scheduler(self) -> bool:
+        return self.is_production if self.scheduler_enabled is None else self.scheduler_enabled
 
     @property
     def supabase_db_url(self) -> str:

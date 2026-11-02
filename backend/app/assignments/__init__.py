@@ -1,1 +1,1 @@
-from app.assignments.router import router
+"""Assignments domain package."""

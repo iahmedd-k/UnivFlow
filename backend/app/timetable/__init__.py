@@ -1,1 +1,1 @@
-from app.timetable.router import router
+"""Timetable domain package."""

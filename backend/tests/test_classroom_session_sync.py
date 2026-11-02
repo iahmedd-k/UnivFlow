@@ -3,7 +3,7 @@ import json
 import pytest
 from fastapi import HTTPException
 
-from app.classroom.router import (
+from app.api.endpoints.classroom import (
     sync_google_classroom_session,
     disconnect_google_classroom_session,
     get_google_classroom_browser_status,
@@ -163,9 +163,9 @@ def test_execute_quick_turn_in_attach_only():
     fake_docs_service.export_document_as_pdf.return_value = b"%PDF-1.4 mock pdf bytes"
 
     with patch("app.services.ai_solution.export_solution_to_google_doc", return_value={"doc_id": "doc-123"}):
-        with patch("app.classroom.router.get_classroom_service", return_value=MagicMock(service=fake_classroom_service)):
-            with patch("app.classroom.router.get_google_docs_service", return_value=fake_docs_service):
-                with patch("app.classroom.router._attach_submission_files", return_value=("sub-123", "NEW")):
+        with patch("app.api.endpoints.classroom.get_classroom_service", return_value=MagicMock(service=fake_classroom_service)):
+            with patch("app.api.endpoints.classroom.get_google_docs_service", return_value=fake_docs_service):
+                with patch("app.api.endpoints.classroom._attach_submission_files", return_value=("sub-123", "NEW")):
                     res = execute_quick_turn_in(db, assignment_id=1, user_id=user_id, action="attach_only")
                     assert res["success"] is True
                     assert res["action_taken"] == "attached_draft"

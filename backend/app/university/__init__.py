@@ -1,1 +1,1 @@
-from app.university.router import router
+"""University domain package."""

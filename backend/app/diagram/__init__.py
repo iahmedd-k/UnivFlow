@@ -18,7 +18,6 @@ from app.diagram.registry import (
     get_all_output_formats,
     is_kind_supported_for_type,
 )
-from app.diagram.router import router as diagram_router
 
 __all__ = [
     "DiagramRequest",
@@ -37,5 +36,4 @@ __all__ = [
     "get_all_diagram_kinds",
     "get_all_output_formats",
     "is_kind_supported_for_type",
-    "diagram_router",
 ]

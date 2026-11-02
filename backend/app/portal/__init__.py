@@ -1,1 +1,1 @@
-from app.portal.router import router
+"""Portal domain package."""

@@ -1,44 +1,68 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import Icon from '@/app/dashboard/Icon';
 
 const runTone = (status) =>
   status === 'COMPLETED' ? 'success' : status === 'FAILED' ? 'error' : 'warning';
 
 export default function ActivityPage() {
-  const { getToken } = useAuth();
-  const [runs, setRuns] = useState([]);
-  const [automationHistory, setAutomationHistory] = useState([]);
-  const [stats, setStats] = useState(null);
-  const [sync, setSync] = useState(null);
+  const { getToken, userId } = useAuth();
+  const ownerKey = getQueryOwnerKey(userId);
+  const runsQuery = useQuery({
+    queryKey: ['activity', ownerKey, 'agent-runs', 20],
+    queryFn: async ({ signal }) => api.getAgentRuns(20, await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const statsQuery = useQuery({
+    queryKey: ['activity', ownerKey, 'agent-stats'],
+    queryFn: async ({ signal }) => api.getAgentRunStats(await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const syncQuery = useQuery({
+    queryKey: ['classroom', 'sync-status', ownerKey],
+    queryFn: async ({ signal }) => api.getSyncStatus(await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const automationQuery = useQuery({
+    queryKey: ['activity', ownerKey, 'automation-history', 40],
+    queryFn: async ({ signal }) => api.getAutomationHistory(40, await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const { refetch: refetchRuns } = runsQuery;
+  const { refetch: refetchStats } = statsQuery;
+  const { refetch: refetchSync } = syncQuery;
+  const { refetch: refetchAutomation } = automationQuery;
+  const runs = runsQuery.data || [];
+  const automationHistory = automationQuery.data || [];
+  const stats = statsQuery.data || null;
+  const sync = syncQuery.data || null;
   const [expandedRun, setExpandedRun] = useState(null);
-  const [runEvents, setRunEvents] = useState({});
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
+  const eventsQuery = useQuery({
+    queryKey: ['activity', ownerKey, 'agent-run-events', expandedRun],
+    enabled: expandedRun != null,
+    queryFn: async ({ signal }) => api.getAgentRunEvents(expandedRun, await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const runEvents = eventsQuery.data || [];
+  const loading = [runsQuery, statsQuery, syncQuery, automationQuery].some((query) => query.isPending);
+  const queryError = [runsQuery, statsQuery, syncQuery, automationQuery].find((query) => query.isError)?.error?.message;
 
   const load = useCallback(async () => {
     try {
-      const token = await getToken();
       const results = await Promise.allSettled([
-        api.getAgentRuns(20, token),
-        api.getAgentRunStats(token),
-        api.getSyncStatus(token),
-        api.getAutomationHistory(40, token),
+        refetchRuns(),
+        refetchStats(),
+        refetchSync(),
+        refetchAutomation(),
       ]);
-      setRuns(results[0].status === 'fulfilled' ? results[0].value || [] : []);
-      setStats(results[1].status === 'fulfilled' ? results[1].value : null);
-      setSync(results[2].status === 'fulfilled' ? results[2].value : null);
-      setAutomationHistory(results[3].status === 'fulfilled' ? results[3].value || [] : []);
       const failed = results.find((result) => result.status === 'rejected');
       if (failed) setError(failed.reason?.message || 'Some sync activity could not be loaded.');
     } catch (err) {
       setError(err.message || 'Could not load sync activity.');
     }
-  }, [getToken]);
+  }, [refetchAutomation, refetchRuns, refetchStats, refetchSync]);
 
   const retryAutomation = async (item) => {
     setActionMessage('');
@@ -58,27 +82,12 @@ export default function ActivityPage() {
     }
   };
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      load().finally(() => setLoading(false));
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [load]);
-
   const toggleEvents = async (runId) => {
     if (expandedRun === runId) {
       setExpandedRun(null);
       return;
     }
     setExpandedRun(runId);
-    if (runEvents[runId]) return;
-    try {
-      const token = await getToken();
-      const events = await api.getAgentRunEvents(runId, token);
-      setRunEvents((current) => ({ ...current, [runId]: events || [] }));
-    } catch (err) {
-      setError(err.message || 'Could not load run details.');
-    }
   };
 
   const syncStatus = sync?.sync_run?.status || 'not started';
@@ -95,15 +104,15 @@ export default function ActivityPage() {
           type="button"
           className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md border border-border-input bg-surface px-3 text-sm font-medium text-nav transition-colors hover:bg-surface-secondary"
           onClick={() => {
-            setLoading(true);
-            load().finally(() => setLoading(false));
+            setError('');
+            load();
           }}
         >
           <Icon name="refresh" size={14} /> Refresh
         </button>
       </header>
 
-      {error && <div className="rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm font-normal text-rose">{error}</div>}
+      {(error || queryError) && <div className="rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm font-normal text-rose">{error || queryError}<button type="button" className="ml-2 font-semibold underline" onClick={load}>Retry</button></div>}
       {actionMessage && <div role="status" className="rounded-lg border border-success/30 bg-success-bg px-4 py-3 text-sm font-normal text-success">{actionMessage}</div>}
 
       <section className="min-w-0 rounded-xl border border-border bg-surface shadow-xs">
@@ -201,9 +210,12 @@ export default function ActivityPage() {
 
                 {expandedRun === run.id && (
                   <div className="flex flex-col gap-2 border-t border-border-light px-4 pb-4 pl-14 pt-2 text-xs font-normal text-muted">
-                    {runEvents[run.id] ? (
-                      runEvents[run.id].length ? (
-                        runEvents[run.id].map((event) => (
+                    {eventsQuery.isPending ? (
+                      <p>Loading run details…</p>
+                    ) : eventsQuery.isError ? (
+                      <p className="text-rose">{eventsQuery.error?.message || 'Could not load run details.'}<button type="button" className="ml-2 font-semibold underline" onClick={() => eventsQuery.refetch()}>Retry</button></p>
+                    ) : runEvents.length ? (
+                        runEvents.map((event) => (
                           <div className="flex items-start gap-2" key={event.id}>
                             <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${event.status?.toUpperCase() === 'COMPLETED' ? 'bg-success-bg text-success' : event.status?.toUpperCase() === 'FAILED' ? 'bg-rose-bg text-rose' : 'bg-warning-bg text-warning'}`}>
                               {event.status || event.event_type}
@@ -216,11 +228,8 @@ export default function ActivityPage() {
                             </span>
                           </div>
                         ))
-                      ) : (
-                        <p>No detailed events were recorded for this run.</p>
-                      )
                     ) : (
-                      <p>Loading run details…</p>
+                      <p>No detailed events were recorded for this run.</p>
                     )}
                   </div>
                 )}

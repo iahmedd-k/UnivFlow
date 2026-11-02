@@ -167,7 +167,7 @@ class ClassroomSyncService:
             return None
 
     def _download_drive_file_bytes(self, drive_service, file_id: str, mime_type: str):
-        """Download one source version for the durable course-file cache."""
+        """Fetch selected Drive content for an explicit downstream operation."""
         google_exports = {
             "application/vnd.google-apps.document": "application/pdf",
             "application/vnd.google-apps.presentation": "application/pdf",
@@ -183,33 +183,8 @@ class ClassroomSyncService:
         data = request.execute()
         return data if isinstance(data, bytes) else bytes(data), (export_mime or mime_type)
 
-    def _store_drive_file(self, file_id: str, mime_type: str, modified_time: Optional[datetime], checksum: Optional[str], raw: bytes) -> Optional[str]:
-        """Persist the downloaded original/export in the configured S3-compatible bucket."""
-        try:
-            import mimetypes
-            from app.db.s3_client import get_s3_client
-
-            s3 = get_s3_client()
-            if not s3:
-                return None
-            user_key = hashlib.sha256(self.user_id.encode("utf-8")).hexdigest()
-            version = checksum or (modified_time.isoformat() if modified_time else hashlib.sha256(raw).hexdigest())
-            version_key = hashlib.sha256(version.encode("utf-8")).hexdigest()[:24]
-            extension = mimetypes.guess_extension(mime_type or "") or ""
-            key = f"users/{user_key}/classroom/{file_id}/{version_key}{extension}"
-            s3.put_object(
-                Bucket="uniflow-files",
-                Key=key,
-                Body=raw,
-                ContentType=mime_type or "application/octet-stream",
-            )
-            return key
-        except Exception as error:
-            logger.warning("Could not cache Classroom file %s in object storage: %s", file_id, error)
-            return None
-
     def _extract_drive_file_text(self, drive_service, file_id: str, mime_type: str, filename: str = "", raw_data: Optional[bytes] = None) -> str:
-        """Extract text from cached Classroom sync downloads, including office uploads."""
+        """Extract searchable text from a Drive file fetched for an explicit operation."""
         try:
             import io
             import os
@@ -349,8 +324,8 @@ class ClassroomSyncService:
     def fast_sync_assignments(self, since_date: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """Direct live GCR fetch: immediately calls Google Classroom API for courses,
         coursework, and student submission states. Persists them directly to the DB
-        without waiting for heavy Drive downloads or S3 uploads, and returns the full
-        assignments list for immediate UI rendering."""
+        without downloading attachment contents, and returns assignments for immediate
+        UI rendering."""
         if not self.service:
             return []
 
@@ -446,7 +421,7 @@ class ClassroomSyncService:
         return output
 
     def sync_all(self, since_date: Optional[datetime] = None) -> Dict[str, Any]:
-        """Sync all Classroom data from the given since_date / semester start onwards"""
+        """Sync Classroom records and attachment metadata without downloading file contents."""
         if not self.service:
             return {"error": "Service not initialized"}
 
@@ -509,7 +484,7 @@ class ClassroomSyncService:
                         results["schedules"] += self._sync_schedule(course)
                         # Check course-scoped auto turn-in (strictly for this course if enabled)
                         try:
-                            from app.classroom.router import check_and_execute_course_auto_turn_in
+                            from app.api.endpoints.classroom import check_and_execute_course_auto_turn_in
                             check_and_execute_course_auto_turn_in(self.db, db_course.id, self.user_id)
                         except Exception as auto_turnin_err:
                             logger.debug(f"Course auto turn-in check error for {course_id}: {auto_turnin_err}")
@@ -1215,7 +1190,7 @@ class ClassroomSyncService:
                 return count
 
     def _sync_materials(self, assignment_db_id: int, materials: List[Dict], default_title: str = "", skip_drive_download: bool = False):
-        """Sync assignment materials, extracting Drive file text when possible."""
+        """Sync attachment metadata without downloading Drive file contents."""
         from app.db.repositories import AssignmentMaterialRepository
 
         repo = AssignmentMaterialRepository(self.db)
@@ -1224,6 +1199,7 @@ class ClassroomSyncService:
         by_drive_id = {m.drive_file_id: m for m in existing if m.drive_file_id}
         by_identity = {(m.material_type, (m.title or "").strip().lower()): m for m in existing if not m.drive_file_id}
         drive_service = None if skip_drive_download else self._get_drive_service()
+        stale_storage_keys: set[str] = set()
 
         for mat in materials:
             drive_file = mat.get("driveFile", {}).get("driveFile", {}) if mat.get("driveFile") else {}
@@ -1235,8 +1211,8 @@ class ClassroomSyncService:
             content = ""
             existing_row = by_drive_id.get(drive_file_id) if drive_file_id else None
 
-            # Classroom attachment objects omit version metadata. Read lightweight
-            # Drive metadata first, then download/export only when its version changed.
+            # Classroom attachment objects omit version metadata, so resolve it
+            # without fetching file contents.
             metadata = {}
             if not skip_drive_download and drive_service and drive_file_id:
                 try:
@@ -1266,49 +1242,22 @@ class ClassroomSyncService:
             cached_modified_time = existing_row.drive_modified_time if existing_row else None
             if cached_modified_time and cached_modified_time.tzinfo is None:
                 cached_modified_time = cached_modified_time.replace(tzinfo=timezone.utc)
-            same_version = bool(
+            if checksum:
+                same_version = bool(existing_row and existing_row.drive_checksum == checksum)
+            elif modified_time:
+                same_version = bool(existing_row and cached_modified_time == modified_time)
+            else:
+                same_version = bool(existing_row)
+            has_version = bool(checksum or modified_time)
+            preserve_cached_content = bool(
                 existing_row
-                and (
-                    (checksum and existing_row.drive_checksum == checksum)
-                    or (modified_time and cached_modified_time == modified_time)
-                )
+                and (skip_drive_download or not metadata or not has_version or same_version)
             )
-            has_cached_copy = bool(existing_row and (existing_row.storage_key or existing_row.content))
-            cache_hit = (has_cached_copy and (same_version or not metadata)) or skip_drive_download
-
-            storage_key = existing_row.storage_key if cache_hit and existing_row else None
+            content = existing_row.content if preserve_cached_content else None
+            if not skip_drive_download and existing_row and existing_row.storage_key:
+                stale_storage_keys.add(existing_row.storage_key)
+            storage_key = existing_row.storage_key if skip_drive_download and existing_row else None
             file_size = metadata.get("size")
-            raw_data = None
-            if not cache_hit and not skip_drive_download and drive_service and drive_file_id and metadata:
-                try:
-                    # Google's native documents are kept as PDF exports, while
-                    # uploaded PDFs, images, Office files, and other attachments
-                    # retain their original bytes and MIME type.
-                    raw, stored_mime = self._download_drive_file_bytes(drive_service, drive_file_id, mime_type or "")
-                    if len(raw) <= 100 * 1024 * 1024:
-                        raw_data = raw
-                        storage_key = self._store_drive_file(drive_file_id, stored_mime, modified_time, checksum, raw)
-                        file_size = file_size or len(raw)
-                    else:
-                        logger.warning("Skipping object cache for oversized Classroom file %s (%s bytes)", drive_file_id, len(raw))
-                except Exception as download_error:
-                    logger.warning("Could not download Classroom file %s for cache: %s", drive_file_id, download_error)
-
-            # Extract text from the same binary download whenever possible, so
-            # changed PDF/Office/text uploads need one media request, not two.
-            if not cache_hit and not skip_drive_download and drive_service and drive_file_id and mime_type and (
-                mime_type == "application/vnd.google-apps.document"
-                or mime_type == "application/vnd.google-apps.presentation"
-                or mime_type == "application/vnd.google-apps.spreadsheet"
-                or mime_type == "application/pdf"
-                or mime_type.startswith("text/")
-                or mime_type.startswith("application/vnd.openxmlformats-officedocument.")
-                or mime_type in ("application/json", "application/javascript")
-                or str(drive_file.get("title") or "").lower().endswith((".pptx", ".docx", ".xlsx"))
-            ):
-                content = self._extract_drive_file_text(
-                    drive_service, drive_file_id, mime_type, drive_file.get("title") or "", raw_data=raw_data
-                )
 
             title = (
                 drive_file.get("title")
@@ -1342,23 +1291,40 @@ class ClassroomSyncService:
                 "mime_type": mime_type,
                 "content": content[:30000] if content else None,
                 "storage_key": storage_key,
-                "drive_modified_time": modified_time or (existing_row.drive_modified_time if cache_hit else None),
-                "drive_checksum": checksum or (existing_row.drive_checksum if cache_hit else None),
-                "file_size": int(file_size) if file_size else (existing_row.file_size if cache_hit else None),
+                "drive_modified_time": modified_time or (existing_row.drive_modified_time if preserve_cached_content else None),
+                "drive_checksum": checksum or (existing_row.drive_checksum if preserve_cached_content else None),
+                "file_size": int(file_size) if file_size else (existing_row.file_size if preserve_cached_content else None),
             }
             if not existing_row and not drive_file_id:
                 existing_row = by_identity.get((mat_dict["material_type"], (title or "").strip().lower()))
             if existing_row:
-                # Preserve a good cached copy when Drive is temporarily unavailable.
                 for key, value in mat_dict.items():
-                    if key in {"content", "storage_key", "drive_modified_time", "drive_checksum", "file_size"} and value is None:
-                        continue
                     setattr(existing_row, key, value)
                 self.db.add(existing_row)
             else:
                 repo.create(mat_dict)
 
         self.db.commit()
+        if stale_storage_keys:
+            from app.db.models import AssignmentMaterial
+            from app.db.s3_client import get_s3_client
+
+            s3 = get_s3_client()
+            if s3:
+                for storage_key in stale_storage_keys:
+                    still_referenced = self.db.query(AssignmentMaterial.id).filter(
+                        AssignmentMaterial.storage_key == storage_key
+                    ).first()
+                    if still_referenced:
+                        continue
+                    try:
+                        s3.delete_object(Bucket="uniflow-files", Key=storage_key)
+                    except Exception as error:
+                        logger.warning(
+                            "Could not remove legacy Classroom file cache %s: %s",
+                            storage_key,
+                            error,
+                        )
 
     def _sync_schedule(self, course_data: Dict) -> int:
         """Sync schedule/timetable from Classroom coursework due dates and course metadata.
@@ -1404,31 +1370,46 @@ class ClassroomSyncService:
                 if not due_at:
                     continue
                 
-                # Create schedule entry for the due date
-                # Check if already exists
+                external_id = f"classroom:{course_id}:{work['id']}"
+                start_time = due_at.replace(hour=due_at.hour, minute=due_at.minute, second=0, microsecond=0)
+                schedule_data = {
+                    "user_id": self.user_id,
+                    "external_id": external_id,
+                    "course_id": course.id,
+                    "subject": work.get("title", "Assignment Due"),
+                    "date": due_at,
+                    "start_time": start_time,
+                    "end_time": start_time + timedelta(hours=1),
+                    "teacher": course.teacher_name,
+                    "room": course.room or "Online",
+                    "status": "scheduled",
+                }
                 existing = self.db.query(ClassSchedule).filter(
-                    ClassSchedule.course_id == course.id,
                     ClassSchedule.user_id == self.user_id,
-                    ClassSchedule.date == due_at.date(),
-                    ClassSchedule.start_time == due_at.replace(hour=due_at.hour, minute=due_at.minute, second=0, microsecond=0),
-                    ClassSchedule.subject == work.get("title", "Assignment Due")
+                    ClassSchedule.external_id == external_id,
                 ).first()
-                
-                if not existing:
-                    schedule = ClassSchedule(
-                        user_id=self.user_id,
-                        external_id=f"classroom:{course_id}:{work['id']}",
-                        course_id=course.id,
-                        subject=work.get("title", "Assignment Due"),
-                        date=due_at,
-                        start_time=due_at.replace(hour=due_at.hour, minute=due_at.minute, second=0, microsecond=0),
-                        end_time=due_at.replace(hour=due_at.hour, minute=due_at.minute, second=0, microsecond=0) + timedelta(hours=1),
-                        teacher=course.teacher_name,
-                        room=course.room or "Online",
-                        status="scheduled"
-                    )
-                    self.db.add(schedule)
+
+                if existing:
+                    for key, value in schedule_data.items():
+                        setattr(existing, key, value)
+                    continue
+
+                schedule = ClassSchedule(**schedule_data)
+                try:
+                    with self.db.begin_nested():
+                        self.db.add(schedule)
+                        self.db.flush()
                     count += 1
+                except IntegrityError:
+                    # A concurrent sync may insert the same coursework after our lookup.
+                    existing = self.db.query(ClassSchedule).filter(
+                        ClassSchedule.user_id == self.user_id,
+                        ClassSchedule.external_id == external_id,
+                    ).first()
+                    if existing is None:
+                        raise
+                    for key, value in schedule_data.items():
+                        setattr(existing, key, value)
             
             self.db.commit()
             

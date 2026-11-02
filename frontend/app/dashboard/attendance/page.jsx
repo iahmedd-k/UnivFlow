@@ -1,49 +1,50 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
+import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import Icon from '@/app/dashboard/Icon';
 
 export default function AttendancePage() {
-  const { getToken } = useAuth();
-  const [attendance, setAttendance] = useState(null);
-  const [portalSettings, setPortalSettings] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const { getToken, userId } = useAuth();
+  const ownerKey = getQueryOwnerKey(userId);
+  const attendanceKey = ['attendance', 'summary', ownerKey];
+  const portalSettingsKey = ['portal', ownerKey, 'settings'];
+  const attendanceQuery = useQuery({
+    queryKey: attendanceKey,
+    queryFn: async ({ signal }) => api.getAttendanceSummary(await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const portalSettingsQuery = useQuery({
+    queryKey: portalSettingsKey,
+    queryFn: async ({ signal }) => api.getPortalSettings(await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const { refetch: refetchAttendance } = attendanceQuery;
+  const { refetch: refetchPortalSettings } = portalSettingsQuery;
+  const attendance = attendanceQuery.data || null;
+  const portalSettings = portalSettingsQuery.data || null;
+  const loading = attendanceQuery.isPending;
   const [syncing, setSyncing] = useState(false);
   const [viewMode, setViewMode] = useState('table'); // 'table' | 'cards'
   const [filter, setFilter] = useState('all'); // 'all' | 'deficit' | 'borderline' | 'safe'
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const visibleError = error || (attendanceQuery.isError ? attendanceQuery.error?.message || 'Could not load attendance records.' : '');
 
   const loadData = useCallback(async () => {
-    try {
-      const token = getToken ? await getToken() : null;
-      const [attData, portalData] = await Promise.all([
-        api.getAttendanceSummary(token),
-        api.getPortalSettings(token).catch(() => null),
-      ]);
-      setAttendance(attData || null);
-      setPortalSettings(portalData || null);
-    } catch (err) {
-      setError(err.message || 'Could not load attendance records.');
-    } finally {
-      setLoading(false);
-    }
-  }, [getToken]);
-
-  useEffect(() => {
-    loadData();
-  }, []);
+    await Promise.allSettled([refetchAttendance(), refetchPortalSettings()]);
+  }, [refetchAttendance, refetchPortalSettings]);
 
   const handleSyncPortal = async () => {
     setSyncing(true);
     setError('');
     setNotice('');
     try {
-      const token = await getToken();
+      const token = await api.getRequestToken(getToken);
       const res = await api.syncPortalHeadless(token);
+      api.clearCache('attendance');
       await loadData();
       if (res?.session_expired || ['session_expired', 'reconnect_required'].includes(res?.status)) {
         setError('University portal session expired. Attendance still shows the last saved snapshot. Reconnect in Portal settings, then sync again.');
@@ -148,12 +149,10 @@ export default function AttendancePage() {
   }, [courses, attendance]);
 
   return (
-    <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-heading">
-      <header className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
+    <main className="mx-auto -mt-3 flex w-full max-w-[1080px] flex-col gap-4 pb-10 text-heading">
+      <header className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:items-end">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wider text-label">SEMESTER TRACKING</p>
-          <h1 className="my-1 text-2xl sm:text-3xl font-semibold tracking-tight text-heading">Attendance</h1>
-          <p className="text-sm font-normal text-muted leading-relaxed">Compare verified portal attendance with each course’s weekly timetable frequency.</p>
+          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-heading">Attendance</h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex rounded-lg border border-border bg-surface p-1" role="group" aria-label="Attendance layout">
@@ -167,10 +166,10 @@ export default function AttendancePage() {
         </div>
       </header>
 
-      {error && (
+      {visibleError && (
         <div className="mb-4 bg-rose-bg border border-rose-border text-rose px-4 py-3 rounded-xl text-sm font-normal flex items-center gap-2" role="alert">
           <Icon name="alert" size={15} />
-          <span>{error}</span>
+          <span>{visibleError}</span>
         </div>
       )}
       {notice && (
@@ -179,10 +178,6 @@ export default function AttendancePage() {
           <span>{notice}</span>
         </div>
       )}
-
-      <div className="mb-4 rounded-xl border border-info-bg bg-info-light px-4 py-3 text-sm leading-relaxed text-ink">
-        Attendance uses the portal’s Attendance Report: Total is classes held, ATTS is attended, and ABS is absent. Hour columns are excluded; timetable frequency is informational and does not change the portal totals.
-      </div>
 
       {portalSettings?.url ? (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3.5 py-2.5 text-sm text-muted">

@@ -1,41 +1,29 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import { useAuth } from '@clerk/nextjs';
+import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import Icon from '@/app/dashboard/Icon';
 
 export default function QuizDetailPage() {
   const params = useParams();
-  const router = useRouter();
-  const { getToken } = useAuth();
+  const { getToken, userId } = useAuth();
   const quizId = params.id;
-  const [quiz, setQuiz] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const token = await getToken();
-        const data = await api.getQuizzes(token);
-        const found = data.find(q => q.id == quizId);
-        if (!found) throw new Error('Quiz not found');
-        setQuiz(found);
-      } catch (e) {
-        setError(e.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
-  }, [quizId, getToken]);
+  const ownerKey = getQueryOwnerKey(userId);
+  const quizzesQuery = useQuery({
+    queryKey: ['quizzes', ownerKey, 'list', 500, 0],
+    queryFn: async ({ signal }) => api.getQuizzes(await api.getRequestToken(getToken), null, { signal, direct: true }),
+  });
+  const quiz = (quizzesQuery.data || []).find((item) => String(item.id) === String(quizId)) || null;
+  const loading = quizzesQuery.isPending;
+  const error = quizzesQuery.error?.message;
 
   if (loading) return <div className="flex min-h-64 items-center justify-center text-sm text-muted" role="status">Loading quiz…</div>;
-  if (error) return <div className="rounded-lg border border-rose-border bg-rose-bg p-4 text-sm text-rose" role="alert">Error: {error}</div>;
+  if (error) return <div className="rounded-lg border border-rose-border bg-rose-bg p-4 text-sm text-rose" role="alert">Error: {error}<button type="button" className="ml-2 font-semibold underline" onClick={() => quizzesQuery.refetch()}>Retry</button></div>;
   if (!quiz) return <div className="rounded-xl border border-line bg-white p-8 text-center text-sm text-muted">Quiz not found</div>;
 
   const quizDate = quiz.date ? format(new Date(quiz.date), 'MMMM d, yyyy') : 'TBA';

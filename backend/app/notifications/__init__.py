@@ -1,1 +1,1 @@
-from app.notifications.router import router
+"""Notifications domain package."""

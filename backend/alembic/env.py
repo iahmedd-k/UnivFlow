@@ -5,7 +5,13 @@ from sqlalchemy import engine_from_config, pool
 
 from app.core.config import settings
 from app.db.base import Base
-from app import models  # noqa: F401  (ensure models are registered on Base.metadata)
+import app.db.models  # noqa: F401
+import app.models.rag_new.conversation  # noqa: F401
+import app.models.rag_new.document  # noqa: F401
+import app.models.rag_new.document_chunk  # noqa: F401
+import app.models.rag_new.message  # noqa: F401
+import app.models.rag_new.message_citation  # noqa: F401
+import app.models.rag_new.user  # noqa: F401
 
 config = context.config
 

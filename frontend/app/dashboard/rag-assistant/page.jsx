@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { useAuth } from "@clerk/nextjs";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -56,7 +58,6 @@ import {
   listDocuments,
   uploadDocument,
   deleteDocument,
-  getDocumentStatus,
   listConversations,
   createConversation,
   getConversation,
@@ -66,6 +67,7 @@ import {
   getUsage,
   syncClassroom,
 } from "@/app/lib/rag/services";
+import { getQueryOwnerKey } from "@/app/lib/manual-auth";
 
 /* =====================================================================
    SHARED APP SHELL — Navigation & Plans
@@ -1077,6 +1079,7 @@ function DocumentPicker({ files, selectedIds, onToggle, onClear, onConfirm, onUp
 }
 
 function ChatInboxDashboard({
+  ownerKey,
   plan,
   onUpgrade,
   pendingDocTag,
@@ -1087,14 +1090,28 @@ function ChatInboxDashboard({
   refreshUsage,
   onOpenSources,
 }) {
-  const [conversations, setConversations] = useState([]);
+  const queryClient = useQueryClient();
+  const conversationKey = useMemo(() => ['rag', 'conversations', ownerKey], [ownerKey]);
+  const conversationsQuery = useQuery({
+    queryKey: conversationKey,
+    queryFn: ({ signal }) => listConversations(0, 50, { signal }),
+    staleTime: 30_000,
+  });
+  const conversations = conversationsQuery.data?.conversations || [];
+  const setConversations = useCallback((update) => {
+    queryClient.setQueryData(conversationKey, (current) => {
+      const previous = current?.conversations || [];
+      const next = typeof update === 'function' ? update(previous) : update;
+      return { ...(current || { offset: 0, limit: 50 }), conversations: next, total: next.length };
+    });
+  }, [queryClient, conversationKey]);
   const [activeId, setActiveId] = useState(null);
   const [turnsById, setTurnsById] = useState({});
   const [input, setInput] = useState("");
   const [pipeline, setPipeline] = useState(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
-  const [loadingConversations, setLoadingConversations] = useState(true);
+  const loadingConversations = conversationsQuery.isPending;
   const [search, setSearch] = useState("");
   const [scopedDocIds, setScopedDocIds] = useState([]);
   const [showDocPicker, setShowDocPicker] = useState(false);
@@ -1131,31 +1148,10 @@ function ChatInboxDashboard({
   };
 
   useEffect(() => {
-    let isSubscribed = true;
-    const safetyTimer = setTimeout(() => {
-      if (isSubscribed) setLoadingConversations(false);
-    }, 3000);
-
-    listConversations(0, 50)
-      .then((res) => {
-        if (!isSubscribed) return;
-        const convs = res.conversations || [];
-        setConversations(convs);
-        if (convs.length > 0) {
-          setActiveId((prev) => prev || convs[0].id);
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (isSubscribed) setLoadingConversations(false);
-        clearTimeout(safetyTimer);
-      });
-
-    return () => {
-      isSubscribed = false;
-      clearTimeout(safetyTimer);
-    };
-  }, []);
+    if (!activeId && !loadingConversations && conversations.length > 0) {
+      setActiveId(conversations[0].id);
+    }
+  }, [activeId, loadingConversations, conversations]);
 
   useEffect(() => {
     if (!activeId) return;
@@ -2286,7 +2282,6 @@ function RagFileManager({
   const [uploading, setUploading] = useState(false);
   const [syncingGcr, setSyncingGcr] = useState(false);
   const [expandedCourses, setExpandedCourses] = useState({});
-  const pollingRef = useRef({});
   const inputRef = useRef(null);
   const mounted = useMountedFade();
 
@@ -2305,52 +2300,6 @@ function RagFileManager({
       setSyncingGcr(false);
     }
   };
-
-  const pollDocumentStatus = useCallback(
-    (docId) => {
-      if (pollingRef.current[docId]) return;
-      pollingRef.current[docId] = true;
-
-      let attempts = 0;
-      const MAX_ATTEMPTS = 40;
-
-      const poll = async () => {
-        try {
-          attempts++;
-          const status = await getDocumentStatus(docId);
-          const mappedStatus = status.status === "completed" ? "indexed" : status.status;
-          setFiles((prev) =>
-            prev.map((f) => (f.id === docId ? { ...f, status: mappedStatus, error: status.error_message } : f))
-          );
-          if ((mappedStatus === "processing" || mappedStatus === "uploaded") && attempts < MAX_ATTEMPTS) {
-            setTimeout(poll, 1500);
-          } else {
-            const isTerminal = mappedStatus !== "processing" && mappedStatus !== "uploaded";
-            if (attempts >= MAX_ATTEMPTS && (mappedStatus === "processing" || mappedStatus === "uploaded")) {
-              setFiles((prev) =>
-                prev.map((f) => (f.id === docId ? { ...f, status: "failed", error: "Processing timed out" } : f))
-              );
-            }
-            delete pollingRef.current[docId];
-            if (refreshUsage) refreshUsage();
-            if (refreshFiles && isTerminal) refreshFiles();
-          }
-        } catch {
-          delete pollingRef.current[docId];
-        }
-      };
-      setTimeout(poll, 1500);
-    },
-    [setFiles, refreshUsage, refreshFiles]
-  );
-
-  useEffect(() => {
-    files.forEach((f) => {
-      if (f.status === "processing" || f.status === "uploaded") {
-        pollDocumentStatus(f.id);
-      }
-    });
-  }, [files, pollDocumentStatus]);
 
   const addFiles = useCallback(
     async (fileList) => {
@@ -2375,7 +2324,6 @@ function RagFileManager({
           const mapped = mapDocumentToFrontend(doc);
           mapped.progress = 0;
           setFiles((prev) => [mapped, ...prev.filter((f) => f.id !== doc.id)]);
-          pollDocumentStatus(doc.id);
         }
         if (refreshUsage) refreshUsage();
         if (refreshFiles) refreshFiles();
@@ -2386,7 +2334,7 @@ function RagFileManager({
         setUploading(false);
       }
     },
-    [setFiles, pollDocumentStatus, refreshUsage, refreshFiles]
+    [setFiles, refreshUsage, refreshFiles]
   );
 
   const onDrop = (e) => {
@@ -2397,7 +2345,7 @@ function RagFileManager({
 
   const onRetry = (id) => {
     setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, status: "processing", progress: 0, error: null } : f)));
-    pollDocumentStatus(id);
+    refreshFiles();
   };
 
   const toggleSelect = (id) => {
@@ -2771,58 +2719,48 @@ function RagFileManager({
 ===================================================================== */
 
 export default function RagAssistantPage() {
+  const { userId } = useAuth();
+  const queryClient = useQueryClient();
+  const ownerKey = getQueryOwnerKey(userId);
+  const documentsKey = useMemo(() => ['rag', 'documents', ownerKey], [ownerKey]);
+  const usageKey = useMemo(() => ['rag', 'usage', ownerKey], [ownerKey]);
+  const documentsQuery = useQuery({
+    queryKey: documentsKey,
+    queryFn: async ({ signal }) => (await listDocuments({ signal })).map(mapDocumentToFrontend),
+    staleTime: 45_000,
+    refetchInterval: (query) => query.state.data?.some((file) => file.status === "processing" || file.status === "uploaded") ? 5_000 : false,
+    refetchIntervalInBackground: false,
+  });
+  const usageQuery = useQuery({
+    queryKey: usageKey,
+    queryFn: ({ signal }) => getUsage({ signal }),
+    staleTime: 60_000,
+  });
   const [route, setRoute] = useState("inbox");
   const [plan, setPlan] = useState("free");
   const [sourcesView, setSourcesView] = useState("sources");
-  const [files, setFiles] = useState([]);
+  const files = documentsQuery.data || [];
   const [pendingDocTag, setPendingDocTag] = useState(null);
-  const [usageData, setUsageData] = useState(null);
+  const usageData = usageQuery.data || null;
   const mounted = useMountedFade();
 
+  const setFiles = useCallback((update) => {
+    queryClient.setQueryData(documentsKey, (current = []) => (
+      typeof update === "function" ? update(current) : update
+    ));
+  }, [queryClient, documentsKey]);
+
   const refreshFiles = useCallback(() => {
-    listDocuments()
-      .then((docs) => setFiles(docs.map(mapDocumentToFrontend)))
-      .catch(() => {});
-  }, []);
+    return queryClient.invalidateQueries({ queryKey: documentsKey });
+  }, [queryClient, documentsKey]);
 
   const refreshUsage = useCallback(() => {
-    getUsage()
-      .then(setUsageData)
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    refreshFiles();
-    refreshUsage();
-  }, [refreshFiles, refreshUsage]);
-
-  const hasProcessingFiles = files.some(
-    (f) => f.status === "processing" || f.status === "uploaded"
-  );
-  const pollingAttemptsRef = useRef(0);
-
-  useEffect(() => {
-    if (!hasProcessingFiles) {
-      pollingAttemptsRef.current = 0;
-      return;
-    }
-    if (pollingAttemptsRef.current >= 40) {
-      pollingAttemptsRef.current = 0;
-      return;
-    }
-    const interval = setInterval(() => {
-      pollingAttemptsRef.current += 1;
-      refreshFiles();
-      refreshUsage();
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [hasProcessingFiles, refreshFiles, refreshUsage]);
+    return queryClient.invalidateQueries({ queryKey: usageKey });
+  }, [queryClient, usageKey]);
 
   const goToRoute = (id) => {
     if (id === "sources") setSourcesView("sources");
     setRoute(id);
-    refreshFiles();
-    refreshUsage();
   };
 
   const upgrade = () => setPlan("pro");
@@ -2855,8 +2793,16 @@ export default function RagAssistantPage() {
         onTagDoc={tagDocInChat}
       />
 
+      {documentsQuery.isError && (
+        <div role="alert" className="mx-4 mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+          Document details could not be loaded. {documentsQuery.error?.message || 'Retry to refresh your library.'}
+          <button type="button" className="ml-2 font-semibold underline" onClick={() => documentsQuery.refetch()}>Retry</button>
+        </div>
+      )}
+
       <div className={`flex-1 min-h-0 ${route === "inbox" ? "" : "hidden"}`}>
         <ChatInboxDashboard
+          ownerKey={ownerKey}
           plan={plan}
           onUpgrade={upgrade}
           pendingDocTag={pendingDocTag}

@@ -2,8 +2,9 @@ from unittest.mock import MagicMock, patch
 import json
 import pytest
 
-from app.classroom.router import (
+from app.api.endpoints.classroom import (
     get_onboarding_status,
+    get_services_status,
     dismiss_onboarding,
     save_onboarding_data,
     OnboardingSavePayload,
@@ -120,3 +121,40 @@ def test_onboarding_save_and_configured():
 
     assert f"classroom:user_onboarding_test:onboarding_dismissed" in db.settings
     assert db.settings[f"classroom:user_onboarding_test:onboarding_dismissed"].value == "true"
+
+
+def test_services_status_flow():
+    db = MockDB()
+    user = {"id": "user_services_test"}
+
+    with patch("app.db.repositories.GoogleCredentialRepository.get", return_value=None):
+        status = get_services_status(db=db, clerk_user=user)
+
+    assert status["all_connected"] is False
+    assert status["connected_count"] == 0
+    assert status["total_services"] == 3
+    assert set(status["needs_reconnect"]) == {"google_classroom", "claude", "portal"}
+
+    # Now add credentials/cookies
+    db.settings["classroom:user_services_test:google_session_cookies"] = Setting(
+        key="classroom:user_services_test:google_session_cookies",
+        value='[{"name": "OSID", "value": "xyz"}]'
+    )
+    db.settings["classroom:user_services_test:claude_session_key"] = Setting(
+        key="classroom:user_services_test:claude_session_key",
+        value="sk-ant-session-test"
+    )
+    db.settings["portal:user_services_test:portal_session_cookies"] = Setting(
+        key="portal:user_services_test:portal_session_cookies",
+        value="ASP.NET_SessionId=xyz123"
+    )
+
+    with patch("app.db.repositories.GoogleCredentialRepository.get", return_value=None):
+        status_after = get_services_status(db=db, clerk_user=user)
+
+    assert status_after["all_connected"] is True
+    assert status_after["connected_count"] == 3
+    assert status_after["needs_reconnect"] == []
+    assert status_after["services"]["google_classroom"]["connected"] is True
+    assert status_after["services"]["claude"]["connected"] is True
+    assert status_after["services"]["portal"]["connected"] is True

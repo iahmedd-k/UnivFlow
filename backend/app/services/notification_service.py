@@ -92,7 +92,7 @@ class NotificationService:
 
         # Determine recipient if not provided
         if not recipient:
-            from app.notifications.router import _get_user_notification_email
+            from app.api.endpoints.notifications import _get_user_notification_email
             recipient = _get_user_notification_email(self.db, user_id)
             if not recipient:
                 raise ValueError(f"No notification recipient found for user {user_id}")

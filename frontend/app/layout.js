@@ -1,4 +1,5 @@
 import { ClerkProvider } from '@clerk/nextjs';
+import DashboardDataProvider from '@/app/dashboard/DashboardDataProvider';
 import { Inter, Plus_Jakarta_Sans, JetBrains_Mono } from 'next/font/google';
 import "./globals.css";
 
@@ -127,7 +128,7 @@ export default function RootLayout({ children }) {
     <ClerkProvider>
       <html lang="en" className={`${inter.variable} ${plusJakarta.variable} ${jetbrainsMono.variable}`} suppressHydrationWarning>
         <body className="min-h-screen flex flex-col font-sans antialiased text-ink bg-paper" suppressHydrationWarning>
-          {children}
+          <DashboardDataProvider>{children}</DashboardDataProvider>
         </body>
       </html>
     </ClerkProvider>

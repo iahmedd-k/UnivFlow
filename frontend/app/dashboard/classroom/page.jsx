@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import Icon from '@/app/dashboard/Icon';
 
 const courseColors = ['#526c78', '#259b70', '#3478e5', '#873e98', '#426f9a', '#b5673d'];
@@ -23,49 +25,56 @@ function dueLabel(value) {
 }
 
 export default function ClassroomPage() {
-  const { getToken } = useAuth();
-  const [courses, setCourses] = useState([]);
-  const [assignments, setAssignments] = useState([]);
-  const [sync, setSync] = useState(null);
-  const [semesterDate, setSemesterDate] = useState('');
-  const [loading, setLoading] = useState(true);
+  const { getToken, userId } = useAuth();
+  const queryClient = useQueryClient();
+  const ownerKey = getQueryOwnerKey(userId);
+  const coursesKey = ['classroom', 'courses', ownerKey];
+  const assignmentsKey = ['assignments', ownerKey, 'all'];
+  const syncKey = ['classroom', 'sync-status', ownerKey];
+  const settingsKey = ['classroom', 'settings', ownerKey];
+  const coursesQuery = useQuery({
+    queryKey: coursesKey,
+    queryFn: async ({ signal }) => api.getCourses(await api.getRequestToken(getToken), null, { signal, direct: true }),
+  });
+  const assignmentsQuery = useQuery({
+    queryKey: assignmentsKey,
+    queryFn: async ({ signal }) => api.getAssignments(null, await api.getRequestToken(getToken), null, { signal, direct: true }),
+  });
+  const syncQuery = useQuery({
+    queryKey: syncKey,
+    queryFn: async ({ signal }) => api.getSyncStatus(await api.getRequestToken(getToken), { signal }),
+    staleTime: 15_000,
+  });
+  const settingsQuery = useQuery({
+    queryKey: settingsKey,
+    queryFn: async ({ signal }) => api.getClassroomSettings(await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const { refetch: refetchCourses } = coursesQuery;
+  const { refetch: refetchAssignments } = assignmentsQuery;
+  const { refetch: refetchSync } = syncQuery;
+  const { refetch: refetchSettings } = settingsQuery;
+  const courses = coursesQuery.data || [];
+  const assignments = assignmentsQuery.data || [];
+  const sync = syncQuery.data || null;
+  const loading = coursesQuery.isPending;
+  const queryError = [coursesQuery, assignmentsQuery, syncQuery, settingsQuery].find((query) => query.isError)?.error;
+  const [semesterDateDraft, setSemesterDateDraft] = useState(null);
+  const semesterDate = semesterDateDraft ?? settingsQuery.data?.semester_start_date ?? '';
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
   const loadData = useCallback(async (forceRefresh = false) => {
-    try {
-      const token = getToken ? await getToken() : null;
-      const results = await Promise.allSettled([
-        api.getCourses(token),
-        api.getSyncStatus(token),
-        api.getClassroomSettings(token),
-        api.getAssignments(null, token, null, forceRefresh ? { noCache: true } : {}),
-      ]);
-
-      if (results[0].status === 'fulfilled') setCourses(results[0].value || []);
-      if (results[1].status === 'fulfilled') {
-        const syncData = results[1].value;
-        setSync(syncData);
-        if (syncData?.sync_run?.status === 'failed' && (!results[0].value || results[0].value.length === 0)) {
-          const syncErr = syncData.sync_run.error || syncData.sync_run.result?.errors?.[0];
-          if (syncErr) setError(syncErr);
-        }
-      }
-      if (results[2].status === 'fulfilled') setSemesterDate(results[2].value?.semester_start_date || '');
-      if (results[3].status === 'fulfilled') setAssignments(results[3].value || []);
-
-      const failed = results.find((r) => r.status === 'rejected');
-      if (failed) throw failed.reason;
-    } catch (err) {
-      setError(err.message || 'Could not load local Classroom data.');
-    } finally {
-      setLoading(false);
+    if (forceRefresh) {
+      api.clearCache('classroom');
+      api.clearCache('assignments');
     }
-  }, [getToken]);
+    await Promise.allSettled([
+      refetchCourses(), refetchAssignments(), refetchSync(), refetchSettings(),
+    ]);
+  }, [queryClient, ownerKey, refetchCourses, refetchAssignments, refetchSync, refetchSettings]);
 
   useEffect(() => {
-    void loadData();
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       if (params.get('google_connected') === 'true') {
@@ -90,10 +99,10 @@ export default function ClassroomPage() {
     let timer;
     const checkSyncStatus = async () => {
       try {
-        const token = await getToken();
-        const latest = await api.getSyncStatus(token);
+        const token = await api.getRequestToken(getToken);
+        const latest = await api.getSyncStatus(token, { noCache: true });
         if (cancelled) return;
-        setSync(latest);
+        queryClient.setQueryData(syncKey, latest);
 
         if (latest.sync_run?.status === 'running') {
           timer = setTimeout(checkSyncStatus, 5000);
@@ -121,18 +130,18 @@ export default function ClassroomPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [sync?.sync_run?.status, getToken, loadData]);
+  }, [sync?.sync_run?.status, getToken, loadData, queryClient, ownerKey]);
 
   const handleSync = async () => {
     setBusy(true);
     setError('');
     setMessage('');
     try {
-      const token = await getToken();
+      const token = await api.getRequestToken(getToken);
       await api.saveClassroomSettings({ semester_start_date: semesterDate || null }, token);
       const result = await api.triggerSync(semesterDate || null, token);
       setMessage(result.message || 'Google Classroom sync started. Tracking progress…');
-      setSync((current) => ({
+      queryClient.setQueryData(syncKey, (current) => ({
         ...current,
         sync_run: {
           ...current?.sync_run,
@@ -151,7 +160,7 @@ export default function ClassroomPage() {
     setBusy(true);
     setError('');
     try {
-      const token = await getToken();
+      const token = await api.getRequestToken(getToken);
       const result = await api.getGoogleAuthUrl(token, '/dashboard/classroom');
       if (result.auth_url) window.location.assign(result.auth_url);
       else throw new Error('Google did not return an authorization URL.');
@@ -162,6 +171,7 @@ export default function ClassroomPage() {
   };
 
   const isConnected = Boolean(sync?.google_connected);
+  const visibleError = error || (queryError ? queryError.message || 'Could not load Classroom data.' : '');
   const syncRun = sync?.sync_run;
   const isSyncRunning = syncRun?.status === 'running' || busy;
 
@@ -186,7 +196,7 @@ export default function ClassroomPage() {
         </div>
       </header>
 
-      {error && <div className="flex items-center justify-between gap-4 rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose" role="alert"><span>{error}</span><button type="button" className="inline-flex min-h-8 shrink-0 items-center justify-center rounded-md border border-border-input bg-surface px-3 text-sm font-medium text-nav hover:bg-surface-secondary" onClick={loadData}>Try again</button></div>}
+      {visibleError && <div className="flex items-center justify-between gap-4 rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose" role="alert"><span>{visibleError}</span><button type="button" className="inline-flex min-h-8 shrink-0 items-center justify-center rounded-md border border-border-input bg-surface px-3 text-sm font-medium text-nav hover:bg-surface-secondary" onClick={() => loadData(true)}>Try again</button></div>}
       {message && <div className="rounded-lg border border-success/30 bg-success-bg px-4 py-3 text-sm text-success" role="status">{message}</div>}
 
       <section className="grid grid-cols-1 gap-3.5 md:grid-cols-3" aria-label="Classroom sync summary">
@@ -203,7 +213,7 @@ export default function ClassroomPage() {
           <p className="mb-4 text-sm leading-relaxed text-muted font-normal">Sync runs in the background. You can leave this page while courses and assignments are updated.</p>
           {syncRun?.status === 'running' && <p className="mb-4 rounded-lg bg-violet-light px-3 py-2.5 text-sm leading-relaxed text-violet" role="status">Sync in progress. This page will update when it finishes.</p>}
           <div className="flex flex-col gap-3 border-t border-border-light pt-4 sm:flex-row sm:items-end">
-            <label className="flex w-full max-w-xs flex-col gap-1.5 text-sm font-medium text-heading"><span>Semester start date</span><input className="rounded-md border border-border-input px-3 py-2 text-sm font-normal outline-none focus:border-violet focus:ring-2 focus:ring-violet/20" type="date" value={semesterDate} onChange={(e) => setSemesterDate(e.target.value)} /></label>
+            <label className="flex w-full max-w-xs flex-col gap-1.5 text-sm font-medium text-heading"><span>Semester start date</span><input className="rounded-md border border-border-input px-3 py-2 text-sm font-normal outline-none focus:border-violet focus:ring-2 focus:ring-violet/20" type="date" value={semesterDate} onChange={(e) => setSemesterDateDraft(e.target.value)} /></label>
             <p className="pb-2 text-xs font-normal text-subtle">Older courses can be excluded from this semester’s sync.</p>
             {isConnected && <button type="button" onClick={handleSync} disabled={isSyncRunning} className="ml-auto inline-flex min-h-9 items-center justify-center rounded-md border border-violet bg-violet px-3 text-sm font-medium text-white hover:bg-violet-dark disabled:opacity-55">{syncRun?.status === 'running' ? 'Syncing…' : busy ? 'Starting…' : 'Sync now'}</button>}
           </div>

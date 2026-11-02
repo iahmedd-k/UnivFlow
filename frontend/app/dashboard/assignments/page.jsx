@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@clerk/nextjs';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import Icon from '@/app/dashboard/Icon';
 import AssignmentCard from './AssignmentCard';
 
@@ -16,29 +18,12 @@ const statusFilters = [
   { id: 'quizzes', label: 'Quizzes' },
   { id: 'submitted', label: 'Submitted' },
 ];
+const EMPTY_ASSIGNMENTS = [];
 
 export default function AssignmentsPage() {
   const { getToken, userId } = useAuth();
-  const cacheKey = `uniflow_cached_assignments_${userId || 'default'}`;
-
-  const [assignments, setAssignments] = useState(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const cached = localStorage.getItem('uniflow_cached_assignments');
-        if (cached) return JSON.parse(cached);
-      } catch (_) {}
-    }
-    return [];
-  });
-  const [loading, setLoading] = useState(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const cached = localStorage.getItem('uniflow_cached_assignments');
-        if (cached && JSON.parse(cached).length > 0) return false;
-      } catch (_) {}
-    }
-    return true;
-  });
+  const queryClient = useQueryClient();
+  const ownerKey = getQueryOwnerKey(userId);
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState('all');
   const [selectedCourse, setSelectedCourse] = useState('all');
@@ -48,50 +33,31 @@ export default function AssignmentsPage() {
   const [activeAssignment, setActiveAssignment] = useState(null);
   const [initialModalTab, setInitialModalTab] = useState('overview');
   const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'list'
-
-  const loadAssignments = useCallback(async (isManualRefresh = false) => {
-    if (isManualRefresh) setRefreshing(true);
-    try {
-      const token = getToken ? await getToken() : null;
-      const data = await api.getAssignments(filter === 'all' ? null : filter, token, null, {
-        noCache: isManualRefresh,
-      });
-      const list = Array.isArray(data) ? data : [];
-      setAssignments(list);
-      if (filter === 'all' && list.length > 0 && typeof window !== 'undefined') {
-        try {
-          localStorage.setItem(cacheKey, JSON.stringify(list));
-        } catch (_) {}
-      }
-      setError(null);
-    } catch (e) {
-      setError(e.message || 'Unable to connect to the assignment service.');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [filter, cacheKey, getToken]);
+  const assignmentsKey = ['assignments', ownerKey, filter];
+  const assignmentsQuery = useQuery({
+    queryKey: assignmentsKey,
+    queryFn: async ({ signal }) => {
+      const rows = await api.getAssignments(filter === 'all' ? null : filter, await api.getRequestToken(getToken), null, { signal, direct: true });
+      return Array.isArray(rows) ? rows : [];
+    },
+    staleTime: filter === 'all' ? 45_000 : 30_000,
+  });
+  const assignments = assignmentsQuery.data ?? EMPTY_ASSIGNMENTS;
+  const loading = assignmentsQuery.isPending;
+  const loadingError = error || assignmentsQuery.error?.message || null;
 
   const handleSyncClassroom = async () => {
     setRefreshing(true);
     setError(null);
     try {
-      const token = await getToken();
-      // Directly sync from Google Classroom API - returns latest live data immediately
+      const token = await api.getRequestToken(getToken);
       const result = await api.triggerSync(null, token);
       api.clearCache();
-      
-      if (result?.assignments && Array.isArray(result.assignments)) {
-        // Instantly display the fresh GCR data on the frontend
-        setAssignments(result.assignments);
-        if (typeof window !== 'undefined') {
-          try {
-            localStorage.setItem(cacheKey, JSON.stringify(result.assignments));
-          } catch (_) {}
-        }
-      } else {
-        await loadAssignments(true);
+      if (Array.isArray(result?.assignments)) {
+        queryClient.setQueryData(['assignments', ownerKey, 'all'], result.assignments);
       }
+      await queryClient.invalidateQueries({ queryKey: ['assignments', ownerKey] });
+      await queryClient.invalidateQueries({ queryKey: ['dashboard', 'overview', ownerKey] });
 
       if (result?.status === 'reconnect_required') {
         setError(result.message || 'Google Classroom needs to be reconnected to sync coursework.');
@@ -110,17 +76,13 @@ export default function AssignmentsPage() {
 
   const handleConnectGoogle = async () => {
     try {
-      const token = await getToken();
+      const token = await api.getRequestToken(getToken);
       const res = await api.getGoogleAuthUrl(token, '/dashboard/assignments');
       if (res?.auth_url) window.location.assign(res.auth_url);
     } catch (e) {
       setError(e.message || 'Could not initiate Google connection.');
     }
   };
-
-  useEffect(() => {
-    loadAssignments();
-  }, [filter]);
 
   const availableCourses = useMemo(() => {
     const courses = new Set();
@@ -210,11 +172,12 @@ export default function AssignmentsPage() {
     });
 
     return list;
-  }, [assignments, query, selectedCourse, sortBy]);
+  }, [assignments, filter, query, selectedCourse, sortBy]);
 
   const handleTurnIn = async (assignmentId, templateId, files, token) => {
     await api.turnInAssignment(assignmentId, { template_id: templateId, files }, token);
-    await loadAssignments(true);
+    await queryClient.invalidateQueries({ queryKey: ['assignments', ownerKey] });
+    await queryClient.invalidateQueries({ queryKey: ['dashboard', 'overview', ownerKey] });
   };
 
   const openModalWithTab = (assignment, tab = 'overview') => {
@@ -243,7 +206,7 @@ export default function AssignmentsPage() {
           <button
             type="button"
             onClick={handleSyncClassroom}
-            disabled={refreshing || loading}
+            disabled={refreshing}
             className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-violet bg-violet px-3 text-sm font-medium text-white hover:bg-violet-dark disabled:cursor-not-allowed disabled:opacity-55"
             aria-label="Refresh assignments"
           >
@@ -400,18 +363,18 @@ export default function AssignmentsPage() {
       </div>
 
       {/* Error Callout */}
-      {error && (
+      {loadingError && (
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose" role="alert">
           <div>
             <strong className="block font-semibold">
-              {error.toLowerCase().includes('reconnect') || error.toLowerCase().includes('expired')
+              {loadingError.toLowerCase().includes('reconnect') || loadingError.toLowerCase().includes('expired')
                 ? 'Google Classroom session expired'
                 : 'Assignments could not be loaded'}
             </strong>
-            <span className="mt-0.5 block font-normal">{error}</span>
+            <span className="mt-0.5 block font-normal">{loadingError}</span>
           </div>
           <div className="flex items-center gap-2 self-start sm:self-auto">
-            {(error.toLowerCase().includes('reconnect') || error.toLowerCase().includes('expired') || error.toLowerCase().includes('revoked')) && (
+            {(loadingError.toLowerCase().includes('reconnect') || loadingError.toLowerCase().includes('expired') || loadingError.toLowerCase().includes('revoked')) && (
               <button
                 type="button"
                 onClick={handleConnectGoogle}
@@ -422,7 +385,7 @@ export default function AssignmentsPage() {
             )}
             <button
               type="button"
-              onClick={() => loadAssignments(true)}
+              onClick={() => { setError(null); assignmentsQuery.refetch(); }}
               className="inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-input bg-surface px-3 text-sm font-medium text-nav hover:bg-surface-secondary"
             >
               Try again

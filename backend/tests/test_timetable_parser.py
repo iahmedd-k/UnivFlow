@@ -1,4 +1,4 @@
-from app.portal.router import _timetable_rows, _extract_cell_details, _to_24h
+from app.api.endpoints.portal import _timetable_rows, _extract_cell_details, _to_24h
 
 
 def test_time_conversions():

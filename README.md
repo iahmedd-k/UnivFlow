@@ -48,9 +48,12 @@ Assignment generation is Claude-only. Uniflow automates Claude.ai through the us
 ## Where to work
 
 - FastAPI routes, services, integrations, and persistence: `backend/app/`.
+- Active FastAPI routes and registration: `backend/app/api/endpoints/`.
 - Alembic schema changes: `backend/alembic/versions/`.
 - Backend tests: `backend/tests/`.
 - Next.js routes, components, and client helpers: `frontend/app/`.
+- Chrome companion extension source: `extension/`.
+- Architecture and deployment documentation: `docs/`.
 - Azure container and runtime configuration: `backend/deploy/`.
 - Deployment steps: [docs/deployment.md](docs/deployment.md).
 

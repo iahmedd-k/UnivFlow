@@ -1,8 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useAuth, useUser } from '@clerk/nextjs';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import Icon from '@/app/dashboard/Icon';
 
 const TEMPLATE_PLACEHOLDERS = [
@@ -19,10 +21,15 @@ const TEMPLATE_PLACEHOLDERS = [
 ];
 
 export default function TemplatesPage() {
-  const { getToken } = useAuth();
+  const { getToken, userId } = useAuth();
   const { user } = useUser();
-  const [templates, setTemplates] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const ownerKey = getQueryOwnerKey(userId);
+  const templatesQuery = useQuery({
+    queryKey: ['templates', ownerKey, 'assignments'],
+    queryFn: async ({ signal }) => api.getAssignmentTemplates(await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const templates = templatesQuery.data || [];
+  const loading = templatesQuery.isPending;
   const [showCreate, setShowCreate] = useState(false);
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [copiedTag, setCopiedTag] = useState(null);
@@ -53,22 +60,7 @@ export default function TemplatesPage() {
     solutionSnippet: '1. Executive Summary & Architecture Overview\n\nThis report presents the distributed consensus mechanism, load balancing metrics, and microservice decoupling strategy implemented for the university capstone project...',
   });
 
-  const loadTemplates = useCallback(async () => {
-    try {
-      const token = await getToken();
-      const data = await api.getAssignmentTemplates(token);
-      setTemplates(data || []);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [getToken]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => loadTemplates(), 0);
-    return () => clearTimeout(timer);
-  }, [loadTemplates]);
+  const loadTemplates = templatesQuery.refetch;
 
   const extractDocIdFromUrl = (urlOrId) => {
     if (!urlOrId) return '';
@@ -210,6 +202,7 @@ export default function TemplatesPage() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-8 pb-12">
+      {(error || templatesQuery.error?.message) && <div role="alert" className="rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose">{error || templatesQuery.error.message}<button type="button" className="ml-2 font-semibold underline" onClick={() => loadTemplates()}>Retry</button></div>}
       {/* Top Banner Header */}
       <div className="bg-gradient-to-r from-indigo-900 via-indigo-800 to-blue-900 rounded-3xl p-8 text-white shadow-xl relative overflow-hidden">
         <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-white/5 skew-x-12 pointer-events-none transform translate-x-12"></div>

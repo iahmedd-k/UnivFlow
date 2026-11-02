@@ -1,1 +1,1 @@
-from app.classroom.router import router
+"""Classroom domain package."""

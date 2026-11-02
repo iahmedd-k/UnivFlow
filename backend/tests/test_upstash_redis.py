@@ -74,38 +74,24 @@ def test_lock_conflict_returns_false(monkeypatch):
     assert not redis_client.acquire_lock("portal:sync:user", "other", ttl_seconds=900)
 
 
-def test_attendance_cache_keys_are_user_scoped_and_generation_invalidates(monkeypatch):
+def test_attendance_cache_invalidation_is_user_scoped(monkeypatch):
     configure_redis(monkeypatch)
     calls = []
 
     def fake_request(method, url, headers, timeout):
         calls.append((method, url))
-        return FakeResponse("12" if method == "GET" else 13)
+        return FakeResponse(1)
 
     monkeypatch.setattr(redis_client.httpx, "request", fake_request)
 
-    assert redis_client.get_attendance_cache_generation() == "12"
-    redis_client.invalidate_attendance_summary_cache()
+    redis_client.invalidate_attendance_summary_cache("user-a")
 
-    first_user_key = redis_client.attendance_summary_cache_key("user-a", "12")
-    second_user_key = redis_client.attendance_summary_cache_key("user-b", "12")
-    next_generation_key = redis_client.attendance_summary_cache_key("user-a", "13")
-    assert first_user_key != second_user_key
-    assert first_user_key != next_generation_key
-    assert calls[1][1].endswith(
-        "/incr/uniflow%3Acache%3Adashboard%3Aattendance-summary%3Av1%3Ageneration"
-    )
-
-
-def test_cache_generation_failure_disables_cache(monkeypatch):
-    configure_redis(monkeypatch)
-
-    def fail_request(*args, **kwargs):
-        raise redis_client.httpx.ConnectError("offline")
-
-    monkeypatch.setattr(redis_client.httpx, "request", fail_request)
-
-    assert redis_client.get_attendance_cache_generation() is None
+    assert len(calls) == 1
+    assert calls[0][0] == "POST"
+    assert "user-a" not in calls[0][1]
+    assert "dashboard%3Aattendance-summary" in calls[0][1]
+    assert "attendance%3Arecords" in calls[0][1]
+    assert "timetable%3Aclasses" in calls[0][1]
 
 
 def test_malformed_rest_response_disables_cache(monkeypatch):
@@ -121,4 +107,46 @@ def test_malformed_rest_response_disables_cache(monkeypatch):
         lambda *args, **kwargs: MalformedResponse(None),
     )
 
-    assert redis_client.get_attendance_cache_generation() is None
+    assert redis_client.get_json("cache:key") is None
+
+
+def test_user_cache_keys_are_scoped_and_invalidation_deletes_only_that_key(monkeypatch):
+    configure_redis(monkeypatch)
+    calls = []
+
+    def fake_request(method, url, headers, timeout):
+        calls.append((method, url))
+        return FakeResponse(1)
+
+    monkeypatch.setattr(redis_client.httpx, "request", fake_request)
+
+    user_a_key = redis_client.user_cache_key("timetable:classes", "user-a")
+    user_b_key = redis_client.user_cache_key("timetable:classes", "user-b")
+    assert user_a_key != user_b_key
+
+    redis_client.invalidate_user_cache("timetable:classes", "user-a")
+    assert calls[0][0] == "POST"
+    assert calls[0][1].endswith(f"/del/{user_a_key.replace(':', '%3A')}")
+
+
+def test_user_cache_serializes_datetime_fields(monkeypatch):
+    from datetime import datetime, timezone
+
+    configure_redis(monkeypatch)
+    calls = []
+
+    def fake_request(method, url, headers, timeout):
+        calls.append((method, url))
+        return FakeResponse("OK")
+
+    monkeypatch.setattr(redis_client.httpx, "request", fake_request)
+
+    redis_client.set_user_cache(
+        "attendance:records",
+        "user-a",
+        {"updated_at": datetime(2026, 1, 2, tzinfo=timezone.utc)},
+        ttl_seconds=30,
+    )
+
+    assert calls[0][0] == "POST"
+    assert "%222026-01-02T00%3A00%3A00%2B00%3A00%22" in calls[0][1]

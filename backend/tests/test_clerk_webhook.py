@@ -3,7 +3,7 @@ import hashlib
 import hmac
 import time
 
-from app.auth.clerk_webhook import verify_clerk_signature
+from app.api.endpoints.clerk_webhook import verify_clerk_signature
 
 
 def _signed_values(payload: bytes, timestamp: int) -> tuple[str, str, str]:

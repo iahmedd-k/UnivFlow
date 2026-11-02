@@ -1,1 +1,1 @@
-from app.agent.router import router
+"""Agent domain package."""

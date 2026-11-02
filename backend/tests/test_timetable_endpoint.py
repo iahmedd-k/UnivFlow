@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 from app.db.database import get_db, Base
 from app.db.models import TimetableEntry
 from app.auth.clerk_auth import get_current_user_optional
-from app.timetable.router import router as timetable_router
+from app.api.endpoints.timetable import router as timetable_router
 
 CLASSES_DATA = [
     # Monday (0)

@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.portal.router import _parse_cookie_header, _fetch_and_sync_portal_http
+from app.api.endpoints.portal import _parse_cookie_header, _fetch_and_sync_portal_http
 from app.db.models import Setting
 from app.db.database import get_db
 from sqlalchemy import create_engine

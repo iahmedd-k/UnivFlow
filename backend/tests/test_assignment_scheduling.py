@@ -6,7 +6,7 @@ from fastapi import HTTPException
 
 from app.db.models import Setting
 
-assignment_router = importlib.import_module("app.assignments.router")
+assignment_router = importlib.import_module("app.api.endpoints.assignments")
 
 
 class FakeQuery:

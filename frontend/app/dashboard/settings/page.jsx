@@ -2,75 +2,82 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth, useUser } from '@clerk/nextjs';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import Icon from '@/app/dashboard/Icon';
 import { isExtensionInstalled, syncGcrViaExtension, autoVisitAndSyncGcr, syncSelectedViaExtension, EXTENSION_VERSION } from '@/app/lib/extensionBridge';
 
 export default function SettingsPage() {
-  const { getToken } = useAuth();
+  const { getToken, userId } = useAuth();
+  const queryClient = useQueryClient();
+  const ownerKey = getQueryOwnerKey(userId);
   const { user } = useUser();
-  const [notificationEmail, setNotificationEmail] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [notificationEmailDraft, setNotificationEmailDraft] = useState(null);
+  const [studentNameDraft, setStudentNameDraft] = useState(null);
+  const [rollNoDraft, setRollNoDraft] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-  const [browserStatus, setBrowserStatus] = useState(null);
+  const [browserStatusOverride, setBrowserStatusOverride] = useState(null);
   const [browserBusy, setBrowserBusy] = useState(false);
   const [browserError, setBrowserError] = useState('');
   const [browserNotice, setBrowserNotice] = useState('');
 
   // Student Academic Profile state
-  const [studentName, setStudentName] = useState('');
-  const [rollNo, setRollNo] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileSuccess, setProfileSuccess] = useState('');
   const [profileError, setProfileError] = useState('');
 
-  const [googleConnected, setGoogleConnected] = useState(false);
-  const [googleEmail, setGoogleEmail] = useState('');
   const [googleBusy, setGoogleBusy] = useState(false);
-  const [gcrBrowserStatus, setGcrBrowserStatus] = useState(null);
+  const [gcrBrowserStatusOverride, setGcrBrowserStatusOverride] = useState(null);
   const [gcrBusy, setGcrBusy] = useState(false);
+  const profileQuery = useQuery({
+    queryKey: ['classroom', ownerKey, 'student-profile'],
+    queryFn: async ({ signal }) => api.getStudentProfile(await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const notificationEmailQuery = useQuery({
+    queryKey: ['auth', ownerKey, 'notification-email'],
+    queryFn: async ({ signal }) => api.getNotificationEmail(await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const authStatusQuery = useQuery({
+    queryKey: ['auth', ownerKey, 'status'],
+    queryFn: async ({ signal }) => api.getAuthStatus(await api.getRequestToken(getToken), { signal, direct: true }),
+    staleTime: 15_000,
+  });
+  const claudeStatusQuery = useQuery({
+    queryKey: ['classroom', ownerKey, 'claude-browser-status'],
+    queryFn: async ({ signal }) => api.getClaudeBrowserStatus(await api.getRequestToken(getToken), { signal, direct: true }),
+    staleTime: 10_000,
+  });
+  const gcrStatusQuery = useQuery({
+    queryKey: ['classroom', ownerKey, 'gcr-browser-status'],
+    queryFn: async ({ signal }) => api.getClassroomBrowserStatus(await api.getRequestToken(getToken), { signal, direct: true }),
+    staleTime: 10_000,
+  });
+  const portalStatusQuery = useQuery({
+    queryKey: ['portal', ownerKey, 'settings'],
+    queryFn: async ({ signal }) => api.getPortalSettings(await api.getRequestToken(getToken), { signal, direct: true }),
+    staleTime: 30_000,
+  });
+  const { refetch: refetchClaudeStatus } = claudeStatusQuery;
+  const { refetch: refetchGcrStatus } = gcrStatusQuery;
+  const { refetch: refetchPortalStatus } = portalStatusQuery;
 
-  const loadSettingsData = useCallback(async () => {
-    try {
-      const token = getToken ? await getToken() : null;
-      const [profileRes, emailRes, browserRes, googleRes, gcrRes] = await Promise.allSettled([
-        api.getStudentProfile(token),
-        api.getNotificationEmail(token),
-        api.getClaudeBrowserStatus(token),
-        api.getAuthStatus(token),
-        api.getClassroomBrowserStatus(token),
-      ]);
-
-      if (profileRes.status === 'fulfilled' && profileRes.value) {
-        setStudentName(profileRes.value.student_name || '');
-        setRollNo(profileRes.value.roll_no || '');
-      }
-      if (emailRes.status === 'fulfilled' && emailRes.value) {
-        setNotificationEmail(emailRes.value.email || '');
-      }
-      if (browserRes.status === 'fulfilled' && browserRes.value) {
-        setBrowserStatus(browserRes.value);
-        setBrowserError('');
-      }
-      if (googleRes.status === 'fulfilled' && googleRes.value) {
-        setGoogleConnected(Boolean(googleRes.value?.google_connected));
-        setGoogleEmail(googleRes.value?.google_email || '');
-      }
-      if (gcrRes.status === 'fulfilled' && gcrRes.value) {
-        setGcrBrowserStatus(gcrRes.value);
-      }
-    } catch (err) {
-      console.warn('Error loading settings:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [getToken]);
-
-  useEffect(() => {
-    loadSettingsData();
-  }, []);
+  const loading = profileQuery.isPending || notificationEmailQuery.isPending || authStatusQuery.isPending;
+  const notificationEmail = notificationEmailDraft ?? notificationEmailQuery.data?.email ?? '';
+  const studentName = studentNameDraft ?? profileQuery.data?.student_name ?? '';
+  const rollNo = rollNoDraft ?? profileQuery.data?.roll_no ?? '';
+  const googleConnected = Boolean(authStatusQuery.data?.google_connected);
+  const googleEmail = authStatusQuery.data?.google_email || '';
+  const browserStatus = browserStatusOverride ?? claudeStatusQuery.data ?? null;
+  const gcrBrowserStatus = gcrBrowserStatusOverride ?? gcrStatusQuery.data ?? null;
+  const portalStatus = portalStatusQuery.data ?? null;
+  const settingsLoadError = [profileQuery, notificationEmailQuery, authStatusQuery]
+    .find((query) => query.isError)?.error?.message;
+  const setBrowserStatus = (next) => {
+    setBrowserStatusOverride((current) => typeof next === 'function' ? next(current ?? claudeStatusQuery.data ?? null) : next);
+  };
 
   const handleSaveProfile = async (e) => {
     e.preventDefault();
@@ -83,6 +90,13 @@ export default function SettingsPage() {
         student_name: studentName.trim(),
         roll_no: rollNo.trim(),
       }, token);
+      queryClient.setQueryData(['classroom', ownerKey, 'student-profile'], (current) => ({
+        ...current,
+        student_name: studentName.trim(),
+        roll_no: rollNo.trim(),
+      }));
+      setStudentNameDraft(null);
+      setRollNoDraft(null);
       setProfileSuccess('Academic identity saved! Google Docs and terminal outputs will use this name and Reg ID.');
     } catch (err) {
       setProfileError(err.message || 'Could not save student profile.');
@@ -91,47 +105,26 @@ export default function SettingsPage() {
     }
   };
 
-  const loadEmail = useCallback(async () => {
-    try {
-      const token = getToken ? await getToken() : null;
-      const result = await api.getNotificationEmail(token);
-      setNotificationEmail(result?.email || '');
-    } catch (err) {
-      console.error('Failed to load notification email:', err);
-    }
-  }, [getToken]);
-
   const loadBrowserStatus = useCallback(async () => {
     try {
-      const token = getToken ? await getToken() : null;
-      const result = await api.getClaudeBrowserStatus(token);
-      setBrowserStatus(result);
+      const result = await refetchClaudeStatus();
+      setBrowserStatusOverride(null);
       setBrowserError('');
+      return result.data;
     } catch (err) {
       setBrowserError(err.message || 'Could not load your private Claude browser status.');
     }
-  }, [getToken]);
-
-  const loadGoogleAuth = useCallback(async () => {
-    try {
-      const token = getToken ? await getToken() : null;
-      const status = await api.getAuthStatus(token);
-      setGoogleConnected(Boolean(status?.google_connected));
-      setGoogleEmail(status?.google_email || '');
-    } catch (err) {
-      console.error('Failed to load Google auth status:', err);
-    }
-  }, [getToken]);
+  }, [refetchClaudeStatus]);
 
   const loadGcrStatus = useCallback(async () => {
     try {
-      const token = getToken ? await getToken() : null;
-      const status = await api.getClassroomBrowserStatus(token);
-      setGcrBrowserStatus(status);
+      const result = await refetchGcrStatus();
+      setGcrBrowserStatusOverride(null);
+      return result.data;
     } catch (err) {
       console.error('Failed to load Google Classroom browser status:', err);
     }
-  }, [getToken]);
+  }, [refetchGcrStatus]);
 
   const handleDisconnectGcrSession = async () => {
     if (!window.confirm('Disconnect your synced Google Classroom background session? Automatic background turn-in will need to be re-synced.')) return;
@@ -288,10 +281,12 @@ export default function SettingsPage() {
     try {
       const token = await getToken();
       await api.disconnectGoogle(token);
-      setGoogleConnected(false);
-      setGoogleEmail('');
+      queryClient.setQueryData(['auth', ownerKey, 'status'], (current) => ({
+        ...current,
+        google_connected: false,
+        google_email: '',
+      }));
       setSuccess('Google Classroom disconnected successfully.');
-      await loadGoogleAuth();
     } catch (err) {
       setError(err.message || 'Could not disconnect Google Classroom.');
     } finally {
@@ -299,34 +294,16 @@ export default function SettingsPage() {
     }
   };
 
-  const [portalStatus, setPortalStatus] = useState(null);
   const [portalCookieInput, setPortalCookieInput] = useState('');
   const [syncingPortalCookie, setSyncingPortalCookie] = useState(false);
 
   const loadPortalStatus = useCallback(async () => {
     try {
-      const token = await getToken();
-      const res = await api.getPortalSettings(token);
-      setPortalStatus(res);
+      return (await refetchPortalStatus()).data;
     } catch (err) {
       console.error('Failed to load portal status:', err);
     }
-  }, [getToken]);
-
-  useEffect(() => {
-    let active = true;
-    const fetchPortal = async () => {
-      try {
-        const token = await getToken();
-        const res = await api.getPortalSettings(token);
-        if (active) setPortalStatus(res);
-      } catch (err) {
-        console.error('Failed to load portal status:', err);
-      }
-    };
-    fetchPortal();
-    return () => { active = false; };
-  }, [getToken]);
+  }, [refetchPortalStatus]);
 
   const handleSyncPortalCookie = async (e) => {
     if (e) e.preventDefault();
@@ -516,6 +493,8 @@ export default function SettingsPage() {
     try {
       const token = await getToken();
       await api.setNotificationEmail(notificationEmail.trim(), token);
+      queryClient.setQueryData(['auth', ownerKey, 'notification-email'], { email: notificationEmail.trim() });
+      setNotificationEmailDraft(null);
       setSuccess('Notification email saved successfully!');
     } catch (err) {
       setError(err.message || 'Could not save notification email');
@@ -536,7 +515,8 @@ export default function SettingsPage() {
     try {
       const token = await getToken();
       await api.deleteNotificationEmail(token);
-      setNotificationEmail('');
+      queryClient.setQueryData(['auth', ownerKey, 'notification-email'], { email: '' });
+      setNotificationEmailDraft('');
       setSuccess('Notification email removed');
     } catch (err) {
       setError(err.message || 'Could not remove notification email');
@@ -579,6 +559,7 @@ export default function SettingsPage() {
       </header>
 
       {error && <div className="rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm font-normal text-rose" role="alert">{error}</div>}
+      {settingsLoadError && <div className="flex items-center justify-between gap-3 rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm font-normal text-rose" role="alert"><span>Some settings could not be loaded: {settingsLoadError}</span><button type="button" className="shrink-0 underline" onClick={() => { void profileQuery.refetch(); void notificationEmailQuery.refetch(); void authStatusQuery.refetch(); }}>Retry</button></div>}
       {success && <div className="rounded-lg border border-success/30 bg-success-bg px-4 py-3 text-sm font-normal text-success" role="status">{success}</div>}
       {browserError && <div className="rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm font-normal text-rose" role="alert">{browserError}</div>}
       {/* Student Academic Profile Section */}
@@ -616,7 +597,7 @@ export default function SettingsPage() {
                 id="studentName"
                 className="w-full rounded-md border border-border-input bg-surface px-3 py-2 text-sm font-normal text-heading outline-none focus:border-violet focus:ring-2 focus:ring-violet/20"
                 value={studentName}
-                onChange={(e) => setStudentName(e.target.value)}
+                onChange={(e) => setStudentNameDraft(e.target.value)}
                 placeholder="e.g. Ahmed Khan"
                 required
               />
@@ -630,7 +611,7 @@ export default function SettingsPage() {
                 id="rollNo"
                 className="w-full rounded-md border border-border-input bg-surface px-3 py-2 text-sm font-normal font-mono text-heading outline-none focus:border-violet focus:ring-2 focus:ring-violet/20"
                 value={rollNo}
-                onChange={(e) => setRollNo(e.target.value)}
+                onChange={(e) => setRollNoDraft(e.target.value)}
                 placeholder="e.g. 232530"
                 required
               />
@@ -910,7 +891,7 @@ export default function SettingsPage() {
                 id="notificationEmail"
                 className="w-full rounded-md border border-[#e4e4eb] bg-white px-3 py-2 text-xs text-[#343746] outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:opacity-50"
                 value={notificationEmail}
-                onChange={(e) => setNotificationEmail(e.target.value)}
+                onChange={(e) => setNotificationEmailDraft(e.target.value)}
                 placeholder="your-email@university.edu.pk"
                 disabled={saving || loading}
                 autoComplete="email"

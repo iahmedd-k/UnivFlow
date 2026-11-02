@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import playwright.sync_api
 
-portal_router = import_module("app.portal.router")
+portal_router = import_module("app.api.endpoints.portal")
 
 
 class FakeLocator:

@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 from fastapi import BackgroundTasks
 
-from app.notifications.router import (
+from app.api.endpoints.notifications import (
     CreateNotificationForMeRequest,
     create_notification_for_me,
 )
@@ -21,10 +21,10 @@ def test_create_notification_for_me_accepts_request_body():
     created = {"notification_id": 42, "status": "PENDING"}
 
     with patch(
-        "app.notifications.router._get_user_notification_email",
+        "app.api.endpoints.notifications._get_user_notification_email",
         return_value="student@example.com",
     ), patch(
-        "app.notifications.router.create_notification",
+        "app.api.endpoints.notifications.create_notification",
         return_value=created,
     ) as create_notification:
         result = create_notification_for_me(

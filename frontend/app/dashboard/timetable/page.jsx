@@ -1,20 +1,39 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
+import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import Icon from '@/app/dashboard/Icon';
 
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const EMPTY_CLASSES = [];
 
 export default function TimetablePage() {
-  const { getToken } = useAuth();
-  const [classes, setClasses] = useState([]);
-  const [portalSettings, setPortalSettings] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const { getToken, userId } = useAuth();
+  const ownerKey = getQueryOwnerKey(userId);
+  const classesKey = ['timetable', 'classes', ownerKey];
+  const portalSettingsKey = ['portal', 'settings', ownerKey];
+  const classesQuery = useQuery({
+    queryKey: classesKey,
+    queryFn: async ({ signal }) => api.getTimetableClasses(await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const portalSettingsQuery = useQuery({
+    queryKey: portalSettingsKey,
+    queryFn: async ({ signal }) => api.getPortalSettings(await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const { refetch: refetchClasses } = classesQuery;
+  const { refetch: refetchPortalSettings } = portalSettingsQuery;
+  const classes = classesQuery.data || EMPTY_CLASSES;
+  const portalSettings = portalSettingsQuery.data || null;
+  const loading = classesQuery.isPending;
   const [syncing, setSyncing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState(null);
+  const [updating, setUpdating] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
 
@@ -24,12 +43,12 @@ export default function TimetablePage() {
     return d === 0 ? 6 : d - 1;
   }, []);
 
-  const [selectedDay, setSelectedDay] = useState(currentDayOfWeek);
-  const [viewMode, setViewMode] = useState('rows'); // 'rows' (default) | 'day' | 'table'
   const [showAddModal, setShowAddModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [clearing, setClearing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [form, setForm] = useState({
     subject: '',
     weekdays: [currentDayOfWeek],
@@ -41,32 +60,18 @@ export default function TimetablePage() {
   const [file, setFile] = useState(null);
 
   const loadData = useCallback(async () => {
-    try {
-      const token = getToken ? await getToken() : null;
-      const [allClasses, portalData] = await Promise.all([
-        api.getTimetableClasses(token),
-        api.getPortalSettings(token).catch(() => null),
-      ]);
-      setClasses(allClasses || []);
-      setPortalSettings(portalData || null);
-    } catch (err) {
-      setError(err.message || 'Could not load timetable schedule.');
-    } finally {
-      setLoading(false);
-    }
-  }, [getToken]);
-
-  useEffect(() => {
-    loadData();
-  }, []);
+    await Promise.allSettled([refetchClasses(), refetchPortalSettings()]);
+  }, [refetchClasses, refetchPortalSettings]);
+  const visibleError = error || (classesQuery.isError ? classesQuery.error?.message || 'Could not load timetable schedule.' : '');
 
   const handleSyncPortal = async () => {
     setSyncing(true);
     setError('');
     setNotice('');
     try {
-      const token = await getToken();
-      const res = await api.syncPortalHeadless(token);
+      const token = await api.getRequestToken(getToken);
+      const res = await api.syncPortalHeadless(token, true);
+      api.clearCache('timetable');
       await loadData();
       if (res?.status === 'session_expired') {
         setError('University portal session expired. Reconnect via Portal tab.');
@@ -92,106 +97,50 @@ export default function TimetablePage() {
     });
   }, [classes]);
 
-  const activeDayClasses = useMemo(() => {
-    return byDay[selectedDay]?.classes || [];
-  }, [byDay, selectedDay]);
-
-  const nextScheduledDay = useMemo(() => {
-    for (let offset = 1; offset < WEEKDAYS.length; offset += 1) {
-      const weekday = (selectedDay + offset) % WEEKDAYS.length;
-      if (byDay[weekday]?.classes.length) return byDay[weekday];
-    }
-    return null;
-  }, [byDay, selectedDay]);
-
-  const todaysSchedule = useMemo(() => {
-    return byDay[currentDayOfWeek]?.classes || [];
-  }, [byDay, currentDayOfWeek]);
-
-  // Official university matrix table grouping courses to weekday time-slots
-  const matrixRows = useMemo(() => {
-    const courseMap = new Map();
-    classes.forEach((c) => {
-      const key = (c.subject || '').trim();
-      if (!key) return;
-      if (!courseMap.has(key)) {
-        const isLab = key.toLowerCase().includes('lab');
-        courseMap.set(key, {
-          subject: key,
-          teacher: c.teacher || '',
-          room: c.room || '',
-          isLab,
-          days: { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: [] },
-        });
-      }
-      const item = courseMap.get(key);
-      if (c.teacher && !item.teacher) {
-        item.teacher = c.teacher;
-      }
-      if (c.room && !item.room) {
-        item.room = c.room;
-      }
-      const slotTime = `${c.start_time} – ${c.end_time}`;
-      const dayNum = Number(c.weekday);
-      if (item.days[dayNum]) {
-        const exists = item.days[dayNum].some(
-          (s) => (typeof s === 'string' ? s : s.time) === slotTime
-        );
-        if (!exists) {
-          item.days[dayNum].push({
-            time: slotTime,
-            room: c.room ? c.room.trim() : '',
-          });
-        }
-      }
-    });
-    return Array.from(courseMap.values());
-  }, [classes]);
-
-  const nextClassToday = useMemo(() => {
-    if (!todaysSchedule.length) return null;
-    const now = new Date();
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
-    return todaysSchedule.find((item) => {
-      if (!item.start_time) return false;
-      const [hours, minutes] = item.start_time.split(':').map(Number);
-      const startMinutes = hours * 60 + minutes;
-      return Number.isFinite(startMinutes) && startMinutes >= currentMinutes;
-    }) || null;
-  }, [todaysSchedule]);
-
   const updateField = (key, value) => setForm((curr) => ({ ...curr, [key]: value }));
 
   const handleAddClass = async (e) => {
     e.preventDefault();
-    if (!form.subject.trim()) return;
+    if (!form.subject.trim()) {
+      setError('Enter a class or lab name before saving.');
+      return;
+    }
+    if (form.end_time <= form.start_time) {
+      setError('End time must be later than start time.');
+      return;
+    }
+    if (!form.weekdays.length) {
+      setError('Choose at least one day for this class.');
+      return;
+    }
     setSaving(true);
     setError('');
     setNotice('');
     try {
-      const token = await getToken();
+      const token = await api.getRequestToken(getToken);
       await api.saveTimetableClasses(
-        form.weekdays.map((w) => ({
+        [{
           subject: form.subject.trim(),
-          weekday: w,
+          weekdays: form.weekdays,
           start_time: form.start_time,
           end_time: form.end_time,
           teacher: form.teacher.trim() || null,
           room: form.room.trim() || null,
-        })),
-        token
+        }],
+        token,
+        false
       );
       await loadData();
       setForm({
         subject: '',
-        weekdays: [selectedDay],
+        weekdays: [currentDayOfWeek],
         start_time: '09:00',
         end_time: '09:50',
         teacher: '',
         room: '',
       });
       setShowAddModal(false);
-      setNotice('Lecture successfully added to your weekly routine.');
+      setNotice('Class added to your timetable.');
     } catch (err) {
       setError(err.message || 'Could not save the lecture.');
     } finally {
@@ -199,16 +148,83 @@ export default function TimetablePage() {
     }
   };
 
-  const handleRemoveClass = async (id, subject) => {
+  const handleRemoveClass = (item) => {
+    setError('');
+    setNotice('');
+    setDeleteTarget(item);
+  };
+
+  const confirmDeleteClass = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
     setError('');
     setNotice('');
     try {
-      const token = await getToken();
-      await api.deleteTimetableClass(id, token);
+      const token = await api.getRequestToken(getToken);
+      await api.deleteTimetableClass(deleteTarget.id, token);
       await loadData();
-      setNotice(`Removed ${subject || 'lecture'} from routine.`);
+      setNotice(`Deleted ${deleteTarget.subject || 'class'} from your timetable.`);
+      setDeleteTarget(null);
     } catch (err) {
       setError(err.message || 'Could not remove lecture.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const startEditing = (item) => {
+    setError('');
+    setNotice('');
+    setEditingId(item.id);
+    setEditForm({
+      subject: item.subject || '',
+      weekday: Number(item.weekday),
+      start_time: item.start_time || '09:00',
+      end_time: item.end_time || '09:50',
+      teacher: item.teacher || '',
+      room: item.room || '',
+      semester_name: item.semester_name || '',
+      semester_start: item.semester_start || null,
+      semester_end: item.semester_end || null,
+    });
+  };
+
+  const updateEditField = (key, value) => setEditForm((current) => ({ ...current, [key]: value }));
+
+  const handleUpdateClass = async (id) => {
+    if (!editForm?.subject.trim()) {
+      setError('Enter a class or lab name before saving.');
+      return;
+    }
+    if (editForm.end_time <= editForm.start_time) {
+      setError('End time must be later than start time.');
+      return;
+    }
+
+    setUpdating(true);
+    setError('');
+    setNotice('');
+    try {
+      const token = await api.getRequestToken(getToken);
+      await api.updateTimetableClass(id, {
+        subject: editForm.subject.trim(),
+        weekdays: [Number(editForm.weekday)],
+        start_time: editForm.start_time,
+        end_time: editForm.end_time,
+        teacher: editForm.teacher.trim(),
+        room: editForm.room.trim(),
+        semester_name: editForm.semester_name,
+        semester_start: editForm.semester_start,
+        semester_end: editForm.semester_end,
+      }, token);
+      await loadData();
+      setEditingId(null);
+      setEditForm(null);
+      setNotice('Class updated.');
+    } catch (err) {
+      setError(err.message || 'Could not update this class.');
+    } finally {
+      setUpdating(false);
     }
   };
 
@@ -218,7 +234,7 @@ export default function TimetablePage() {
     setError('');
     setNotice('');
     try {
-      const token = await getToken();
+      const token = await api.getRequestToken(getToken);
       const res = await api.parseTimetableImage(file, token);
       await loadData();
       setNotice(res.message || `Imported ${res.saved_count || 0} classes from timetable image.`);
@@ -236,7 +252,7 @@ export default function TimetablePage() {
     setError('');
     setNotice('');
     try {
-      const token = await getToken();
+      const token = await api.getRequestToken(getToken);
       await api.clearAllTimetableClasses(token);
       await loadData();
       setShowClearConfirm(false);
@@ -249,390 +265,137 @@ export default function TimetablePage() {
   };
 
   return (
-    <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-heading">
-      <header className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
+    <main className="mx-auto w-full max-w-6xl space-y-6 pb-10 font-sans text-heading">
+      <header className="flex flex-col justify-between gap-4 border-b border-border-light pb-5 sm:flex-row sm:items-end">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wider text-label">YOUR SEMESTER</p>
-          <h1 className="my-1 text-2xl sm:text-3xl font-semibold tracking-tight text-heading">Timetable</h1>
-          <p className="text-sm font-normal text-muted leading-relaxed">See your classes by day or get a full week overview.</p>
+          <p className="text-sm font-medium text-muted">Your weekly schedule</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-heading sm:text-3xl">Timetable</h1>
+          <p className="mt-1.5 text-sm leading-6 text-muted">See when and where each class meets throughout the week. Portal updates only run when you start them here.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-lg border border-border bg-surface p-1" role="group" aria-label="Timetable view">
-            <button type="button" onClick={() => setViewMode('rows')} className={`rounded-md px-3 py-1.5 text-sm font-medium transition cursor-pointer ${viewMode === 'rows' ? 'bg-ink text-white font-semibold shadow-xs' : 'text-nav hover:bg-surface-secondary'}`} aria-pressed={viewMode === 'rows'}>Schedule (Rows)</button>
-            <button type="button" onClick={() => setViewMode('day')} className={`rounded-md px-3 py-1.5 text-sm font-medium transition cursor-pointer ${viewMode === 'day' ? 'bg-ink text-white font-semibold shadow-xs' : 'text-nav hover:bg-surface-secondary'}`} aria-pressed={viewMode === 'day'}>Day View</button>
-            <button type="button" onClick={() => setViewMode('table')} className={`rounded-md px-3 py-1.5 text-sm font-medium transition cursor-pointer ${viewMode === 'table' ? 'bg-ink text-white font-semibold shadow-xs' : 'text-nav hover:bg-surface-secondary'}`} aria-pressed={viewMode === 'table'}>Matrix</button>
-          </div>
-          <button type="button" onClick={() => setShowImportModal(true)} className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-border-input bg-surface px-3 text-sm font-medium text-nav hover:bg-surface-secondary"><Icon name="upload" size={15} />Import</button>
-          <button type="button" onClick={() => setShowAddModal(true)} className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg bg-violet px-3 text-sm font-medium text-white hover:bg-violet-dark"><Icon name="fileAdd" size={15} />Add class</button>
-          <button type="button" disabled={syncing || loading} onClick={handleSyncPortal} className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-border-input bg-surface px-3 text-sm font-medium text-nav hover:bg-surface-secondary disabled:opacity-50">
-            <Icon name="refresh" size={15} className={syncing ? 'animate-spin' : ''} />
-            {syncing ? 'Syncing…' : 'Sync'}
+          <button type="button" onClick={() => setShowImportModal(true)} className="inline-flex h-10 items-center gap-2 rounded-lg border border-border-input bg-surface px-3.5 text-sm font-medium text-nav hover:bg-surface-secondary">
+            <Icon name="upload" size={15} /> Import schedule
           </button>
-          <button
-            type="button"
-            disabled={classes.length === 0 || loading || clearing}
-            onClick={() => setShowClearConfirm(true)}
-            className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-rose-border bg-surface px-3 text-sm font-medium text-rose hover:bg-rose-bg disabled:opacity-50"
-            title="Clear all classes from timetable"
-          >
-            <Icon name="trash" size={14} />
-            {clearing ? 'Clearing…' : 'Clear Timetable'}
+          <button type="button" onClick={() => setShowAddModal(true)} className="inline-flex h-10 items-center gap-2 rounded-lg bg-violet px-3.5 text-sm font-medium text-white hover:bg-violet-dark">
+            <Icon name="fileAdd" size={15} /> Add class
+          </button>
+          <button type="button" disabled={syncing || loading} onClick={handleSyncPortal} className="inline-flex h-10 items-center gap-2 rounded-lg border border-border-input bg-surface px-3.5 text-sm font-medium text-nav hover:bg-surface-secondary disabled:opacity-50">
+            <Icon name="refresh" size={15} className={syncing ? 'animate-spin' : ''} />
+            {syncing ? 'Syncing…' : 'Sync portal'}
           </button>
         </div>
       </header>
 
-      {error && (
-        <div className="mb-4 bg-rose-bg border border-rose-border text-rose px-4 py-3 rounded-xl text-sm font-normal flex items-center gap-2" role="alert">
-          <Icon name="alert" size={15} />
-          <span>{error}</span>
-        </div>
-      )}
-      {notice && (
-        <div className="mb-4 bg-success-bg border border-success/30 text-success px-4 py-3 rounded-xl text-sm font-normal flex items-center gap-2" role="status">
-          <Icon name="check" size={15} />
-          <span>{notice}</span>
-        </div>
-      )}
+      {visibleError && <div role="alert" className="flex items-center gap-2 rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose"><Icon name="alert" size={15} />{visibleError}</div>}
+      {notice && <div role="status" className="flex items-center gap-2 rounded-lg border border-success/30 bg-success-bg px-4 py-3 text-sm text-success"><Icon name="check" size={15} />{notice}</div>}
 
       {portalSettings?.url && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3.5 py-2.5 text-sm text-muted">
-          <span className={`h-2 w-2 rounded-full ${portalSettings.session_status === 'ACTIVE' ? 'bg-success' : 'bg-muted'}`} />
-          <span><strong className="font-semibold text-heading">University portal</strong> · {portalSettings.session_status?.replaceAll('_', ' ').toLowerCase() || 'status unavailable'}</span>
-          {portalSettings.last_synced_at && <span className="text-subtle tabular-nums">Synced {new Date(portalSettings.last_synced_at).toLocaleString()}</span>}
-          <Link className="ml-auto font-medium text-violet hover:underline text-sm" href="/dashboard/portal">Portal settings <Icon name="arrowUpRight" size={13} /></Link>
-        </div>
-      )}
-
-      <section className="flex flex-wrap gap-x-8 gap-y-2 rounded-xl border border-border bg-surface px-4 py-3 text-sm text-muted" aria-label="Weekly schedule summary">
-        <span><strong className="font-semibold text-heading tabular-nums">{loading ? '—' : classes.length}</strong> scheduled {classes.length === 1 ? 'class' : 'classes'} this week</span>
-        <span><strong className="font-semibold text-heading tabular-nums">{loading ? '—' : byDay.filter((day) => day.classes.length > 0).length}</strong> of 7 days have classes</span>
-      </section>
-
-      {nextClassToday && (
-        <section className="flex flex-wrap items-center gap-3 rounded-xl border border-violet-light bg-violet-light/50 p-4">
-          <span className="grid h-10 w-10 place-items-center rounded-xl bg-white text-violet shadow-xs"><Icon name="clock" size={18} /></span>
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <small className="text-xs font-medium text-violet uppercase tracking-wider">Up next today · <span className="tabular-nums">{nextClassToday.start_time}–{nextClassToday.end_time}</span></small>
-            <strong className="text-base font-semibold text-heading">{nextClassToday.subject}</strong>
-          </div>
-          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-violet-dark bg-white px-2.5 py-1 rounded-md border border-violet-light">
-            <Icon name="school" size={14} />
-            Room: {nextClassToday.room && nextClassToday.room.trim() ? nextClassToday.room : '-'}
-          </span>
-          {nextClassToday.teacher && <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted"><Icon name="graduation" size={14} />{nextClassToday.teacher}</span>}
+        <section aria-label="University portal sync status" className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-line bg-surface px-4 py-3 text-sm">
+          <span className={`size-2 rounded-full ${portalSettings.session_status === 'ACTIVE' ? 'bg-success' : 'bg-muted'}`} />
+          <span className="font-medium text-heading">University portal</span>
+          <span className="text-muted">{portalSettings.session_status?.replaceAll('_', ' ').toLowerCase() || 'status unavailable'}</span>
+          {portalSettings.last_synced_at && <span className="text-muted">Last synced {new Date(portalSettings.last_synced_at).toLocaleString()}</span>}
+          <Link className="ml-auto font-medium text-violet no-underline hover:text-violet-dark" href="/dashboard/portal">Portal settings →</Link>
         </section>
       )}
 
-      {/* Day Selector Pill Navigation (Day View) */}
-      {viewMode === 'day' && (
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-2 mb-6 border-b border-border-light">
-          {WEEKDAYS.map((dayName, idx) => {
-            const isToday = idx === currentDayOfWeek;
-            const isSelected = idx === selectedDay;
-            const count = byDay[idx]?.classes.length || 0;
-            return (
-              <button
-                key={dayName}
-                type="button"
-                onClick={() => setSelectedDay(idx)}
-                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium transition whitespace-nowrap ${
-                  isSelected
-                    ? 'bg-ink text-white font-semibold shadow-xs'
-                    : 'bg-surface text-nav hover:bg-surface-secondary border border-border'
-                }`}
-              >
-                <span>{dayName}</span>
-                {isToday && (
-                  <span className={`text-xs px-2 py-0.5 rounded-full font-semibold uppercase ${
-                    isSelected ? 'bg-surface-secondary text-ink' : 'bg-violet-light text-violet'
-                  }`}>
-                    Today
-                  </span>
-                )}
-                <span className={`text-xs px-2 py-0.5 rounded-full tabular-nums ${
-                  isSelected ? 'bg-surface/20 text-white' : 'bg-surface-secondary text-muted'
-                }`}>
-                  {count}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
+      <section aria-label="Weekly schedule summary" className="flex flex-wrap items-center gap-x-8 gap-y-2 rounded-lg border border-line bg-surface px-4 py-3.5 text-sm text-muted">
+        <span><strong className="font-semibold text-heading tabular-nums">{loading ? '—' : classes.length}</strong> {classes.length === 1 ? 'class' : 'classes'} this week</span>
+        <span><strong className="font-semibold text-heading tabular-nums">{loading ? '—' : byDay.filter((day) => day.classes.length > 0).length}</strong> days with classes</span>
+        {classes.length > 0 && <button type="button" disabled={clearing} onClick={() => setShowClearConfirm(true)} className="ml-auto inline-flex items-center gap-1.5 text-sm font-medium text-muted hover:text-rose disabled:opacity-50"><Icon name="trash" size={14} />Clear timetable</button>}
+      </section>
 
-      {/* Main View Area */}
-      {loading ? (
-        <div className="p-12 text-center text-sm font-normal text-muted bg-surface rounded-xl border border-border">
-          Loading timetable routine…
-        </div>
-      ) : viewMode === 'table' ? (
-        /* Official University Portal Matrix Table */
-        <div className="overflow-hidden rounded-xl border border-border bg-surface shadow-xs">
+      <section aria-labelledby="weekly-schedule-heading" className="overflow-hidden rounded-xl border border-line bg-surface">
+        <header className="flex items-center justify-between gap-3 border-b border-border-light px-5 py-4">
+          <div>
+            <h2 id="weekly-schedule-heading" className="text-base font-semibold text-heading">Weekly schedule</h2>
+            <p className="mt-0.5 text-sm text-muted">Classes are listed by day and start time.</p>
+          </div>
+          {!loading && <span className="rounded-md bg-surface-secondary px-2.5 py-1 text-xs font-medium text-muted tabular-nums">{classes.length} total</span>}
+        </header>
+        {loading ? (
+          <div className="px-5 py-12 text-center text-sm text-muted">Loading weekly schedule…</div>
+        ) : classes.length === 0 ? (
+          <div className="px-5 py-14 text-center">
+            <span className="mx-auto grid size-11 place-items-center rounded-full bg-surface-secondary text-muted"><Icon name="calendar" size={20} /></span>
+            <h3 className="mt-3 text-sm font-semibold text-heading">No classes in your timetable</h3>
+            <p className="mx-auto mt-1 max-w-md text-sm leading-5 text-muted">Add classes manually, import your schedule, or sync it from your university portal.</p>
+            <button type="button" onClick={() => setShowAddModal(true)} className="mt-4 inline-flex h-9 items-center gap-2 rounded-lg bg-violet px-3.5 text-sm font-medium text-white hover:bg-violet-dark"><Icon name="fileAdd" size={14} />Add a class</button>
+          </div>
+        ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm border-collapse">
-              <thead>
-                <tr className="bg-surface-secondary border-b border-border text-muted font-medium text-xs uppercase tracking-wider">
-                  <th className="py-3 px-4">Course</th>
-                  <th className="py-3 px-4">Instructor</th>
-                  {WEEKDAYS.map((day) => <th key={day} className="py-3 px-3 text-center">{day}</th>)}
+            <table className="w-full min-w-[680px] border-collapse text-left text-sm">
+              <thead className="bg-surface-secondary text-xs font-medium uppercase tracking-wide text-muted">
+                <tr>
+                  <th scope="col" className="w-40 px-5 py-3">Time</th>
+                  <th scope="col" className="px-5 py-3">Class</th>
+                  <th scope="col" className="w-56 px-5 py-3">Instructor</th>
+                  <th scope="col" className="w-40 px-5 py-3">Room</th>
+                  <th scope="col" className="w-36 px-5 py-3 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border-light">
-                {matrixRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={WEEKDAYS.length + 2} className="py-12 text-center text-sm font-normal text-muted">
-                      No timetable records found.
-                    </td>
+              {byDay.map((day) => (
+                <tbody key={day.name} className="divide-y divide-border-light">
+                  <tr className="border-y border-border-light bg-surface-secondary/70">
+                    <th scope="rowgroup" colSpan={5} className="px-5 py-2.5 text-left">
+                      <span className="font-semibold text-heading">{day.name}</span>
+                      <span className="ml-2 font-normal text-muted">{day.classes.length} {day.classes.length === 1 ? 'class' : 'classes'}</span>
+                    </th>
                   </tr>
-                ) : (
-                  matrixRows.map((row) => (
-                    <tr key={row.subject} className="hover:bg-surface-secondary/70 transition">
-                      <td className="py-3.5 px-4 font-semibold text-sm text-heading">
-                        <div className="leading-snug">{row.subject}</div>
-                        <span className={`inline-block mt-1 px-2 py-0.5 rounded text-xs font-medium uppercase tracking-wider ${row.isLab ? 'bg-violet-light text-violet' : 'bg-surface-secondary text-muted'}`}>
-                          {row.isLab ? 'Lab' : 'Course'}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-muted text-sm font-normal">{row.teacher || 'Not provided'}</td>
-                      {WEEKDAYS.map((_, d) => {
-                        const slots = row.days[d] || [];
-                        return (
-                          <td key={d} className="py-3.5 px-3 text-center align-middle">
-                            {slots.length > 0 ? (
-                              <div className="flex flex-col items-center gap-1">
-                                {slots.map((s, i) => {
-                                  const timeStr = typeof s === 'string' ? s : s.time;
-                                  const roomStr = typeof s === 'object' && s.room ? s.room : '';
-                                  return (
-                                    <div
-                                      key={i}
-                                      className="inline-flex flex-col items-center px-2.5 py-1 rounded-md bg-surface-secondary text-xs font-medium tabular-nums text-heading border border-border-input"
-                                    >
-                                      <span>{timeStr}</span>
-                                      <span className="text-[11px] font-normal text-muted mt-0.5">
-                                        Room: {roomStr && roomStr.trim() ? roomStr : '-'}
-                                      </span>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            ) : (
-                              <span className="text-subtle font-normal tabular-nums">—</span>
-                            )}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))
-                )}
-              </tbody>
+                  {day.classes.length ? day.classes.map((item) => {
+                    const isEditing = editingId === item.id;
+                    return (
+                      <tr key={item.id} className="group hover:bg-surface-secondary/40">
+                        <td className="px-5 py-3.5">
+                          {isEditing ? (
+                            <div className="space-y-2">
+                              <select aria-label="Class day" value={editForm.weekday} onChange={(event) => updateEditField('weekday', event.target.value)} className="h-9 w-full rounded-md border border-border-input bg-surface px-2 text-sm text-heading focus:border-violet focus:outline-none">
+                                {WEEKDAYS.map((name, weekday) => <option key={name} value={weekday}>{name}</option>)}
+                              </select>
+                              <input aria-label="Start time" type="time" value={editForm.start_time} onChange={(event) => updateEditField('start_time', event.target.value)} className="h-9 w-full rounded-md border border-border-input bg-surface px-2 text-sm tabular-nums text-heading focus:border-violet focus:outline-none" />
+                              <input aria-label="End time" type="time" value={editForm.end_time} onChange={(event) => updateEditField('end_time', event.target.value)} className="h-9 w-full rounded-md border border-border-input bg-surface px-2 text-sm tabular-nums text-heading focus:border-violet focus:outline-none" />
+                            </div>
+                          ) : <span className="whitespace-nowrap font-medium text-body tabular-nums">{item.start_time || '—'}{item.end_time ? ` – ${item.end_time}` : ''}</span>}
+                        </td>
+                        <td className="px-5 py-3.5">
+                          {isEditing ? <input aria-label="Class or lab name" autoFocus value={editForm.subject} onChange={(event) => updateEditField('subject', event.target.value)} className="h-9 w-full min-w-48 rounded-md border border-border-input bg-surface px-2.5 text-sm font-medium text-heading focus:border-violet focus:outline-none" /> : <span className="font-medium text-heading">{item.subject || 'Untitled class'}</span>}
+                        </td>
+                        <td className="px-5 py-3.5">
+                          {isEditing ? <input aria-label="Instructor" value={editForm.teacher} onChange={(event) => updateEditField('teacher', event.target.value)} className="h-9 w-full min-w-36 rounded-md border border-border-input bg-surface px-2.5 text-sm text-heading focus:border-violet focus:outline-none" /> : <span className="text-muted">{item.teacher || '—'}</span>}
+                        </td>
+                        <td className="px-5 py-3.5">
+                          {isEditing ? <input aria-label="Room" value={editForm.room} onChange={(event) => updateEditField('room', event.target.value)} className="h-9 w-full min-w-24 rounded-md border border-border-input bg-surface px-2.5 text-sm text-heading focus:border-violet focus:outline-none" /> : <span className="text-muted">{item.room || '—'}</span>}
+                        </td>
+                        <td className="px-5 py-3.5">
+                          {isEditing ? (
+                            <div className="flex items-center justify-end gap-2">
+                              <button type="button" disabled={updating} onClick={() => handleUpdateClass(item.id)} className="inline-flex h-8 items-center gap-1.5 rounded-md bg-violet px-2.5 text-xs font-medium text-white hover:bg-violet-dark disabled:opacity-50"><Icon name="check" size={13} />{updating ? 'Saving…' : 'Save'}</button>
+                              <button type="button" disabled={updating} onClick={() => { setEditingId(null); setEditForm(null); setError(''); }} className="h-8 rounded-md border border-border-input px-2.5 text-xs font-medium text-nav hover:bg-surface-secondary disabled:opacity-50">Cancel</button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-end gap-1">
+                              <button type="button" onClick={() => startEditing(item)} aria-label={`Edit ${item.subject || 'class'} on ${day.name}`} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-input bg-surface px-2.5 text-xs font-medium text-nav hover:border-violet/40 hover:bg-violet-light hover:text-violet"><Icon name="edit" size={13} />Edit</button>
+                              <button type="button" onClick={() => handleRemoveClass(item)} aria-label={`Delete ${item.subject || 'class'} from ${day.name}`} title="Delete class" className="grid size-8 place-items-center rounded-md border border-border-input bg-surface text-muted hover:border-rose-border hover:bg-rose-bg hover:text-rose"><Icon name="trash" size={14} /></button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  }) : (
+                    <tr><td colSpan={5} className="px-5 py-3 text-sm text-muted">No classes scheduled</td></tr>
+                  )}
+                </tbody>
+              ))}
             </table>
           </div>
-        </div>
-      ) : viewMode === 'day' ? (
-        /* Single Day Timeline View */
-        <div className="space-y-3">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-lg font-semibold text-heading">
-              {WEEKDAYS[selectedDay]} Classes
-            </h2>
-            <span className="text-xs font-normal text-muted tabular-nums">
-              {activeDayClasses.length} {activeDayClasses.length === 1 ? 'lecture' : 'lectures'} scheduled
-            </span>
-          </div>
-
-          {activeDayClasses.length > 0 ? (
-            <div className="space-y-2.5">
-              {activeDayClasses.map((item) => (
-                <div
-                  key={item.id}
-                  className="group flex items-center gap-3 rounded-xl border border-border bg-surface p-4 shadow-xs transition hover:border-border-hover max-sm:items-start"
-                >
-                  <div className="flex min-w-0 items-center gap-3.5">
-                    {/* Time Slot Badge */}
-                    <div className="px-3 py-2 rounded-lg bg-surface-secondary text-heading text-xs font-medium tabular-nums shrink-0 text-center border border-border-input">
-                      <div>{item.start_time}</div>
-                      <div className="text-xs text-muted font-normal">to {item.end_time}</div>
-                    </div>
-
-                    {/* Course Details */}
-                    <div className="min-w-0">
-                      <h3 className="font-semibold text-base text-heading leading-snug">
-                        {item.subject}
-                      </h3>
-                      <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-muted">
-                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-surface-secondary border border-border-input font-medium text-heading">
-                          <Icon name="school" size={12} />
-                          Room: {item.room && item.room.trim() ? item.room : '-'}
-                        </span>
-                        {item.teacher && (
-                          <span className="inline-flex items-center gap-1 text-muted">
-                            <Icon name="graduation" size={12} />
-                            {item.teacher}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Right Actions */}
-                  <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveClass(item.id, item.subject)}
-                      className="opacity-0 group-hover:opacity-100 transition p-1.5 text-muted hover:text-rose rounded-md hover:bg-rose-bg"
-                      title="Remove from routine"
-                    >
-                      <Icon name="close" size={14} />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="flex items-center gap-3 rounded-xl border border-border bg-surface p-5 max-sm:flex-wrap max-sm:items-start">
-              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-surface-secondary text-muted">
-                <Icon name="calendar" size={18} />
-              </div>
-              <div>
-                <p className="m-0 text-base font-semibold text-heading">No classes on {WEEKDAYS[selectedDay]}</p>
-                <p className="mt-1 text-sm font-normal text-muted leading-relaxed">
-                  Add a class for this day or check your next scheduled day.
-                </p>
-              </div>
-              {nextScheduledDay && (
-                <button
-                  type="button"
-                  className="ml-auto inline-flex cursor-pointer items-center gap-2 whitespace-nowrap rounded-lg border border-border-input px-3 py-2 text-sm font-medium text-violet hover:bg-violet-light max-sm:ml-[51px]"
-                  onClick={() => setSelectedDay(nextScheduledDay.weekday)}
-                >
-                  View {nextScheduledDay.name} <span className="font-normal text-muted tabular-nums">{nextScheduledDay.classes.length} {nextScheduledDay.classes.length === 1 ? 'class' : 'classes'}</span>
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      ) : (
-        /* Row-Level Week Routine View (Monday with all schedule along it, Tuesday below, Wednesday below, etc.) */
-        <div className="flex flex-col gap-3.5">
-          {byDay.map((day) => {
-            const isToday = day.weekday === currentDayOfWeek;
-            const hasClasses = day.classes.length > 0;
-
-            return (
-              <section
-                key={day.name}
-                className={`overflow-hidden rounded-2xl border transition-all ${
-                  isToday
-                    ? 'border-violet/40 bg-gradient-to-r from-violet-light/30 via-surface to-surface shadow-xs ring-1 ring-violet/20'
-                    : 'border-border bg-surface hover:border-border-hover shadow-2xs'
-                } p-4 sm:p-5`}
-              >
-                <div className="flex flex-col lg:flex-row lg:items-center gap-4">
-                  {/* Day Anchor Column (Left side of the row) */}
-                  <div className="lg:w-44 shrink-0 flex lg:flex-col items-center lg:items-start justify-between lg:justify-center gap-1 pb-2 lg:pb-0 lg:pr-4 lg:border-r border-border-light">
-                    <div className="flex items-center gap-2">
-                      <h3 className={`m-0 text-base sm:text-lg font-bold tracking-tight ${isToday ? 'text-violet' : 'text-heading'}`}>
-                        {day.name}
-                      </h3>
-                      {isToday && (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-violet px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white shadow-2xs">
-                          <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                          Today
-                        </span>
-                      )}
-                    </div>
-                    <span className="text-xs font-normal text-muted tabular-nums">
-                      {hasClasses ? `${day.classes.length} ${day.classes.length === 1 ? 'session' : 'sessions'}` : 'Free Day'}
-                    </span>
-                  </div>
-
-                  {/* Along the day: Schedule Track / Cards along the row */}
-                  <div className="flex-1 min-w-0">
-                    {hasClasses ? (
-                      <div className="flex items-stretch gap-3 overflow-x-auto pb-1.5 pt-0.5 scrollbar-thin">
-                        {day.classes.map((c) => {
-                          const isLab = c.subject?.toLowerCase().includes('lab') || (c.room && c.room.toLowerCase().includes('lab'));
-                          const roomDisplay = c.room && c.room.trim() ? c.room : 'To be announced';
-
-                          return (
-                            <div
-                              key={c.id}
-                              className={`group relative flex flex-col justify-between rounded-xl border p-3.5 transition-all min-w-[240px] max-w-[290px] sm:min-w-[260px] shrink-0 ${
-                                isLab
-                                  ? 'border-emerald-200/70 bg-emerald-50/40 hover:border-emerald-400'
-                                  : 'border-border-input bg-surface-secondary/60 hover:border-violet/40 hover:bg-surface-secondary'
-                              } shadow-2xs hover:shadow-xs`}
-                            >
-                              {/* Top Bar: Time slot + Badge */}
-                              <div className="flex items-center justify-between gap-2 text-xs mb-2">
-                                <span className="inline-flex items-center gap-1 font-semibold text-heading tabular-nums bg-surface px-2 py-0.5 rounded-md border border-border-light shadow-2xs">
-                                  <Icon name="clock" size={12} className={isLab ? 'text-emerald-600' : 'text-violet'} />
-                                  <span>{c.start_time} – {c.end_time}</span>
-                                </span>
-                                <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
-                                  isLab ? 'bg-emerald-100 text-emerald-800' : 'bg-violet-light text-violet'
-                                }`}>
-                                  {isLab ? 'Lab' : 'Lecture'}
-                                </span>
-                              </div>
-
-                              {/* Subject Title */}
-                              <h4 className="text-sm font-bold text-heading leading-snug line-clamp-2 mb-2.5" title={c.subject}>
-                                {c.subject}
-                              </h4>
-
-                              {/* Prominent Classroom / Room & Instructor Info */}
-                              <div className="pt-2 border-t border-border-light/70 flex flex-col gap-1.5 text-xs">
-                                <div className="inline-flex items-center gap-1.5 font-semibold text-heading bg-surface px-2 py-1 rounded-md border border-border-light">
-                                  <span className="grid size-5 place-items-center rounded bg-violet-light text-violet shrink-0">
-                                    <Icon name="school" size={11} />
-                                  </span>
-                                  <span className="text-xs">
-                                    Room: <span className="text-violet-dark font-bold">{roomDisplay}</span>
-                                  </span>
-                                </div>
-                                {c.teacher && (
-                                  <div className="inline-flex items-center gap-1.5 text-muted text-[11px] truncate px-0.5">
-                                    <Icon name="graduation" size={11} />
-                                    <span className="truncate">{c.teacher}</span>
-                                  </div>
-                                )}
-                              </div>
-
-                              {/* Delete action button on hover */}
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveClass(c.id, c.subject)}
-                                className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition p-1 text-muted hover:text-rose rounded-md hover:bg-rose-bg bg-surface shadow-2xs border border-border-light cursor-pointer"
-                                title="Remove from routine"
-                              >
-                                <Icon name="close" size={12} />
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2 py-2.5 px-3.5 rounded-xl border border-dashed border-border-input bg-surface-secondary/30 text-xs text-muted font-normal">
-                        <Icon name="calendar" size={13} className="text-subtle" />
-                        <span>No classes scheduled for {day.name} · Free day</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </section>
-            );
-          })}
-        </div>
-      )}
-
+        )}
+      </section>
       {/* Add Lecture Modal */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
           <div className="bg-surface rounded-2xl max-w-md w-full p-6 shadow-xl border border-border animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between pb-3 border-b border-border-light mb-4">
-              <h3 className="font-semibold text-heading text-base">Add Lecture to Routine</h3>
+              <h3 className="font-semibold text-heading text-base">Add class</h3>
               <button
                 type="button"
                 onClick={() => setShowAddModal(false)}
@@ -737,7 +500,7 @@ export default function TimetablePage() {
                   disabled={saving || !form.weekdays.length}
                   className="px-4 py-2 text-sm font-medium rounded-lg bg-ink text-white hover:bg-neutral-800 disabled:opacity-50 transition"
                 >
-                  {saving ? 'Saving…' : 'Save Lecture'}
+                {saving ? 'Saving…' : 'Save class'}
                 </button>
               </div>
             </form>
@@ -760,8 +523,8 @@ export default function TimetablePage() {
               </button>
             </div>
             <div className="space-y-4">
-              <p className="text-xs text-neutral-600 leading-relaxed">
-                Upload a timetable image or PDF. Uniflow validates subject names, weekdays, and time slots with 100% precision. Validated classes will cleanly override and replace your current routine.
+              <p className="text-sm text-muted leading-relaxed">
+                Upload a timetable image or PDF to extract class days, times, instructors, and rooms. Imported classes replace your current timetable.
               </p>
               <label className="block">
                 <span className="text-xs font-medium text-neutral-700 block mb-1">Select File</span>
@@ -797,6 +560,19 @@ export default function TimetablePage() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-xs">
+          <section role="dialog" aria-modal="true" aria-labelledby="delete-class-heading" className="w-full max-w-sm rounded-xl border border-line bg-surface p-5 shadow-xl">
+            <h2 id="delete-class-heading" className="text-base font-semibold text-heading">Delete this class?</h2>
+            <p className="mt-2 text-sm leading-5 text-muted">This removes <strong className="font-medium text-heading">{deleteTarget.subject}</strong> from your timetable. This action cannot be undone.</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" disabled={deleting} onClick={() => setDeleteTarget(null)} className="h-9 rounded-lg border border-border-input px-3 text-sm font-medium text-nav hover:bg-surface-secondary disabled:opacity-50">Cancel</button>
+              <button type="button" disabled={deleting} onClick={confirmDeleteClass} className="h-9 rounded-lg bg-rose px-3 text-sm font-medium text-white hover:bg-rose/90 disabled:opacity-50">{deleting ? 'Deleting…' : 'Delete class'}</button>
+            </div>
+          </section>
         </div>
       )}
 

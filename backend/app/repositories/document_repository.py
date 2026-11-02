@@ -1,4 +1,6 @@
-from sqlalchemy import select
+from datetime import datetime
+
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models.document import Document, DocumentStatus
@@ -61,6 +63,22 @@ class DocumentRepository:
         )
 
         return list(self.db.scalars(statement))
+
+    def fail_stale_processing(self, user_id: int, older_than: datetime) -> int:
+        """Mark stale in-progress uploads failed with one user-scoped write."""
+        statement = (
+            update(Document)
+            .where(
+                Document.user_id == user_id,
+                Document.status.in_((DocumentStatus.UPLOADED, DocumentStatus.PROCESSING)),
+                Document.updated_at < older_than,
+            )
+            .values(status=DocumentStatus.FAILED, updated_at=datetime.utcnow())
+        )
+        result = self.db.execute(statement)
+        if result.rowcount:
+            self.db.commit()
+        return result.rowcount or 0
 
     def update_status(
         self,

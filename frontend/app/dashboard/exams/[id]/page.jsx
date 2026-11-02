@@ -1,39 +1,28 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useAuth } from '@clerk/nextjs';
+import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 
 export default function ExamDetailPage() {
   const params = useParams();
-  const { getToken } = useAuth();
+  const { getToken, userId } = useAuth();
   const examId = params.id;
-  const [exam, setExam] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const token = await getToken();
-        const data = await api.getExams(token);
-        const found = data.find(e => e.id == examId);
-        if (!found) throw new Error('Exam not found');
-        setExam(found);
-      } catch (e) {
-        setError(e.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
-  }, [examId, getToken]);
+  const ownerKey = getQueryOwnerKey(userId);
+  const examsQuery = useQuery({
+    queryKey: ['exams', ownerKey, 'list', 500, 0],
+    queryFn: async ({ signal }) => api.getExams(await api.getRequestToken(getToken), null, { signal, direct: true }),
+  });
+  const exam = (examsQuery.data || []).find((item) => String(item.id) === String(examId)) || null;
+  const loading = examsQuery.isPending;
+  const error = examsQuery.error?.message;
 
   if (loading) return <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5"><div className="rounded-xl border border-neutral-200 bg-white px-5 py-8 text-center text-xs text-neutral-500">Loading exam details…</div></main>;
-  if (error) return <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5"><div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800">{error}</div></main>;
+  if (error) return <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5"><div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800">{error}<button type="button" className="ml-2 font-semibold underline" onClick={() => examsQuery.refetch()}>Retry</button></div></main>;
   if (!exam) return <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5"><div className="rounded-xl border border-neutral-200 bg-white px-5 py-8 text-center text-xs text-neutral-500">Exam not found</div></main>;
 
   const examDate = exam.date ? format(new Date(exam.date), 'MMMM d, yyyy') : 'TBA';

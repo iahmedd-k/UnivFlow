@@ -124,7 +124,7 @@ def test_stale_and_draft_assignments_not_in_active_crew_runs(db_session):
         db_session.commit()
 
         # Fetch overview directly
-        from app.dashboard.router import get_dashboard_overview, dismiss_active_crew_run
+        from app.api.endpoints.dashboard import get_dashboard_overview, dismiss_active_crew_run
         data = get_dashboard_overview(since=None, db=db_session, user=fake_user())
 
         active_runs = data.get("ai_agent_hub", {}).get("active_crew_runs", [])

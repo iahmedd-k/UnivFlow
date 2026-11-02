@@ -4,7 +4,7 @@ import pytest
 from fastapi import HTTPException
 from starlette.datastructures import Headers, UploadFile
 
-from app.classroom.router import _attach_submission_files, _upload_submission_files
+from app.api.endpoints.classroom import _attach_submission_files, _upload_submission_files
 
 
 class FakeDriveDocsService:
@@ -152,7 +152,7 @@ def test_execute_quick_turn_in_attaches_doc_and_zip(monkeypatch):
     from sqlalchemy.orm import sessionmaker
     from app.db.database import Base
     from app.db.models import Course, Assignment, AssignmentSolution, Submission, SubmissionState
-    from app.classroom.router import execute_quick_turn_in
+    from app.api.endpoints.classroom import execute_quick_turn_in
     import json
 
     engine = create_engine("sqlite:///:memory:")
@@ -175,7 +175,7 @@ def test_execute_quick_turn_in_attaches_doc_and_zip(monkeypatch):
     fake_docs.share_file = lambda *args, **kwargs: None
 
     import sys
-    classroom_mod = sys.modules["app.classroom.router"]
+    classroom_mod = sys.modules["app.api.endpoints.classroom"]
     monkeypatch.setattr(classroom_mod, "get_classroom_service", lambda _db, user_id: fake_classroom)
     monkeypatch.setattr(classroom_mod, "get_google_docs_service", lambda _db, user_id: fake_docs)
     monkeypatch.setattr(
@@ -243,7 +243,7 @@ def test_execute_quick_turn_in_handles_closed_submissions_safely(monkeypatch):
     from sqlalchemy.orm import sessionmaker
     from app.db.database import Base
     from app.db.models import Course, Assignment, AssignmentSolution, Submission, SubmissionState, AssignmentStatus
-    from app.classroom.router import execute_quick_turn_in
+    from app.api.endpoints.classroom import execute_quick_turn_in
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -265,7 +265,7 @@ def test_execute_quick_turn_in_handles_closed_submissions_safely(monkeypatch):
     fake_docs = FakeDriveDocsService(result={"id": "zip-file-drive-id"})
 
     import sys
-    classroom_mod = sys.modules["app.classroom.router"]
+    classroom_mod = sys.modules["app.api.endpoints.classroom"]
     monkeypatch.setattr(classroom_mod, "get_classroom_service", lambda _db, user_id: fake_classroom)
     monkeypatch.setattr(classroom_mod, "get_google_docs_service", lambda _db, user_id: fake_docs)
     monkeypatch.setattr(
@@ -290,7 +290,7 @@ def test_check_and_execute_course_auto_turn_in_strictly_scopes_to_course(monkeyp
     from datetime import datetime, timezone, timedelta
     from app.db.database import Base
     from app.db.models import Course, Assignment, AssignmentSolution, Setting, Submission, SubmissionState
-    from app.classroom.router import check_and_execute_course_auto_turn_in
+    from app.api.endpoints.classroom import check_and_execute_course_auto_turn_in
     import json
     import sys
 
@@ -337,7 +337,7 @@ def test_check_and_execute_course_auto_turn_in_strictly_scopes_to_course(monkeyp
     db.commit()
 
     turn_in_calls = []
-    classroom_mod = sys.modules["app.classroom.router"]
+    classroom_mod = sys.modules["app.api.endpoints.classroom"]
     monkeypatch.setattr(
         classroom_mod,
         "execute_quick_turn_in",
@@ -357,7 +357,7 @@ def test_auto_turn_in_completed_solution_requires_opt_in_validated_content_and_o
     from sqlalchemy.orm import sessionmaker
     from app.db.database import Base
     from app.db.models import Course, Assignment, AssignmentSolution, Setting, Submission, SubmissionState
-    from app.classroom.router import auto_turn_in_completed_solution
+    from app.api.endpoints.classroom import auto_turn_in_completed_solution
     import json
     import sys
 
@@ -377,7 +377,7 @@ def test_auto_turn_in_completed_solution_requires_opt_in_validated_content_and_o
 
     calls = []
     monkeypatch.setattr(
-        sys.modules["app.classroom.router"],
+        sys.modules["app.api.endpoints.classroom"],
         "execute_quick_turn_in",
         lambda _db, assignment_id, _user_id, **_kwargs: calls.append(assignment_id) or {"success": True},
     )

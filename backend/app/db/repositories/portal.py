@@ -1,7 +1,6 @@
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Optional, List
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from app.db.models import PortalSyncJob
 
 
@@ -49,7 +48,8 @@ class PortalSyncJobRepository:
         job = self.db.query(PortalSyncJob).filter(
             PortalSyncJob.job_id == job_id,
             PortalSyncJob.status == "queued",
-        ).first()
+            (PortalSyncJob.next_retry_at.is_(None) | (PortalSyncJob.next_retry_at <= now)),
+        ).with_for_update(skip_locked=True).first()
         
         if not job:
             return None
@@ -69,19 +69,22 @@ class PortalSyncJobRepository:
             return None
         
         if error:
-            job.status = "failed"
-            job.error = error
-            # Schedule retry if attempts remaining
+            job.error = str(error)[:2000]
             if job.retry_count < job.max_retries:
                 job.status = "queued"
-                job.next_retry_at = now
+                job.next_retry_at = now + timedelta(seconds=min(30, 2 ** job.retry_count))
+                job.finished_at = None
+            else:
+                job.status = "failed"
+                job.finished_at = now
         else:
             job.status = "completed"
+            job.error = None
+            job.next_retry_at = None
             if result:
                 import json
                 job.result = json.dumps(result)
-        
-        job.finished_at = now
+            job.finished_at = now
         self.db.commit()
         self.db.refresh(job)
         return job
@@ -103,6 +106,3 @@ class PortalSyncJobRepository:
         ).delete(synchronize_session=False)
         self.db.commit()
         return deleted
-
-
-from datetime import timedelta

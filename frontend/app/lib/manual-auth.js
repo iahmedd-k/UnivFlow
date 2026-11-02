@@ -13,6 +13,12 @@ export function getManualSession() {
   }
 }
 
+export function getQueryOwnerKey(clerkUserId) {
+  const manualSession = getManualSession();
+  if (manualSession) return `manual:${manualSession.user?.id || 'current'}`;
+  return clerkUserId || 'anonymous';
+}
+
 export function setManualSession(token, user) {
   if (typeof window === 'undefined') return;
   localStorage.setItem('uniflow_manual_token', token);

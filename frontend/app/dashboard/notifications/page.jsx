@@ -1,8 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import Icon from '@/app/dashboard/Icon';
 
 const filters = [{ key: '', label: 'All' }, { key: 'PENDING', label: 'Pending' }, { key: 'SENT', label: 'Sent' }, { key: 'FAILED', label: 'Failed' }];
@@ -13,30 +15,40 @@ const statusTone = (status) => status === 'SENT'
     : 'bg-[#fff4e4] text-[#a87936]';
 
 export default function NotificationsPage() {
-  const { getToken } = useAuth();
-  const [items, setItems] = useState([]);
-  const [stats, setStats] = useState(null);
+  const { getToken, userId } = useAuth();
+  const ownerKey = getQueryOwnerKey(userId);
+  const queryClient = useQueryClient();
   const [filter, setFilter] = useState('');
-  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [briefing, setBriefing] = useState({ enabled: true, time: '07:30', timezone: 'Asia/Karachi', last_run: null, next_run: null });
+  const [briefingDraft, setBriefingDraft] = useState(null);
+  const notificationsQuery = useQuery({
+    queryKey: ['notifications', ownerKey, 'list', filter || 'all', 50],
+    queryFn: async ({ signal }) => api.getNotifications(filter || null, 50, await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const statsQuery = useQuery({
+    queryKey: ['notifications', ownerKey, 'stats'],
+    queryFn: async ({ signal }) => api.getNotificationStats(await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const briefingQuery = useQuery({
+    queryKey: ['notifications', ownerKey, 'briefing-preferences'],
+    queryFn: async ({ signal }) => api.getDailyBriefingPreferences(await api.getRequestToken(getToken), { signal, direct: true }),
+  });
+  const items = notificationsQuery.data || [];
+  const stats = statsQuery.data || null;
+  const briefing = briefingDraft || briefingQuery.data || { enabled: true, time: '07:30', timezone: 'Asia/Karachi', last_run: null, next_run: null };
+  const loading = notificationsQuery.isPending || statsQuery.isPending || briefingQuery.isPending;
+  const queryError = notificationsQuery.error?.message || statsQuery.error?.message || briefingQuery.error?.message;
+  const { refetch: refetchNotifications } = notificationsQuery;
+  const { refetch: refetchStats } = statsQuery;
+  const { refetch: refetchBriefing } = briefingQuery;
 
-  const load = useCallback(async (status = filter) => {
-    const token = await getToken();
-    const [notifications, summary, preferences] = await Promise.all([api.getNotifications(status || null, 50, token), api.getNotificationStats(token), api.getDailyBriefingPreferences(token)]);
-    setItems(notifications || []); setStats(summary || null);
-    if (preferences) setBriefing(preferences);
-  }, [filter, getToken]);
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      load().catch((err) => setError(err.message || 'Could not load notifications.')).finally(() => setLoading(false));
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [load]);
+  const load = useCallback(async () => {
+    await Promise.allSettled([refetchNotifications(), refetchStats(), refetchBriefing()]);
+  }, [refetchBriefing, refetchNotifications, refetchStats]);
 
-  const changeFilter = async (status) => { setFilter(status); setLoading(true); setError(''); try { await load(status); } catch (err) { setError(err.message || 'Could not load notifications.'); } finally { setLoading(false); } };
+  const changeFilter = (status) => { setFilter(status); setError(''); };
   const sendPending = async () => {
     setBusy(true); setError(''); setNotice('');
     try { const token = await getToken(); const result = await api.sendPendingNotifications(50, token); setNotice(result.message || 'Pending notifications queued.'); await load(); }
@@ -55,7 +67,8 @@ export default function NotificationsPage() {
     try {
       const token = await getToken();
       const saved = await api.saveDailyBriefingPreferences({ enabled: overrides.enabled, time: overrides.time, timezone: overrides.timezone }, token);
-      setBriefing(saved);
+      setBriefingDraft(saved);
+      queryClient.setQueryData(['notifications', ownerKey, 'briefing-preferences'], saved);
       setNotice('Daily briefing schedule saved.');
     } catch (err) { setError(err.message || 'Could not save the daily briefing schedule.'); }
     finally { setBusy(false); }
@@ -100,16 +113,16 @@ export default function NotificationsPage() {
         {(stats?.pending || 0) > 0 && <button className="inline-flex min-h-9 items-center justify-center rounded-md border border-[#6657d9] bg-[#6657d9] px-3 text-xs font-semibold text-white hover:bg-[#5142c1] disabled:opacity-55" type="button" onClick={sendPending} disabled={busy}>{busy ? 'Queueing…' : `Send pending (${stats.pending})`}</button>}
       </div>
     </header>
-    {error && <div className="rounded-lg border border-[#f1dede] bg-[#fff8f8] px-3 py-2.5 text-xs text-[#a04a4a]">{error}</div>}{notice && <div className="rounded-lg border border-[#d8eee4] bg-[#f3fbf7] px-3 py-2.5 text-xs text-[#43816b]">{notice}</div>}
+    {(error || queryError) && <div role="alert" className="rounded-lg border border-[#f1dede] bg-[#fff8f8] px-3 py-2.5 text-xs text-[#a04a4a]">{error || queryError}<button type="button" className="ml-2 font-semibold underline" onClick={load}>Retry</button></div>}{notice && <div className="rounded-lg border border-[#d8eee4] bg-[#f3fbf7] px-3 py-2.5 text-xs text-[#43816b]">{notice}</div>}
     <section className="grid grid-cols-1 gap-3.5 md:grid-cols-3">{[['Total queued', loading ? '—' : stats?.total ?? 0], ['Pending', loading ? '—' : stats?.pending ?? 0], ['Sent / failed', loading ? '—' : `${stats?.sent ?? 0} / ${stats?.failed ?? 0}`]].map(([label, value]) => <article className="rounded-xl border border-[#ededf2] bg-white p-4" key={label}><span className="block text-xs text-[#858998]">{label}</span><strong className="mt-2 block text-[22px] font-semibold text-[#343746]">{value}</strong></article>)}</section>
     <section className="rounded-xl border border-[#ebebf0] bg-white p-5 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div><p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">PERSONAL AUTOMATION</p><h2 className="mt-1 text-sm font-semibold text-[#343746]">Daily academic briefing</h2><p className="mt-1 max-w-2xl text-xs leading-5 text-[#777b89]">Combines today&apos;s classes, attendance warnings, deadlines, and recent sync failures. The schedule uses your selected timezone.</p></div>
-        <label className="flex items-center gap-2 text-xs font-semibold text-[#5c6070]"><input type="checkbox" checked={briefing.enabled} onChange={(event) => setBriefing((current) => ({ ...current, enabled: event.target.checked }))} /> Enabled</label>
+        <label className="flex items-center gap-2 text-xs font-semibold text-[#5c6070]"><input type="checkbox" checked={briefing.enabled} onChange={(event) => setBriefingDraft({ ...briefing, enabled: event.target.checked })} /> Enabled</label>
       </div>
       <div className="mt-4 flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-xs font-medium text-[#5c6070]">Send at<input type="time" value={briefing.time} disabled={!briefing.enabled} onChange={(event) => setBriefing((current) => ({ ...current, time: event.target.value }))} className="h-9 rounded-md border border-[#e5e5ec] bg-white px-2.5 text-xs disabled:opacity-50" /></label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-[#5c6070]">Timezone<select value={briefing.timezone} disabled={!briefing.enabled} onChange={(event) => setBriefing((current) => ({ ...current, timezone: event.target.value }))} className="h-9 rounded-md border border-[#e5e5ec] bg-white px-2.5 text-xs disabled:opacity-50"><option value="Asia/Karachi">Asia/Karachi</option><option value="UTC">UTC</option><option value="America/New_York">America/New_York</option></select></label>
+        <label className="flex flex-col gap-1 text-xs font-medium text-[#5c6070]">Send at<input type="time" value={briefing.time} disabled={!briefing.enabled} onChange={(event) => setBriefingDraft({ ...briefing, time: event.target.value })} className="h-9 rounded-md border border-[#e5e5ec] bg-white px-2.5 text-xs disabled:opacity-50" /></label>
+        <label className="flex flex-col gap-1 text-xs font-medium text-[#5c6070]">Timezone<select value={briefing.timezone} disabled={!briefing.enabled} onChange={(event) => setBriefingDraft({ ...briefing, timezone: event.target.value })} className="h-9 rounded-md border border-[#e5e5ec] bg-white px-2.5 text-xs disabled:opacity-50"><option value="Asia/Karachi">Asia/Karachi</option><option value="UTC">UTC</option><option value="America/New_York">America/New_York</option></select></label>
         <button type="button" onClick={() => saveBriefing()} disabled={busy} className="h-9 rounded-md bg-[#6657d9] px-3 text-xs font-semibold text-white disabled:opacity-50">Save schedule</button>
         <button type="button" onClick={runBriefingNow} disabled={busy} className="h-9 rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] disabled:opacity-50">Run now</button>
       </div>

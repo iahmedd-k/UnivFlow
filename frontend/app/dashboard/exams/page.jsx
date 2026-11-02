@@ -1,32 +1,50 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@clerk/nextjs';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import MarkdownRenderer from '../MarkdownRenderer';
 import Icon from '@/app/dashboard/Icon';
 
 export default function ExamsPage() {
-  const { getToken } = useAuth();
-  const [exams, setExams] = useState([]);
-  const [materials, setMaterials] = useState([]);
+  const { getToken, userId } = useAuth();
+  const ownerKey = getQueryOwnerKey(userId);
+  const queryClient = useQueryClient();
+  const examsQuery = useQuery({
+    queryKey: ['exams', ownerKey, 'list', 500, 0],
+    queryFn: async ({ signal }) => api.getExams(await api.getRequestToken(getToken), null, { signal, direct: true }),
+  });
+  const materialsQuery = useQuery({
+    queryKey: ['classroom', ownerKey, 'study-materials', 'all'],
+    queryFn: async ({ signal }) => api.getClassroomStudyMaterials(await api.getRequestToken(getToken), { limit: 500, signal, direct: true }),
+  });
+  const conversationsQuery = useQuery({
+    queryKey: ['rag', ownerKey, 'conversations', 0, 20],
+    queryFn: async ({ signal }) => api.getRagConversations(await api.getRequestToken(getToken), 0, 20, { signal }),
+  });
+  const exams = examsQuery.data || [];
+  const materials = materialsQuery.data || [];
+  const conversations = conversationsQuery.data || [];
+  const loading = examsQuery.isPending || materialsQuery.isPending;
+  const queryError = examsQuery.error?.message || materialsQuery.error?.message || conversationsQuery.error?.message;
   const [selected, setSelected] = useState([]);
   const [examId, setExamId] = useState('');
   const [syllabus, setSyllabus] = useState('');
   const [plan, setPlan] = useState('');
   const [question, setQuestion] = useState('');
   const [messages, setMessages] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [planBusy, setPlanBusy] = useState(false);
   const [error, setError] = useState('');
-  const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [activeTab, setActiveTab] = useState('plan');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const initializedConversation = useRef(false);
+  const initializedSelection = useRef(false);
   const scrollRef = useRef(null);
 
   const loadMessages = async (conversationId, token) => {
@@ -39,34 +57,30 @@ export default function ExamsPage() {
     }
   };
 
-  const load = useCallback(async () => {
-    const token = await getToken();
-    const [examRows, materialRows, conversationRows] = await Promise.all([
-      api.getExams(token),
-      api.getClassroomStudyMaterials(token),
-      api.getRagConversations(token),
-    ]);
-    setExams(examRows || []);
-    setMaterials(materialRows || []);
-    setSelected((materialRows || []).map((item) => item.id));
-    setConversations(conversationRows || []);
-    if (!initializedConversation.current) {
-      initializedConversation.current = true;
-      const latest = (conversationRows || [])[0] || null;
-      setActiveConversationId(latest ? latest.id : null);
-      if (latest) {
-        const rows = await api.getRagConversationMessages(latest.id, token);
-        setMessages((rows || []).map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'you', text: m.content })));
-      }
+  useEffect(() => {
+    if (materialsQuery.data && !initializedSelection.current) {
+      initializedSelection.current = true;
+      setSelected(materialsQuery.data.map((item) => item.id));
     }
-  }, [getToken]);
+  }, [materialsQuery.data]);
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      load().catch((e) => setError(e.message || 'Could not load exam data.')).finally(() => setLoading(false));
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [load]);
+    if (!Array.isArray(conversationsQuery.data) || initializedConversation.current) return;
+    initializedConversation.current = true;
+    const latest = conversationsQuery.data[0] || null;
+    setActiveConversationId(latest ? latest.id : null);
+    if (latest) {
+      (async () => {
+        try {
+          const token = await api.getRequestToken(getToken);
+          const rows = await api.getRagConversationMessages(latest.id, token);
+          setMessages((rows || []).map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'you', text: m.content })));
+        } catch (e) {
+          setError(e.message || 'Could not load conversation history.');
+        }
+      })();
+    }
+  }, [conversationsQuery.data, getToken]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
@@ -77,7 +91,7 @@ export default function ExamsPage() {
   const runPlan = async (event) => {
     event.preventDefault(); setPlanBusy(true); setError(''); setPlan('');
     try {
-      const token = await getToken();
+      const token = await api.getRequestToken(getToken);
       const result = await api.generateStudyPlan({ syllabus, document_ids: selected, exam_title: selectedExam?.title }, token);
       setPlan(result.plan || 'No plan was returned.');
     } catch (e) {
@@ -92,13 +106,13 @@ export default function ExamsPage() {
     const prompt = question.trim(); setMessages((items) => [...items, { role: 'you', text: prompt }]); setQuestion(''); setBusy(true); setError('');
     const nextMessages = [...messages, { role: 'you', text: prompt }];
     try {
-      const token = await getToken();
+      const token = await api.getRequestToken(getToken);
       const result = await api.askCourseMaterials({ query: prompt, document_ids: selected, syllabus, conversation_id: activeConversationId, history: nextMessages }, token);
       const conversationId = result.conversation_id;
       setActiveConversationId(conversationId);
       setMessages([...nextMessages, { role: 'assistant', text: result.answer || 'No answer returned.' }]);
       if (!conversations.find((c) => c.id === conversationId)) {
-        setConversations((prev) => [{ id: conversationId, title: prompt.slice(0, 60), source: 'rag' }, ...prev]);
+        queryClient.setQueryData(['rag', ownerKey, 'conversations', 0, 20], (previous = []) => [{ id: conversationId, title: prompt.slice(0, 60), source: 'rag' }, ...previous]);
       }
     } catch (e) {
       setError(e.message || 'Could not answer from course materials.');
@@ -135,7 +149,7 @@ export default function ExamsPage() {
         </div>
         <span className="inline-flex items-center gap-2 rounded-full bg-violet-light px-3 py-1.5 text-sm font-semibold text-violet-dark">{exams.length} upcoming exams</span>
       </header>
-      {error && <div className="mx-4 rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose" role="alert">{error}</div>}
+      {(error || queryError) && <div className="mx-4 rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose" role="alert">{error || queryError}<button type="button" className="ml-2 font-semibold underline" onClick={() => { examsQuery.refetch(); materialsQuery.refetch(); conversationsQuery.refetch(); }}>Retry</button></div>}
       <div className="flex min-h-[700px] flex-1">
         {sidebarOpen && (
           <aside className="hidden lg:flex flex-col gap-4 w-[340px] border-r border-line bg-white px-5 py-4">

@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from app.auth import router
+from app.api.endpoints import auth as router
 
 
 def test_google_oauth_callback_does_not_require_clerk_session(monkeypatch):
@@ -160,4 +160,3 @@ def test_safe_oauth_redirect_to_accepts_dashboard_root():
     assert router._safe_oauth_redirect_to("/dashboard") == "/dashboard"
     assert router._safe_oauth_redirect_to("/dashboard/classroom") == "/dashboard/classroom"
     assert router._safe_oauth_redirect_to(None) is None
-

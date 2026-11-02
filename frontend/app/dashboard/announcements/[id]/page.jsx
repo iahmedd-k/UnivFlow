@@ -1,40 +1,29 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useAuth } from '@clerk/nextjs';
+import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import Icon from '@/app/dashboard/Icon';
 
 export default function AnnouncementDetailPage() {
   const params = useParams();
-  const { getToken } = useAuth();
+  const { getToken, userId } = useAuth();
   const announcementId = params.id;
-  const [announcement, setAnnouncement] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const token = await getToken();
-        const data = await api.getAnnouncements(token);
-        const found = data.find(a => a.id == announcementId);
-        if (!found) throw new Error('Announcement not found');
-        setAnnouncement(found);
-      } catch (e) {
-        setError(e.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
-  }, [announcementId, getToken]);
+  const ownerKey = getQueryOwnerKey(userId);
+  const announcementsQuery = useQuery({
+    queryKey: ['announcements', ownerKey, 'university'],
+    queryFn: async ({ signal }) => api.getAnnouncements(await api.getRequestToken(getToken), null, { signal, direct: true }),
+  });
+  const announcement = (announcementsQuery.data || []).find((item) => String(item.id) === String(announcementId)) || null;
+  const loading = announcementsQuery.isPending;
+  const error = announcementsQuery.error?.message;
 
   if (loading) return <div className="flex min-h-64 items-center justify-center text-sm text-muted" role="status">Loading announcement…</div>;
-  if (error) return <div className="rounded-lg border border-rose-border bg-rose-bg p-4 text-sm text-rose" role="alert">Error: {error}</div>;
+  if (error) return <div className="rounded-lg border border-rose-border bg-rose-bg p-4 text-sm text-rose" role="alert">Error: {error}<button type="button" className="ml-2 font-semibold underline" onClick={() => announcementsQuery.refetch()}>Retry</button></div>;
   if (!announcement) return <div className="rounded-xl border border-line bg-white p-8 text-center text-sm text-muted">Announcement not found</div>;
 
   const publishedAt = announcement.published_at ? format(new Date(announcement.published_at), 'MMMM d, yyyy \'at\' h:mm a') : 'Unknown';

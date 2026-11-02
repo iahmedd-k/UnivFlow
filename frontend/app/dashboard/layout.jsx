@@ -2,15 +2,17 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth, useClerk, useUser, UserButton } from '@clerk/nextjs';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { api } from '@/app/lib/api';
-import { getManualSession, clearManualSession } from '@/app/lib/manual-auth';
+import { getManualSession, getQueryOwnerKey, clearManualSession } from '@/app/lib/manual-auth';
 import { isExtensionInstalled, EXTENSION_VERSION } from '@/app/lib/extensionBridge';
 import Icon from '@/app/dashboard/Icon';
 import FirebaseAlertsBanner from '@/app/dashboard/FirebaseAlertsBanner';
 import OnboardingModal from '@/app/dashboard/OnboardingModal';
 import CompanionExtensionModal from '@/app/dashboard/CompanionExtensionModal';
+import ServiceConnectionPopup from '@/app/dashboard/ServiceConnectionPopup';
 
 const navGroups = [
   {
@@ -56,6 +58,8 @@ function NavIcon({ name, active }) {
 
 export default function DashboardLayout({ children }) {
   const { userId, getToken } = useAuth();
+  const queryClient = useQueryClient();
+  const ownerKey = getQueryOwnerKey(userId);
   const { signOut } = useClerk();
   const { user } = useUser();
   const pathname = usePathname();
@@ -66,18 +70,25 @@ export default function DashboardLayout({ children }) {
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncNotice, setSyncNotice] = useState('');
   const [mounted, setMounted] = useState(false);
-  const [googleConnected, setGoogleConnected] = useState(false);
-  const [googleEmail, setGoogleEmail] = useState('');
-  const [classroomSync, setClassroomSync] = useState(null);
-  const [privateAccess, setPrivateAccess] = useState(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const cached = sessionStorage.getItem('uniflow_private_access');
-        if (cached) return JSON.parse(cached);
-      } catch {}
-    }
-    return { granted: true }; // Non-blocking default
+  const authStatusQuery = useQuery({
+    queryKey: ['auth', ownerKey, 'status'],
+    queryFn: async ({ signal }) => api.getAuthStatus(await api.getRequestToken(getToken), { signal, direct: true }),
+    staleTime: 15_000,
   });
+  const syncStatusQuery = useQuery({
+    queryKey: ['classroom', 'sync-status', ownerKey],
+    queryFn: async ({ signal }) => api.getSyncStatus(await api.getRequestToken(getToken), { signal, direct: true }),
+    staleTime: 15_000,
+  });
+  const accessStatusQuery = useQuery({
+    queryKey: ['auth', ownerKey, 'private-access'],
+    queryFn: async ({ signal }) => api.getPrivateAccessStatus(await api.getRequestToken(getToken), { signal, direct: true }),
+    staleTime: 15_000,
+  });
+  const googleConnected = Boolean(authStatusQuery.data?.google_connected);
+  const googleEmail = authStatusQuery.data?.google_email || '';
+  const classroomSync = syncStatusQuery.data || null;
+  const privateAccess = accessStatusQuery.data ?? { granted: true };
   const [accessCode, setAccessCode] = useState('');
   const [accessBusy, setAccessBusy] = useState(false);
   const [accessNotice, setAccessNotice] = useState('');
@@ -108,64 +119,6 @@ export default function DashboardLayout({ children }) {
       clearInterval(interval);
     };
   }, []);
-
-  const refreshConnections = useCallback(async () => {
-    let token = getToken ? await getToken() : null;
-    if (!token) {
-      const sess = getManualSession();
-      if (sess?.token) token = sess.token;
-    }
-    try {
-      const [auth, sync] = await Promise.allSettled([
-        api.getAuthStatus(token),
-        api.getSyncStatus(token),
-      ]);
-      if (auth.status === 'fulfilled') {
-        setGoogleConnected(Boolean(auth.value?.google_connected));
-        setGoogleEmail(auth.value?.google_email || '');
-      }
-      if (sync.status === 'fulfilled') setClassroomSync(sync.value);
-    } catch {}
-  }, [getToken]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const initLayout = async () => {
-      try {
-        let token = getToken ? await getToken() : null;
-        if (!token) {
-          const sess = getManualSession();
-          if (sess?.token) token = sess.token;
-        }
-
-        const [auth, sync, accessStatus] = await Promise.allSettled([
-          api.getAuthStatus(token),
-          api.getSyncStatus(token),
-          api.getPrivateAccessStatus(token),
-        ]);
-
-        if (cancelled) return;
-
-        if (auth.status === 'fulfilled') {
-          setGoogleConnected(Boolean(auth.value?.google_connected));
-          setGoogleEmail(auth.value?.google_email || '');
-        }
-        if (sync.status === 'fulfilled') setClassroomSync(sync.value);
-
-        if (accessStatus.status === 'fulfilled' && accessStatus.value) {
-          setPrivateAccess(accessStatus.value);
-          if (typeof window !== 'undefined') {
-            try {
-              sessionStorage.setItem('uniflow_private_access', JSON.stringify(accessStatus.value));
-            } catch {}
-          }
-        }
-      } catch {}
-    };
-
-    initLayout();
-    return () => { cancelled = true; };
-  }, [userId]);
 
   const requestAccessCode = async () => {
     setAccessBusy(true);
@@ -200,7 +153,8 @@ export default function DashboardLayout({ children }) {
     try {
       const token = getToken ? await getToken() : null;
       await api.redeemPrivateAccess(accessCode, token);
-      setPrivateAccess({ granted: true });
+      const granted = { granted: true };
+      queryClient.setQueryData(['auth', ownerKey, 'private-access'], granted);
       setAccessNotice('Access approved for this account.');
     } catch (error) {
       setAccessNotice(error.message || 'Could not verify that code.');
@@ -261,7 +215,6 @@ export default function DashboardLayout({ children }) {
       const result = await api.triggerSync(classroomSync?.semester_start_date || null, token);
       api.clearCache();
       setSyncNotice(result.message || 'Google Classroom sync started.');
-      await refreshConnections();
     } catch (error) {
       setSyncNotice(error.message || 'Could not start Google Classroom sync.');
     } finally {
@@ -303,6 +256,7 @@ export default function DashboardLayout({ children }) {
     <div className="min-h-screen bg-paper flex">
       <OnboardingModal />
       <CompanionExtensionModal isOpen={extensionModalOpen} onClose={() => setExtensionModalOpen(false)} />
+      <ServiceConnectionPopup />
 
       {/* Mobile Backdrop */}
       {sidebarOpen && (
@@ -427,6 +381,21 @@ export default function DashboardLayout({ children }) {
             >
               <span className={`size-1.5 rounded-full ${extensionInstalled ? 'bg-emerald-600' : 'bg-violet animate-ping'}`} />
               <span>{extensionInstalled ? 'Companion Active' : 'Setup Extension'}</span>
+            </button>
+
+            {/* Services Status Pill Button */}
+            <button
+              type="button"
+              onClick={() => {
+                if (typeof window !== 'undefined') {
+                  window.dispatchEvent(new CustomEvent('uniflow-open-services-popup'));
+                }
+              }}
+              className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold border border-line bg-surface hover:bg-surface-secondary text-body transition cursor-pointer shadow-2xs"
+              title="View & Sync Connected Services"
+            >
+              <Icon name="zap" size={12} className="text-violet" />
+              <span className="hidden sm:inline">Services</span>
             </button>
 
             {/* Sync Menu */}

@@ -4,9 +4,10 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.testclient import TestClient
 
-from app.auth import clerk_auth, router as auth_module
+from app.auth import clerk_auth
+from app.api.endpoints import auth as auth_module
 from app.db.database import get_db
-from app.v1.api.router import api_router
+from app.api.endpoints.router import api_router
 
 
 def test_google_callback_route_accepts_google_redirect_without_clerk_token(monkeypatch):
@@ -36,7 +37,9 @@ def test_versioned_feature_routes_remain_authenticated(monkeypatch):
 
     client = TestClient(app)
     response = client.get("/api/v1/dashboard/overview")
+    active_rag_route = client.get("/api/v1/rag/materials")
     removed_solver_route = client.get("/api/v1/execution/languages")
 
     assert response.status_code == 401
+    assert active_rag_route.status_code == 401
     assert removed_solver_route.status_code == 404

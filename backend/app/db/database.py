@@ -38,12 +38,15 @@ def create_engine_with_fallback(url: str):
         engine = create_engine(
             url,
             echo=settings.database_echo,
-            pool_size=5,
-            max_overflow=5,
-            pool_timeout=10,
+            pool_size=settings.database_pool_size,
+            max_overflow=settings.database_max_overflow,
+            pool_timeout=settings.database_pool_timeout_seconds,
             pool_recycle=1800,
             pool_pre_ping=True,
-            connect_args={"connect_timeout": 10},
+            connect_args={
+                "connect_timeout": 10,
+                "options": f"-c statement_timeout={settings.database_statement_timeout_ms}",
+            },
         )
         try:
             with engine.connect() as conn:
@@ -115,5 +118,15 @@ def get_db():
 
 
 def init_db():
+    if settings.is_production:
+        logger.info("Skipping runtime schema creation in production; schema is managed by Alembic.")
+        return
+
     import app.db.models  # noqa: F401
+    import app.models.rag_new.conversation  # noqa: F401
+    import app.models.rag_new.document  # noqa: F401
+    import app.models.rag_new.document_chunk  # noqa: F401
+    import app.models.rag_new.message  # noqa: F401
+    import app.models.rag_new.message_citation  # noqa: F401
+    import app.models.rag_new.user  # noqa: F401
     Base.metadata.create_all(bind=engine)

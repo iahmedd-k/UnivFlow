@@ -1,1 +1,1 @@
-from app.dashboard.router import router
+"""Dashboard domain package."""

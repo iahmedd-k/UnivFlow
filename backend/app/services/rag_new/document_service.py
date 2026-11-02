@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 from uuid import uuid4
@@ -19,6 +19,7 @@ from app.services.docx_parser_service import DocxParseError, DocxParserService
 from app.services.storage_service import StorageError, StorageService
 
 logger = setup_logging()
+PROCESSING_STALE_AFTER = timedelta(minutes=30)
 
 ALLOWED_EXTENSIONS = {
     ".pdf": "application/pdf",
@@ -421,7 +422,8 @@ class DocumentService:
     ) -> DocumentStatusResponse:
         document = self.get_document(user_id, document_id)
         if document.status in (DocumentStatus.PROCESSING, DocumentStatus.UPLOADED):
-            if self._document_age_seconds(document.created_at) > 120:
+            processing_since = document.updated_at or document.created_at
+            if self._document_age_seconds(processing_since) > PROCESSING_STALE_AFTER.total_seconds():
                 document = self.document_repository.update_status(document, DocumentStatus.FAILED)
 
         return DocumentStatusResponse(
@@ -430,11 +432,13 @@ class DocumentService:
         )
 
     def list_documents(self, user_id: int) -> list[Document]:
+        # Repair stale processing rows in one bounded write. Updating each row
+        # individually here caused one commit/refresh per document on page load.
+        self.document_repository.fail_stale_processing(
+            user_id,
+            datetime.utcnow() - PROCESSING_STALE_AFTER,
+        )
         docs = self.document_repository.list_by_user(user_id)
-        for doc in docs:
-            if doc.status in (DocumentStatus.PROCESSING, DocumentStatus.UPLOADED):
-                if self._document_age_seconds(doc.created_at) > 120:
-                    self.document_repository.update_status(doc, DocumentStatus.FAILED)
         return docs
 
     def delete_document(self, user_id: int, document_id: int) -> Document:

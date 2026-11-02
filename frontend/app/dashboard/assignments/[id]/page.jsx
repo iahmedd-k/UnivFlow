@@ -1,11 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useState } from 'react';
+import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@clerk/nextjs';
+import { useQuery } from '@tanstack/react-query';
 import { format, isValid, formatDistanceToNow } from 'date-fns';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import Icon from '@/app/dashboard/Icon';
 import TutorPanel from '../TutorPanel';
 import TurnInPanel from '../TurnInPanel';
@@ -37,49 +39,38 @@ function getStatus(assignment) {
 
 export default function AssignmentDetailPage() {
   const params = useParams();
-  const router = useRouter();
-  const { getToken } = useAuth();
+  const { getToken, userId } = useAuth();
   const assignmentId = params.id;
-
-  const [assignment, setAssignment] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const ownerKey = getQueryOwnerKey(userId);
+  const assignmentQuery = useQuery({
+    queryKey: ['assignments', ownerKey, 'detail', String(assignmentId)],
+    enabled: Boolean(assignmentId),
+    queryFn: async ({ signal }) => {
+      const token = await api.getRequestToken(getToken);
+      try {
+        return await api.getAssignment(assignmentId, token, { signal, direct: true });
+      } catch (singleError) {
+        const rows = await api.getAssignments(null, token, null, { signal, direct: true, limit: 500 });
+        const found = (rows || []).find((item) => String(item.id) === String(assignmentId));
+        if (found) return found;
+        throw singleError;
+      }
+    },
+  });
+  const assignment = assignmentQuery.data || null;
+  const loading = assignmentQuery.isPending;
   const [error, setError] = useState(null);
   const [tab, setTab] = useState('overview');
-
-  const loadAssignment = useCallback(async (options = {}) => {
-    setLoading(true);
+  const queryError = assignmentQuery.error?.message;
+  const loadAssignment = async () => {
     setError(null);
-    try {
-      const token = getToken ? await getToken() : null;
-      // Try single endpoint or fallback to filtering list
-      try {
-        const single = await api.getAssignment(assignmentId, token, options);
-        if (single && single.id) {
-          setAssignment(single);
-          return;
-        }
-      } catch {
-        // Fallback to list search
-      }
-      const data = await api.getAssignments(null, token, null, options);
-      const found = (data || []).find((a) => String(a.id) === String(assignmentId));
-      if (!found) throw new Error('Assignment not found');
-      setAssignment(found);
-    } catch (e) {
-      setError(e.message || 'Could not load assignment details.');
-    } finally {
-      setLoading(false);
-    }
-  }, [assignmentId, getToken]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => loadAssignment(), 0);
-    return () => clearTimeout(timer);
-  }, [loadAssignment]);
+    const result = await assignmentQuery.refetch();
+    if (result.isError) setError(result.error?.message || 'Could not load assignment details.');
+  };
 
   const handleTurnIn = async (id, templateId, files, token) => {
     await api.turnInAssignment(id, { template_id: templateId, files }, token);
-    await loadAssignment({ noCache: true });
+    await loadAssignment();
   };
 
   if (loading) {
@@ -98,7 +89,7 @@ export default function AssignmentDetailPage() {
     );
   }
 
-  if (error || !assignment) {
+  if (error || queryError || !assignment) {
     return (
       <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5">
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -107,7 +98,8 @@ export default function AssignmentDetailPage() {
           </Link>
         </div>
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800" role="alert">
-          <strong>Error loading assignment:</strong> {error || 'Assignment not found.'}
+          <strong>Error loading assignment:</strong> {error || queryError || 'Assignment not found.'}
+          <button type="button" className="ml-2 font-semibold underline" onClick={loadAssignment}>Retry</button>
         </div>
       </main>
     );
@@ -371,7 +363,7 @@ export default function AssignmentDetailPage() {
             <TurnInPanel
               assignment={assignment}
               onTurnIn={handleTurnIn}
-              onStatusChange={() => loadAssignment({ noCache: true })}
+              onStatusChange={loadAssignment}
             />
           )}
         </div>

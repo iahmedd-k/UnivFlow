@@ -104,8 +104,8 @@ export type UsageResponse = {
 
 /* ── Documents ──────────────────────────────────────────────────────── */
 
-export async function listDocuments(): Promise<Document[]> {
-  const res = await getRagDocuments();
+export async function listDocuments(options: RequestInit = {}): Promise<Document[]> {
+  const res = await getRagDocuments(null, options);
   return res?.data ?? res ?? [];
 }
 
@@ -125,8 +125,8 @@ export async function deleteDocument(documentId: number): Promise<void> {
 
 /* ── Conversations ──────────────────────────────────────────────────── */
 
-export async function listConversations(offset = 0, limit = 50): Promise<ConversationListResponse> {
-  const res = await getRagConversations(undefined, offset, limit);
+export async function listConversations(offset = 0, limit = 50, options: RequestInit = {}): Promise<ConversationListResponse> {
+  const res = await getRagConversations(undefined, offset, limit, options);
   return res?.data ?? res ?? { conversations: [], total: 0, offset, limit };
 }
 
@@ -163,8 +163,8 @@ export async function sendChat(request: ChatRequest): Promise<RagResponse> {
   return res?.data ?? res;
 }
 
-export async function getUsage(): Promise<UsageResponse> {
-  const res = await getRagUsage();
+export async function getUsage(options: RequestInit = {}): Promise<UsageResponse> {
+  const res = await getRagUsage(null, options);
   return res?.data ?? res;
 }
 

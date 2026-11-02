@@ -1,8 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/app/lib/api';
+import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import Icon from '@/app/dashboard/Icon';
 import { ExtensionSetupBox } from '@/app/dashboard/CompanionExtensionModal';
 
@@ -15,30 +17,33 @@ function timeLabel(value) {
 }
 
 export default function PortalPage() {
-  const { getToken } = useAuth();
-  const [settings, setSettings] = useState(null);
-  const [portalUrl, setPortalUrl] = useState(AIR_UNIVERSITY_PORTAL);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
+  const { getToken, userId } = useAuth();
+  const queryClient = useQueryClient();
+  const ownerKey = getQueryOwnerKey(userId);
+  const portalSettingsKey = ['portal', ownerKey, 'settings'];
+  const settingsQuery = useQuery({
+    queryKey: portalSettingsKey,
+    queryFn: async ({ signal }) => api.getPortalSettings(await api.getRequestToken(getToken), { signal, direct: true }),
+    staleTime: 30_000,
+  });
+  const { refetch: refetchSettings } = settingsQuery;
+  const settings = settingsQuery.data;
+  const loading = settingsQuery.isPending;
   const [signInOpen, setSignInOpen] = useState(false);
   const [jobId, setJobId] = useState('');
-  const [syncState, setSyncState] = useState(null);
-  const autoSyncStarted = useRef(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [portalUrlDraft, setPortalUrlDraft] = useState(null);
+  const portalUrl = portalUrlDraft ?? settings?.url ?? AIR_UNIVERSITY_PORTAL;
 
   const connected = settings?.session_status === 'ACTIVE';
   const reconnect = settings?.session_status === 'REAUTH_REQUIRED';
-  const isSyncing = Boolean(jobId) || ['queued', 'running'].includes(syncState?.status);
-  const report = settings?.report || syncState?.summary || {};
 
   const loadSettings = useCallback(async () => {
-    const token = await getToken();
-    const result = await api.getPortalSettings(token);
-    setSettings(result);
-    setPortalUrl(result?.url || AIR_UNIVERSITY_PORTAL);
-    return result;
-  }, [getToken]);
+    const result = await refetchSettings();
+    if (result.error) throw result.error;
+    return result.data;
+  }, [refetchSettings]);
 
   const [cookieInput, setCookieInput] = useState('');
   const [syncingCookie, setSyncingCookie] = useState(false);
@@ -57,7 +62,7 @@ export default function PortalPage() {
     setError('');
     setNotice('');
     try {
-      const token = await getToken();
+      const token = await api.getRequestToken(getToken);
       const res = await api.syncPortalCookies(cookieInput.trim(), portalUrl.trim(), token);
       setNotice(res?.message || `Successfully synced ${res?.attendance_count || 0} course attendance records!`);
       setCookieInput('');
@@ -75,7 +80,7 @@ export default function PortalPage() {
     setError('');
     setNotice('');
     try {
-      const token = await getToken();
+      const token = await api.getRequestToken(getToken);
       await api.disconnectPortalCookies(token);
       setNotice('Portal session cookies disconnected.');
       await loadSettings();
@@ -87,94 +92,50 @@ export default function PortalPage() {
   };
 
 
-  useEffect(() => {
-    let cancelled = false;
-    const loadInitialSettings = async () => {
-      try {
-        const token = await getToken();
-        const result = await api.getPortalSettings(token);
-        if (!cancelled) {
-          setSettings(result);
-          setPortalUrl(result?.url || AIR_UNIVERSITY_PORTAL);
-        }
-      } catch (err) {
-        if (!cancelled) setError(err.message || 'Could not load portal settings.');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-    loadInitialSettings();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const jobQuery = useQuery({
+    queryKey: ['portal', ownerKey, 'sync-job', jobId],
+    enabled: Boolean(jobId),
+    queryFn: async ({ signal }) => api.getPortalSyncStatus(jobId, await api.getRequestToken(getToken), { signal, direct: true }),
+    staleTime: 0,
+    retry: false,
+    refetchInterval: (query) => {
+      if (query.state.status === 'error') return query.state.errorUpdateCount < 4 ? 1_500 : false;
+      return ['queued', 'running'].includes(query.state.data?.status) ? 1_200 : false;
+    },
+    refetchIntervalInBackground: false,
+  });
+  const syncMutation = useMutation({
+    mutationFn: async () => api.queuePortalSync(await api.getRequestToken(getToken)),
+    onMutate: () => {
+      setError('');
+      setNotice('');
+    },
+    onSuccess: (result) => setJobId(result.job_id),
+    onError: (err) => setError(err.message || 'Could not start portal sync.'),
+  });
+  const terminalStatuses = ['success', 'partial', 'error', 'reconnect_required', 'session_expired', 'already_running'];
+  const jobStatus = jobQuery.data?.status;
+  const jobIsTerminal = terminalStatuses.includes(jobStatus);
+  const jobCheckFailed = jobQuery.isError && jobQuery.failureCount >= 4;
+  const isSyncing = syncMutation.isPending || (Boolean(jobId) && !jobIsTerminal && !jobCheckFailed);
+  const busy = isSyncing;
+  const syncState = jobQuery.data;
+  const report = settings?.report || syncState?.summary || {};
+  const statusError = jobIsTerminal && !['success', 'partial', 'already_running'].includes(jobStatus)
+    ? syncState.error || syncState.detail || 'Portal sync could not complete.'
+    : jobCheckFailed ? jobQuery.error?.message || 'Could not check sync progress.' : '';
+  const pageError = error || settingsQuery.error?.message || statusError || '';
+  const pageNotice = notice || (jobIsTerminal && ['success', 'partial', 'already_running'].includes(jobStatus)
+    ? syncState.message || (jobStatus === 'already_running' ? 'A portal sync is already running.' : 'Your portal data is up to date.')
+    : '');
 
   useEffect(() => {
-    if (!jobId) return undefined;
-    let cancelled = false;
-    let timer;
-    let consecutiveErrors = 0;
-    const poll = async () => {
-      try {
-        const token = await getToken();
-        const result = await api.getPortalSyncStatus(jobId, token);
-        if (cancelled) return;
-        consecutiveErrors = 0;
-        setSyncState(result);
-        if (['success', 'partial', 'error', 'reconnect_required', 'session_expired', 'already_running'].includes(result.status)) {
-          setJobId('');
-          setBusy(false);
-          if (result.status === 'success' || result.status === 'partial') {
-            setNotice(result.message || 'Your portal data is up to date.');
-            await loadSettings();
-          } else if (result.status === 'already_running') {
-            setNotice(result.message || 'A portal sync is already running.');
-          } else {
-            setError(result.error || result.detail || 'Portal sync could not complete.');
-            if (['reconnect_required', 'session_expired'].includes(result.status)) {
-              autoSyncStarted.current = false;
-              await loadSettings();
-            }
-          }
-          return;
-        }
-        timer = setTimeout(poll, 1200);
-      } catch (err) {
-        if (!cancelled) {
-          consecutiveErrors += 1;
-          if (consecutiveErrors < 4) {
-            timer = setTimeout(poll, 1500);
-            return;
-          }
-          setError(err.message || 'Could not check sync progress.');
-          setBusy(false);
-          setJobId('');
-        }
-      }
-    };
-    poll();
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [jobId, getToken, loadSettings]);
-
-  const startSync = useCallback(async () => {
-    setBusy(true);
-    setError('');
-    setNotice('');
-    setSyncState({ status: 'queued' });
-    try {
-      const token = await getToken();
-      const result = await api.queuePortalSync(token);
-      setJobId(result.job_id);
-      setBusy(true);
-    } catch (err) {
-      setBusy(false);
-      setSyncState(null);
-      setError(err.message || 'Could not start portal sync.');
+    if (jobId && ['success', 'partial', 'reconnect_required', 'session_expired'].includes(jobStatus)) {
+      void queryClient.invalidateQueries({ queryKey: ['portal', ownerKey, 'settings'] });
     }
-  }, [getToken]);
+  }, [jobId, jobStatus, ownerKey, queryClient]);
+
+  const startSync = () => syncMutation.mutate();
 
   if (loading) {
     return <div className="mx-auto flex min-h-72 max-w-6xl items-center justify-center text-sm text-slate-500">Loading university connection…</div>;
@@ -194,8 +155,8 @@ export default function PortalPage() {
         </div>
       </header>
 
-      {error && <div role="alert" className="rounded-xl border border-rose-border bg-rose-bg px-4 py-3 text-sm font-normal text-rose">{error}</div>}
-      {notice && <div role="status" className="rounded-xl border border-success/30 bg-success-bg px-4 py-3 text-sm font-normal text-success">{notice}</div>}
+      {pageError && <div role="alert" className="rounded-xl border border-rose-border bg-rose-bg px-4 py-3 text-sm font-normal text-rose">{pageError}</div>}
+      {pageNotice && <div role="status" className="rounded-xl border border-success/30 bg-success-bg px-4 py-3 text-sm font-normal text-success">{pageNotice}</div>}
 
       <section className="grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
         <div className="rounded-2xl border border-border bg-surface p-6 shadow-xs sm:p-7 flex flex-col gap-6">
@@ -243,7 +204,7 @@ export default function PortalPage() {
                     placeholder="https://portals.au.edu.pk/students/"
                     className="flex-1 rounded-lg border border-border-input bg-surface px-3 py-2 text-sm font-normal text-heading placeholder:text-muted focus:border-violet focus:outline-none"
                     value={portalUrl}
-                    onChange={(e) => setPortalUrl(e.target.value)}
+                    onChange={(e) => setPortalUrlDraft(e.target.value)}
                     disabled={syncingCookie || busy}
                   />
                   <a

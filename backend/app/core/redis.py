@@ -3,13 +3,10 @@ from hashlib import sha256
 from urllib.parse import quote
 
 import httpx
+from fastapi.encoders import jsonable_encoder
 
 from app.core.config import settings
 from app.core.logging import logger
-
-
-ATTENDANCE_SUMMARY_CACHE_KEY = "uniflow:cache:dashboard:attendance-summary:v1"
-ATTENDANCE_SUMMARY_CACHE_VERSION_KEY = f"{ATTENDANCE_SUMMARY_CACHE_KEY}:generation"
 
 
 class UpstashRedisError(RuntimeError):
@@ -67,42 +64,82 @@ def get_json(key: str):
 def set_json(key: str, value, ttl_seconds: int) -> None:
     if not is_configured():
         return
-    serialized = quote(json.dumps(value, separators=(",", ":")), safe="")
+    try:
+        serialized = quote(
+            json.dumps(jsonable_encoder(value), separators=(",", ":"), allow_nan=False),
+            safe="",
+        )
+    except (TypeError, ValueError) as error:
+        logger.warning("Redis cache value %s could not be serialized: %s", key, error)
+        return
+    if len(serialized) + len(key) + 100 > 6000:
+        logger.warning("Redis cache value %s is too large for the REST cache request.", key)
+        return
     try:
         _request("POST", f"/set/{quote(key, safe='')}/{serialized}?EX={int(ttl_seconds)}")
     except UpstashRedisError as error:
         logger.warning("Redis cache write skipped: %s", error)
 
 
-def attendance_summary_cache_key(user_id: str, generation: str) -> str:
+def user_cache_key(namespace: str, user_id: str, variant: str = "default") -> str:
     user_hash = sha256(user_id.encode("utf-8")).hexdigest()
-    return f"{ATTENDANCE_SUMMARY_CACHE_KEY}:{user_hash}:{generation}"
+    variant_hash = sha256(variant.encode("utf-8")).hexdigest()[:16]
+    return f"uniflow:cache:{namespace}:v1:{user_hash}:{variant_hash}"
 
 
-def get_attendance_cache_generation() -> str | None:
-    if not is_configured():
-        return None
-    try:
-        generation = _request(
-            "GET",
-            f"/get/{quote(ATTENDANCE_SUMMARY_CACHE_VERSION_KEY, safe='')}",
-        )
-    except UpstashRedisError as error:
-        logger.warning("Redis cache generation read skipped: %s", error)
-        return None
-    return str(generation) if generation is not None else "0"
+def get_user_cache(namespace: str, user_id: str, variant: str = "default"):
+    return get_json(user_cache_key(namespace, user_id, variant))
 
 
-def invalidate_attendance_summary_cache() -> None:
+def set_user_cache(
+    namespace: str,
+    user_id: str,
+    value,
+    ttl_seconds: int,
+    variant: str = "default",
+) -> None:
+    set_json(user_cache_key(namespace, user_id, variant), value, ttl_seconds)
+
+
+def invalidate_user_cache(
+    namespace: str,
+    user_id: str,
+    variant: str = "default",
+) -> None:
+    invalidate_user_caches(namespace, user_id, [variant])
+
+
+def invalidate_user_caches(
+    namespace: str,
+    user_id: str,
+    variants: list[str],
+) -> None:
     if not is_configured():
         return
+    keys = [user_cache_key(namespace, user_id, variant) for variant in variants]
+    if not keys:
+        return
+    path = "/del/" + "/".join(quote(key, safe="") for key in keys)
     try:
-        _request(
-            "POST",
-            f"/incr/{quote(ATTENDANCE_SUMMARY_CACHE_VERSION_KEY, safe='')}",
-        )
+        _request("POST", path)
     except UpstashRedisError as error:
-        logger.warning("Redis cache invalidation skipped: %s", error)
+        logger.warning("Redis cache invalidation skipped for %s: %s", namespace, error)
+
+
+def invalidate_attendance_summary_cache(user_id: str) -> None:
+    if not is_configured():
+        return
+    namespaces = (
+        "dashboard:attendance-summary",
+        "attendance:records",
+        "timetable:classes",
+    )
+    keys = [user_cache_key(namespace, user_id) for namespace in namespaces]
+    path = "/del/" + "/".join(quote(key, safe="") for key in keys)
+    try:
+        _request("POST", path)
+    except UpstashRedisError as error:
+        logger.warning("Redis academic cache invalidation skipped: %s", error)
 
 
 def acquire_lock(key: str, owner_token: str, ttl_seconds: int) -> bool:
@@ -252,4 +289,3 @@ def get_user_lock(resource: str, user_id: str, ttl_seconds: int = 300) -> Distri
     """Acquire a distributed lock across processes/workers with graceful in-memory fallback."""
     key = f"lock:{resource}:{user_id}"
     return DistributedLock(key, ttl_seconds=ttl_seconds)
-

@@ -4,10 +4,42 @@
 async function getStoredState() {
   return new Promise((resolve) => {
     chrome.storage.local.get(
-      ["uniflowApiUrl", "uniflowAuthToken", "claudeConnected", "portalConnected", "gcrConnected"],
+      ["uniflowApiUrl", "uniflowAuthToken", "claudeConnected", "portalConnected", "gcrConnected", "uniflowGcrCookieFingerprint"],
       (data) => resolve(data || {})
     );
   });
+}
+
+async function fingerprintGoogleCookies(cookies) {
+  const canonicalCookies = (cookies || [])
+    .map((cookie) => ({
+      name: cookie.name || "",
+      value: cookie.value || "",
+      domain: cookie.domain || "",
+      path: cookie.path || "/",
+      secure: Boolean(cookie.secure),
+      httpOnly: Boolean(cookie.httpOnly),
+      sameSite: cookie.sameSite || "unspecified",
+    }))
+    .sort((left, right) => `${left.domain}\n${left.path}\n${left.name}`.localeCompare(`${right.domain}\n${right.path}\n${right.name}`));
+  const bytes = new TextEncoder().encode(JSON.stringify(canonicalCookies));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function syncGoogleCookiesToBackend(cookies, userAgent, apiUrl, token, { skipUnchanged = false } = {}) {
+  const fingerprint = await fingerprintGoogleCookies(cookies);
+  const previousFingerprint = (await getStoredState()).uniflowGcrCookieFingerprint;
+  if (skipUnchanged && fingerprint === previousFingerprint) return { unchanged: true };
+
+  const result = await sendToBackend(
+    "/classroom/gcr-browser/sync-session",
+    { cookies, user_agent: userAgent },
+    apiUrl,
+    token,
+  );
+  await setStoredState({ uniflowGcrCookieFingerprint: fingerprint });
+  return result;
 }
 
 async function setStoredState(updates) {
@@ -302,12 +334,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           return;
         }
 
-        const res = await sendToBackend(
-          "/classroom/gcr-browser/sync-session",
-          { cookies, user_agent: navigator.userAgent },
-          apiUrl,
-          token
-        );
+        const res = await syncGoogleCookiesToBackend(cookies, navigator.userAgent, apiUrl, token);
         await setStoredState({
           gcrConnected: true,
           uniflowApiUrl: apiUrl,
@@ -320,12 +347,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           sendResponse({ success: false, error: visitRes.error });
           return;
         }
-        const res = await sendToBackend(
-          "/classroom/gcr-browser/sync-session",
-          { cookies: visitRes.cookies, user_agent: navigator.userAgent },
-          apiUrl,
-          token
-        );
+        const res = await syncGoogleCookiesToBackend(visitRes.cookies, navigator.userAgent, apiUrl, token);
         await setStoredState({
           gcrConnected: true,
           uniflowApiUrl: apiUrl,
@@ -352,12 +374,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             if (vRes.success) gcrCookies = vRes.cookies;
           }
           if (gcrCookies && gcrCookies.length > 0) {
-            results.gcr = await sendToBackend(
-              "/classroom/gcr-browser/sync-session",
-              { cookies: gcrCookies, user_agent: navigator.userAgent },
-              apiUrl,
-              token
-            );
+            results.gcr = await syncGoogleCookiesToBackend(gcrCookies, navigator.userAgent, apiUrl, token);
             await setStoredState({ gcrConnected: true });
           } else {
             results.gcr = { skipped: true, reason: "No cookies found in browser" };
@@ -534,13 +551,14 @@ chrome.cookies.onChanged.addListener((changeInfo) => {
         if (state.gcrConnected && state.uniflowApiUrl && state.uniflowAuthToken) {
           const cookies = await getGoogleClassroomCookies();
           if (cookies && cookies.length > 0) {
-            await sendToBackend(
-              "/classroom/gcr-browser/sync-session",
-              { cookies, user_agent: navigator.userAgent },
+            const result = await syncGoogleCookiesToBackend(
+              cookies,
+              navigator.userAgent,
               state.uniflowApiUrl,
-              state.uniflowAuthToken
+              state.uniflowAuthToken,
+              { skipUnchanged: true },
             );
-            console.log("[Uniflow Companion] Auto-renewed Google Classroom session in background.");
+            if (!result.unchanged) console.log("[Uniflow Companion] Auto-renewed Google Classroom session in background.");
           }
         }
       } catch (err) {

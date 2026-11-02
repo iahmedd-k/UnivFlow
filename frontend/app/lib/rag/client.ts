@@ -1,18 +1,8 @@
 import type { ApiError } from "./types";
+import { API_BASE_URL, createRequestId } from "@/app/lib/api-config";
+import { fetchFromApi } from "@/app/lib/api";
 
-const RAW_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ||
-  process.env.NEXT_PUBLIC_API_BASE_URL ||
-  (process.env.NODE_ENV === "production"
-    ? "https://univlfow.koreacentral.cloudapp.azure.com/api/v1"
-    : "http://localhost:8000/api/v1");
-
-const cleanRaw = RAW_BASE_URL.trim().replace(/\/+$/, "");
-const BASE_URL = cleanRaw
-  ? cleanRaw.endsWith("/api/v1")
-    ? cleanRaw
-    : `${cleanRaw}/api/v1`
-  : "/api/v1";
+const BASE_URL = API_BASE_URL;
 
 export function getFullUrl(path: string): string {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
@@ -50,8 +40,14 @@ export async function getAuthToken(): Promise<string | null> {
   if (authTokenGetter) {
     if (!pendingTokenPromise) {
       pendingTokenPromise = (async () => {
+        let tokenTimeout: ReturnType<typeof setTimeout> | undefined;
         try {
-          const token = await authTokenGetter();
+          const token = await Promise.race([
+            authTokenGetter(),
+            new Promise<never>((_, reject) => {
+              tokenTimeout = setTimeout(() => reject(new Error("Authentication timed out.")), 3_000);
+            }),
+          ]);
           if (token) {
             activeToken = token;
             return token;
@@ -59,6 +55,7 @@ export async function getAuthToken(): Promise<string | null> {
         } catch {
           // Fall back to stored token
         } finally {
+          clearTimeout(tokenTimeout);
           pendingTokenPromise = null;
         }
         return activeToken || (typeof localStorage !== "undefined" ? localStorage.getItem("token") : null);
@@ -82,77 +79,22 @@ async function request<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const token = await getAuthToken();
-  const headers: Record<string, string> = {
-    ...(options.headers as Record<string, string>),
-  };
-
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-
-  if (
-    options.body &&
-    !(options.body instanceof FormData) &&
-    !headers["Content-Type"]
-  ) {
-    headers["Content-Type"] = "application/json";
-  }
-
-  const url = getFullUrl(path);
-  let res: Response;
-  const signal = options.signal || (typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(300000) : undefined);
   try {
-    res = await fetch(url, { ...options, signal, headers });
+    const token = await getAuthToken();
+    const data: any = await fetchFromApi(path, token, {
+      ...options,
+      cacheTtlMs: 45_000,
+    });
+    return (data?.data !== undefined ? data.data : data) as T;
   } catch (err: unknown) {
-    const isTimeout = (err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError";
+    const status = Number((err as Error & { status?: number })?.status) || 0;
+    if (status === 401) clearToken();
     const error: ApiError = {
-      status_code: 0,
-      message: isTimeout
-        ? "Request timed out or cancelled."
-        : (err as Error)?.message || "Network error. Please check your connection.",
+      status_code: status,
+      message: (err as Error)?.message || "Network error. Please check your connection.",
     };
     throw error;
   }
-
-  if (res.status === 204) {
-    return undefined as T;
-  }
-
-  let data: any = null;
-  const contentType = res.headers.get("content-type");
-  if (contentType && contentType.includes("application/json")) {
-    try {
-      data = await res.json();
-    } catch {
-      data = null;
-    }
-  } else {
-    try {
-      const text = await res.text();
-      data = { message: text };
-    } catch {
-      data = null;
-    }
-  }
-
-  if (!res.ok) {
-    if (res.status === 401) {
-      clearToken();
-    }
-    const errorMessage =
-      data?.message ||
-      data?.detail ||
-      (typeof data === "string" ? data : null) ||
-      `Request failed (${res.status})`;
-    const error: ApiError = {
-      status_code: res.status,
-      message: errorMessage,
-    };
-    throw error;
-  }
-
-  return (data?.data !== undefined ? data.data : data) as T;
 }
 
 export const api = {
@@ -203,6 +145,7 @@ export async function streamChat(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Request-ID": createRequestId(),
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify(body),

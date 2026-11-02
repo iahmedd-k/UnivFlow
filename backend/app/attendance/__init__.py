@@ -1,1 +1,1 @@
-from app.attendance.router import router
+"""Attendance domain package."""

@@ -1,17 +1,16 @@
 /** @type {import('next').NextConfig} */
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
-const apiRootUrl = apiBaseUrl.replace(/\/api\/v1\/?$/, '');
+import { API_BASE_URL, API_ROOT_URL } from './app/lib/api-config.js';
 
 const nextConfig = {
   async rewrites() {
     return [
       {
         source: '/api/backend/health',
-        destination: `${apiRootUrl}/health`,
+        destination: `${API_ROOT_URL}/health`,
       },
       {
         source: '/api/backend/:path*',
-        destination: `${apiBaseUrl}/:path*`,
+        destination: `${API_BASE_URL}/:path*`,
       },
     ];
   },

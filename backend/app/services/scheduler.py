@@ -68,7 +68,7 @@ def _run_portal_auto_sync():
 
 def _run_portal_sync_job(uid: str, job_id: str):
     """Run portal sync and attendance update for a specific user and job."""
-    from app.portal.router import _sync_portal_for_user
+    from app.api.endpoints.portal import _sync_portal_for_user
     
     db = SessionLocal()
     try:
@@ -263,7 +263,7 @@ def _run_course_auto_turn_in_job():
     db = SessionLocal()
     try:
         import json
-        from app.classroom.router import check_and_execute_course_auto_turn_in
+        from app.api.endpoints.classroom import check_and_execute_course_auto_turn_in
         from app.auth.access_gate import get_access_status
 
         rows = db.query(Setting).filter(Setting.key.like("auto_turnin_course_%")).all()

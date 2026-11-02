@@ -1,1 +1,1 @@
-from app.documents.router import router
+"""Documents domain package."""

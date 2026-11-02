@@ -28,9 +28,9 @@ Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` in the backend envir
 
 ```text
 app/
-├── api/             Feature endpoint registry and shared HTTP endpoints
-├── v1/api/endpoints/ Versioned execution and diagram endpoints
-├── <feature>/       Domain endpoints, schemas, and feature services
+├── api/
+│   └── endpoints/   HTTP routes and the API router registry
+├── <feature>/       Domain models, schemas, repositories, and services
 ├── core/            Configuration, logging, security, and cross-cutting concerns
 ├── db/
 │   ├── models/      SQLAlchemy entities grouped by domain
@@ -44,7 +44,7 @@ scripts/             Local maintenance commands
 tests/               Automated tests
 ```
 
-The API registry mounts feature routers under the `/api/v1` prefix used by the web client. Feature routers live with their domain, such as `app/assignments/router.py`; versioned endpoints live in `app/v1/api/endpoints/`. Keep HTTP handling thin, put business rules in services, and keep SQLAlchemy queries in repositories. ORM models and repositories are grouped into focused modules; their package initializers re-export public names so existing imports remain compatible.
+The API registry mounts endpoint modules under the `/api/v1` prefix used by the web client. HTTP routes are centralized under `app/api/endpoints/`; domain packages hold business logic, schemas, persistence, and provider integrations. Keep HTTP handling thin, put business rules in services, and keep SQLAlchemy queries in repositories. ORM models and repositories are grouped into focused modules.
 
 ## Database changes
 

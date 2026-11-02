@@ -2,11 +2,11 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.dashboard.router import get_attendance_summary
+from app.api.endpoints.dashboard import get_attendance_summary
 from app.db.models.common import Base
 from app.db.models.courses import Course
 from app.db.models.schedules import AttendanceRecord, TimetableEntry
-from app.portal.router import _attendance_rows
+from app.api.endpoints.portal import _attendance_rows
 
 
 @pytest.fixture

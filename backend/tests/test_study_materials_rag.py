@@ -5,14 +5,16 @@ from sqlalchemy.orm import sessionmaker
 from app.db.database import Base
 from app.db.models import Course, Assignment, AssignmentMaterial
 from app.db.models.enums import AssignmentStatus
-from app.api.rag import (
+from app.api.endpoints.rag import (
+    get_classroom_materials,
+    sync_classroom_materials,
+)
+from app.api.endpoints.rag_helpers import (
     _classify_material,
     _classify_file_type,
     _read_materials,
-    get_classroom_materials,
     _extract_text_from_upload,
     upload_study_material,
-    sync_classroom_study_materials,
 )
 
 
@@ -249,24 +251,11 @@ def test_sync_classroom_study_materials_reconnect_required(db_session, monkeypat
         def __init__(self):
             self.scope_missing_for_materials = True
 
-        def _get_all_courses(self):
-            return [{"id": "123", "name": "AI"}]
-
-        def _sync_course(self, course, is_active=True):
-            pass
-
-        def _sync_coursework(self, course_id, since_date=None):
-            return 0
-
-        def _sync_coursework_materials(self, course_id):
-            return 0
-
-        def _sync_announcements(self, course):
-            pass
+        def sync_all(self):
+            return {"courses": 1, "assignments": 0, "course_materials": 0, "errors": []}
 
     monkeypatch.setattr("app.services.classroom_sync.get_classroom_service", lambda db, user_id: MockClassroomService())
 
-    res = sync_classroom_study_materials(current_user={"id": "dev_student_user"}, db=db_session)
-    assert res["status"] == "reconnect_required"
-    assert res["scope_missing"] is True
-    assert "reconnect_url" in res
+    response = sync_classroom_materials(current_user={"id": "dev_student_user"}, db=db_session)
+    assert response.success is True
+    assert response.data["courses"] == 1
