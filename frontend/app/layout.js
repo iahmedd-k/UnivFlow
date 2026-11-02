@@ -1,6 +1,6 @@
 import { ClerkProvider } from '@clerk/nextjs';
 import DashboardDataProvider from '@/app/dashboard/DashboardDataProvider';
-import { Inter, Plus_Jakarta_Sans, JetBrains_Mono } from 'next/font/google';
+import { Inter, Plus_Jakarta_Sans } from 'next/font/google';
 import "./globals.css";
 
 const inter = Inter({
@@ -15,13 +15,6 @@ const plusJakarta = Plus_Jakarta_Sans({
   display: 'swap',
   variable: '--font-heading',
   weight: ['500', '600', '700', '800'],
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ['latin'],
-  display: 'swap',
-  variable: '--font-mono',
-  weight: ['400', '500', '600'],
 });
 
 const siteUrl = process.env.NEXT_PUBLIC_APP_URL || "https://univ-flow-bt12.vercel.app";
@@ -126,7 +119,7 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <ClerkProvider>
-      <html lang="en" className={`${inter.variable} ${plusJakarta.variable} ${jetbrainsMono.variable}`} suppressHydrationWarning>
+      <html lang="en" className={`${inter.variable} ${plusJakarta.variable}`} suppressHydrationWarning>
         <body className="min-h-screen flex flex-col font-sans antialiased text-ink bg-paper" suppressHydrationWarning>
           <DashboardDataProvider>{children}</DashboardDataProvider>
         </body>
