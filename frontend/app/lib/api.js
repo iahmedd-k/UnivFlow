@@ -38,23 +38,28 @@ function httpQueryKey(method, url, token) {
 }
 
 function invalidateHttpQueries(prefix = null) {
-  const queryClient = getQueryClient();
-  if (!prefix) {
-    void queryClient.invalidateQueries();
-    return;
-  }
+  try {
+    const queryClient = getQueryClient();
+    if (!queryClient || typeof queryClient.invalidateQueries !== 'function') return;
+    if (!prefix) {
+      void queryClient.invalidateQueries();
+      return;
+    }
 
-  const normalized = String(prefix).replace(/^\//, '').split('?')[0];
-  void queryClient.invalidateQueries({ queryKey: [normalized] });
-  queryClient.invalidateQueries({
-    queryKey: ['http'],
-    predicate: (query) => {
-      const url = query.queryKey[2];
-      if (typeof url !== 'string') return false;
-      const path = url.split('/api/v1/')[1] || '';
-      return path === normalized || path.startsWith(`${normalized}/`) || path.startsWith(`${normalized}?`);
-    },
-  });
+    const normalized = String(prefix).replace(/^\//, '').split('?')[0];
+    void queryClient.invalidateQueries({ queryKey: [normalized] });
+    queryClient.invalidateQueries({
+      queryKey: ['http'],
+      predicate: (query) => {
+        const url = query.queryKey[2];
+        if (typeof url !== 'string') return false;
+        const path = url.split('/api/v1/')[1] || '';
+        return path === normalized || path.startsWith(`${normalized}/`) || path.startsWith(`${normalized}?`);
+      },
+    });
+  } catch {
+    // Gracefully ignore cache invalidation errors outside React context
+  }
 }
 
 export function clearApiCache(prefix = null) {
@@ -107,7 +112,7 @@ async function fetchApiRequest(endpoint, token = null, options = {}, tokenResolv
       authToken = manualToken;
     } else if (window.Clerk?.session?.getToken) {
       try {
-        authToken = await window.Clerk.session.getToken();
+        authToken = await resolveClerkToken(() => window.Clerk.session.getToken());
       } catch {
         // anonymous or session pending
       }
@@ -120,6 +125,7 @@ async function fetchApiRequest(endpoint, token = null, options = {}, tokenResolv
   delete fetchOptions.direct;
   delete fetchOptions.timeoutMs;
   delete fetchOptions.cacheTtlMs;
+  delete fetchOptions.noTimeout;
   const headers = {
     ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
     'X-Request-ID': createRequestId(),
@@ -133,15 +139,20 @@ async function fetchApiRequest(endpoint, token = null, options = {}, tokenResolv
   // Automatic retry with exponential backoff for network resilience
   let attempts = 0;
   const maxAttempts = method === 'GET' ? 2 : 1;
-  const deadline = Date.now() + (timeoutMs || options.timeoutMs || DEFAULT_REQUEST_TIMEOUT_MS);
+  const effectiveTimeout = timeoutMs !== undefined ? timeoutMs : options.timeoutMs;
+  const noTimeout = effectiveTimeout === 0 || options.noTimeout === true || effectiveTimeout === null || effectiveTimeout === Infinity;
+  const deadline = noTimeout ? null : Date.now() + (effectiveTimeout || DEFAULT_REQUEST_TIMEOUT_MS);
   let delay = 600;
 
   while (attempts < maxAttempts) {
     attempts++;
     const controller = new AbortController();
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) throw new DOMException('The server took too long to respond.', 'TimeoutError');
-    const timeout = setTimeout(() => controller.abort(new DOMException('The server took too long to respond.', 'TimeoutError')), remainingMs);
+    let timeout = null;
+    if (!noTimeout && deadline) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) throw new DOMException('The server took too long to respond.', 'TimeoutError');
+      timeout = setTimeout(() => controller.abort(new DOMException('The server took too long to respond.', 'TimeoutError')), remainingMs);
+    }
     const abortFromCaller = () => controller.abort(callerSignal.reason || new DOMException('The request was cancelled.', 'AbortError'));
     callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
     try {
@@ -199,10 +210,16 @@ async function fetchApiRequest(endpoint, token = null, options = {}, tokenResolv
         } else {
           featureQueries.add(endpointPrefix);
         }
-        const queryClient = getQueryClient();
-        featureQueries.forEach((key) => {
-          void queryClient.invalidateQueries({ queryKey: [key] });
-        });
+        try {
+          const queryClient = getQueryClient();
+          if (queryClient && typeof queryClient.invalidateQueries === 'function') {
+            featureQueries.forEach((key) => {
+              void queryClient.invalidateQueries({ queryKey: [key] });
+            });
+          }
+        } catch {
+          // Gracefully continue if queryClient is not available
+        }
       }
       return json;
     } catch (err) {
@@ -214,11 +231,11 @@ async function fetchApiRequest(endpoint, token = null, options = {}, tokenResolv
         console.warn(`API request issue for ${endpoint}:`, err?.message || err);
         throw err;
       }
-      if (Date.now() + delay >= deadline) throw err;
+      if (deadline && Date.now() + delay >= deadline) throw err;
       await new Promise((r) => setTimeout(r, delay));
       delay *= 1.8;
     } finally {
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
       callerSignal?.removeEventListener('abort', abortFromCaller);
     }
   }
@@ -478,7 +495,22 @@ export const api = {
       body: form,
     });
   },
-  askCourseMaterials: async (data, token = null) => fetchFromApi('/rag/chat', token, { method: 'POST', body: JSON.stringify(data) }),
+  askCourseMaterials: async (data, token = null, options = {}) => {
+    const res = await fetchFromApi('/rag/chat', token, {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeoutMs: 0,
+      noTimeout: true,
+      ...options,
+    });
+    const payload = res?.data || res || {};
+    return {
+      ...payload,
+      conversation_id: payload.conversation_id ?? res?.conversation_id,
+      answer: payload.answer ?? res?.answer,
+      materials: payload.sources ?? payload.materials ?? res?.materials ?? [],
+    };
+  },
   getRagConversationMessages: async (conversationId, token = null) => fetchFromApi(`/rag/conversations/${conversationId}/messages`, token),
 
   // RAG v2 (DocSense)
@@ -490,7 +522,13 @@ export const api = {
   },
   getRagDocumentStatus: async (documentId, token = null) => fetchFromApi(`/rag/documents/${documentId}/status`, token, { noCache: true }),
   deleteRagDocument: async (documentId, token = null) => fetchFromApi(`/rag/documents/${documentId}`, token, { method: 'DELETE' }),
-  ragChat: async (data, token = null) => fetchFromApi('/rag/chat', token, { method: 'POST', body: JSON.stringify(data), timeoutMs: 90_000 }),
+  ragChat: async (data, token = null, options = {}) => fetchFromApi('/rag/chat', token, {
+    method: 'POST',
+    body: JSON.stringify(data),
+    timeoutMs: 0,
+    noTimeout: true,
+    ...options,
+  }),
   ragChatStream: async (data, token = null) => {
     const url = `${API_BASE}/rag/chat/stream`;
     const res = await fetch(url, {

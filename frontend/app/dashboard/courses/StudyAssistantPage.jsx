@@ -159,16 +159,20 @@ export default function StudyAssistantPage() {
         conversation_id: conversationId,
         history: previous.slice(-10),
       }, await getToken());
-      setConversationId(result.conversation_id);
+      const payload = result?.data || result || {};
+      const nextConvId = payload.conversation_id || conversationId;
+      if (nextConvId) setConversationId(nextConvId);
       setMessages((current) => [...current, {
         role: 'assistant',
-        text: result.answer || 'I could not produce an answer for that question.',
-        sources: (result.materials || []).slice(0, 5),
+        text: payload.answer || 'I could not produce an answer for that question.',
+        sources: (payload.materials || payload.sources || []).slice(0, 5),
       }]);
-      setConversations((current) => {
-        const next = { id: result.conversation_id, title: prompt.slice(0, 70), source: 'rag' };
-        return current.some((item) => item.id === next.id) ? current : [next, ...current];
-      });
+      if (nextConvId) {
+        setConversations((current) => {
+          const next = { id: nextConvId, title: prompt.slice(0, 70), source: 'rag' };
+          return current.some((item) => item.id === next.id) ? current : [next, ...current];
+        });
+      }
     } catch (err) {
       setMessages(previous); setDraft(prompt); setError(err?.message || 'The assistant could not answer. Your message is ready to retry.');
     } finally { setSending(false); textareaRef.current?.focus(); }

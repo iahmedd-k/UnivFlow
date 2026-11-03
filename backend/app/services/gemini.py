@@ -23,7 +23,11 @@ def generate_study_answer(
             model,
             settings.study_assistant_model or "gemini-3.5-flash",
             "gemini-3.5-flash",
+            "gemini-2.5-flash",
+            "gemini-flash-latest",
+            "gemini-3.8-flash",
             "gemini-3.5-flash-lite",
+            "gemini-2.5-flash-lite",
             "gemini-3-flash-preview",
         ]
         seen_gemini = set()
@@ -44,7 +48,7 @@ def generate_study_answer(
                             "temperature": 0.4,
                         },
                     },
-                    timeout=30.0,
+                    timeout=60.0,
                 )
                 if response.is_success:
                     body = response.json()

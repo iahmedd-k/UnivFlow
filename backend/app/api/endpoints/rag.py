@@ -773,6 +773,17 @@ async def chat(
     conversation_id = request.conversation_id
     document_ids = request.document_ids or []
 
+    if conversation_id is None and request.query:
+        try:
+            conv_resp = conversation_service.create_conversation(
+                user_id=db_user_id,
+                title=request.query[:60].strip() or "Study chat",
+                document_ids=document_ids,
+            )
+            conversation_id = conv_resp.id
+        except Exception as e:
+            logger.warning("Could not auto-create conversation in chat: %s", e)
+
     # 1. Save user turn to conversation history
     if conversation_id is not None:
         try:
@@ -983,6 +994,7 @@ async def chat(
         abstention_reason=None,
         abstention_suggestion=None,
         confidence=0.95,
+        conversation_id=conversation_id,
     )
 
     return ApiResponse(

@@ -112,6 +112,10 @@ class ChatResponse(BaseModel):
         default=None,
         description="Overall confidence score from evidence grading",
     )
+    conversation_id: int | None = Field(
+        default=None,
+        description="The conversation ID associated with this turn",
+    )
 
     @classmethod
     def from_rag_response(cls, rag: RagResponse) -> Self:
