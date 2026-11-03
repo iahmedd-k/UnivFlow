@@ -10,6 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, load_only
+from starlette.concurrency import run_in_threadpool
 
 from app.api.endpoints.rag_helpers import (
     _classify_file_type,
@@ -894,6 +895,7 @@ async def chat(
                 query=request.query,
                 method=RetrievalMethod.HYBRID,
                 top_k=request.top_k or 5,
+                document_ids=uploaded_doc_ids or None,
             )
             for res_chunk in search_res.results:
                 if uploaded_doc_ids and res_chunk.document_id not in uploaded_doc_ids:
@@ -959,7 +961,8 @@ async def chat(
     )
     user_prompt = f"Question: {request.query}\n\nContext:\n" + "\n\n".join(context_parts)
 
-    answer = generate_study_answer(
+    answer = await run_in_threadpool(
+        generate_study_answer,
         prompt=user_prompt,
         system_prompt=system_prompt,
         model=settings.study_assistant_model,

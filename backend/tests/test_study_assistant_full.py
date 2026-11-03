@@ -1,10 +1,12 @@
 import pytest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.main import app
+from app.api.endpoints import rag as rag_endpoint
 from app.db.database import Base, get_db
 from app.db.base import Base as RagBase
 from app.auth.clerk_auth import require_current_user
@@ -206,7 +208,13 @@ def test_conversations_persistence_and_retrieval(test_db, client):
     assert del_res.status_code == 204
 
 
-def test_chat_grounded_in_gcr_document(test_db, client):
+def test_chat_grounded_in_gcr_document(test_db, client, monkeypatch):
+    monkeypatch.setattr(
+        rag_endpoint,
+        "generate_study_answer",
+        lambda **_: "Raft elects a leader using randomized election timers.",
+    )
+
     # Setup course and material
     course = Course(id=2, user_id="test_clerk_user_123", external_id="c_2", name="Distributed Systems")
     test_db.add(course)
@@ -260,3 +268,43 @@ def test_chat_grounded_in_gcr_document(test_db, client):
     assert messages[0]["role"] == "user"
     assert "Raft" in messages[0]["content"]
     assert messages[1]["role"] == "assistant"
+
+
+def test_chat_scopes_uploaded_retrieval_to_selected_documents(client, monkeypatch):
+    class RetrievalServiceStub:
+        def __init__(self):
+            self.search_options = None
+
+        def search(self, **kwargs):
+            self.search_options = kwargs
+            return SimpleNamespace(
+                results=[
+                    SimpleNamespace(
+                        chunk_id=8,
+                        document_id=42,
+                        page_number=3,
+                        content="The selected lecture explains the key concept.",
+                        score=0.9,
+                    )
+                ]
+            )
+
+    retrieval_stub = RetrievalServiceStub()
+    app.dependency_overrides[rag_endpoint.get_retrieval_service] = lambda: retrieval_stub
+    monkeypatch.setattr(
+        rag_endpoint,
+        "generate_study_answer",
+        lambda **_: "Answer based on the selected lecture.",
+    )
+
+    response = client.post(
+        "/api/v1/rag/chat",
+        json={
+            "query": "Explain the key concept.",
+            "document_ids": ["42"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert retrieval_stub.search_options["document_ids"] == [42]
+    assert response.json()["data"]["sources"][0]["document_id"] == 42

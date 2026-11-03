@@ -86,7 +86,7 @@ export async function fetchFromApi(endpoint, token = null, options = {}) {
   const { noCache = false, direct = false, timeoutMs, signal, cacheTtlMs = CACHE_STALE_MS, ...requestOptions } = options;
   const queryClient = getQueryClient();
 
-  if (method !== 'GET' || direct) {
+  if (method !== 'GET' || direct || !queryClient || typeof queryClient.fetchQuery !== 'function') {
     return fetchApiRequest(endpoint, authToken, requestOptions, true, timeoutMs, signal);
   }
 

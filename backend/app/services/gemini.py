@@ -1,6 +1,7 @@
 """Gemini & LLM API calls used by the Study Assistant."""
 
 import logging
+import time
 import httpx
 
 from app.core.config import settings
@@ -16,7 +17,7 @@ def generate_study_answer(
     max_output_tokens: int = 4000,
 ) -> str:
     """Generate a grounded, comprehensive Study Assistant answer using Google Gemini."""
-    
+
     # Exclusively use Google Gemini API as configured
     if settings.gemini_api_key:
         gemini_candidates = [
@@ -31,9 +32,13 @@ def generate_study_answer(
             "gemini-3-flash-preview",
         ]
         seen_gemini = set()
+        deadline = time.monotonic() + 45
         for model_candidate in gemini_candidates:
             if not model_candidate or model_candidate in seen_gemini:
                 continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             seen_gemini.add(model_candidate)
             model_name = model_candidate.strip().replace("models/", "")
             try:
@@ -48,7 +53,7 @@ def generate_study_answer(
                             "temperature": 0.4,
                         },
                     },
-                    timeout=60.0,
+                    timeout=min(20.0, remaining),
                 )
                 if response.is_success:
                     body = response.json()
@@ -110,4 +115,3 @@ def generate_study_answer(
         f"Please upload or select relevant lecture slides, notes, or course documents, or ask me "
         f"a specific academic question to get a complete, step-by-step explanation."
     )
-
