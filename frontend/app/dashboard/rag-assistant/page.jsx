@@ -481,8 +481,10 @@ const PIPELINE_STAGES = [
   { id: "rerank", label: "Reranking", icon: Sparkles },
   { id: "grade", label: "Grading evidence", icon: ShieldCheck },
 ];
+const GENERAL_CHAT_STAGES = [{ id: "answer", label: "Answering", icon: Sparkles }];
 
 const CONFIDENCE_CONFIG = {
+  general: { label: "General knowledge", icon: Sparkles, className: "text-indigo-700 bg-indigo-50" },
   grounded: { label: "Grounded", icon: ShieldCheck, className: "text-emerald-700 bg-emerald-50" },
   partial: { label: "Partially grounded", icon: AlertTriangle, className: "text-amber-700 bg-amber-50" },
   unsupported: { label: "Low confidence", icon: AlertCircle, className: "text-rose-700 bg-rose-50" },
@@ -809,7 +811,7 @@ function AssistantTurn({ turn, documents, onRegenerate, isGenerating, isLast, re
       ) : (
         <>
           <div className="flex items-center justify-between mb-2">
-            <ConfidenceBadge confidence={confidenceLevel} />
+            <ConfidenceBadge confidence={turn.generalKnowledge ? "general" : confidenceLevel} />
           </div>
           <AnswerText
             text={turn.answer}
@@ -894,11 +896,12 @@ function AssistantTurn({ turn, documents, onRegenerate, isGenerating, isLast, re
   );
 }
 
-function PipelineRunning({ stageIndex }) {
+function PipelineRunning({ stageIndex, generalKnowledge = false }) {
+  const stages = generalKnowledge ? GENERAL_CHAT_STAGES : PIPELINE_STAGES;
   return (
     <div className="py-4">
       <div className="flex flex-wrap items-center gap-1">
-        {PIPELINE_STAGES.map((s, i) => {
+        {stages.map((s, i) => {
           const Icon = s.icon;
           const done = i < stageIndex;
           const active = i === stageIndex;
@@ -916,7 +919,7 @@ function PipelineRunning({ stageIndex }) {
                 {active ? <Loader2 className="w-3 h-3 animate-spin" /> : done ? <CheckCircle2 className="w-3 h-3" /> : <Icon className="w-3 h-3" />}
                 {s.label}
               </span>
-              {i < PIPELINE_STAGES.length - 1 && <ArrowRight className="w-3 h-3 text-stone-300 mx-1" />}
+              {i < stages.length - 1 && <ArrowRight className="w-3 h-3 text-stone-300 mx-1" />}
             </span>
           );
         })}
@@ -1166,6 +1169,7 @@ function ChatInboxDashboard({
               role: "assistant",
               answer: msg.content,
               confidence: msg.confidence,
+              generalKnowledge: !detail.document_ids?.length,
               abstained: msg.abstained,
               abstention_reason: msg.abstention_reason,
               sources: [],
@@ -1274,6 +1278,8 @@ function ChatInboxDashboard({
     if (!text || pipeline || queryLimitReached) return;
 
     setInput("");
+    const docIds = scopedDocIds.length > 0 ? scopedDocIds : null;
+    const stages = docIds ? PIPELINE_STAGES : GENERAL_CHAT_STAGES;
 
     let targetChatId = activeId;
     if (!targetChatId) {
@@ -1304,16 +1310,15 @@ function ChatInboxDashboard({
     setTurnsById((prev) => ({ ...prev, [targetChatId]: [...(prev[targetChatId] || []), userTurn] }));
 
     let stage = 0;
-    setPipeline({ stageIndex: 0 });
+    setPipeline({ stageIndex: 0, generalKnowledge: !docIds });
     const stageTimer = setInterval(() => {
       stage += 1;
-      if (stage < PIPELINE_STAGES.length) {
-        setPipeline({ stageIndex: stage });
+      if (stage < stages.length) {
+        setPipeline({ stageIndex: stage, generalKnowledge: !docIds });
       }
     }, 300);
 
     try {
-      const docIds = scopedDocIds.length > 0 ? scopedDocIds : null;
       const result = await sendChat({
         query: text,
         conversation_id: targetChatId,
@@ -1329,6 +1334,7 @@ function ChatInboxDashboard({
         answer: result.answer,
         sources: result.sources || [],
         confidence: result.confidence,
+        generalKnowledge: !docIds,
         abstained: result.abstained,
         abstention_reason: result.abstention_reason,
         abstention_suggestion: result.abstention_suggestion,
@@ -1388,6 +1394,8 @@ function ChatInboxDashboard({
     if (!userQuery) return;
 
     const targetChatId = activeId;
+    const docIds = scopedDocIds.length > 0 ? scopedDocIds : null;
+    const stages = docIds ? PIPELINE_STAGES : GENERAL_CHAT_STAGES;
 
     // Remove the target assistant turn (and any subsequent turns)
     setTurnsById((prev) => ({
@@ -1396,16 +1404,15 @@ function ChatInboxDashboard({
     }));
 
     let stage = 0;
-    setPipeline({ stageIndex: 0 });
+    setPipeline({ stageIndex: 0, generalKnowledge: !docIds });
     const stageTimer = setInterval(() => {
       stage += 1;
-      if (stage < PIPELINE_STAGES.length) {
-        setPipeline({ stageIndex: stage });
+      if (stage < stages.length) {
+        setPipeline({ stageIndex: stage, generalKnowledge: !docIds });
       }
     }, 300);
 
     try {
-      const docIds = scopedDocIds.length > 0 ? scopedDocIds : null;
       let validConvId = typeof targetChatId === "number" && targetChatId < 1000000000000 ? targetChatId : null;
 
       let result;
@@ -1440,6 +1447,7 @@ function ChatInboxDashboard({
         answer: result.answer,
         sources: result.sources || [],
         confidence: result.confidence,
+        generalKnowledge: !docIds,
         abstained: result.abstained,
         abstention_reason: result.abstention_reason,
         abstention_suggestion: result.abstention_suggestion,
@@ -1699,7 +1707,7 @@ function ChatInboxDashboard({
             </div>
           )}
 
-          {pipeline && <PipelineRunning stageIndex={pipeline.stageIndex} />}
+          {pipeline && <PipelineRunning stageIndex={pipeline.stageIndex} generalKnowledge={pipeline.generalKnowledge} />}
         </div>
 
         <div className="px-8 pb-6 pt-2 relative">

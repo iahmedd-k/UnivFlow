@@ -2,11 +2,67 @@
 
 import logging
 import time
+from urllib.parse import urlsplit, urlunsplit
+
 import httpx
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _generate_groq_answer(
+    *,
+    prompt: str,
+    system_prompt: str,
+    max_output_tokens: int,
+) -> str | None:
+    if not settings.groq_api_key:
+        return None
+
+    base_url = urlsplit(settings.groq_base_url.rstrip("/"))
+    base_path = base_url.path.rstrip("/")
+    if base_url.hostname == "api.groq.com" and not base_path:
+        base_path = "/openai/v1"
+    endpoint = urlunsplit(
+        (base_url.scheme, base_url.netloc, f"{base_path}/chat/completions", "", "")
+    )
+
+    try:
+        response = httpx.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+            json={
+                "model": settings.groq_chat_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.4,
+                "max_tokens": max_output_tokens,
+            },
+            timeout=20.0,
+        )
+        if response.is_success:
+            body = response.json()
+            choices = body.get("choices") or []
+            answer = (
+                choices[0].get("message", {}).get("content", "")
+                if choices
+                else ""
+            )
+            if isinstance(answer, str) and answer.strip():
+                return answer.strip()
+            logger.warning("Groq fallback returned an empty answer")
+        else:
+            logger.warning(
+                "Groq fallback returned HTTP %s: %s",
+                response.status_code,
+                response.text[:120],
+            )
+    except Exception as e:
+        logger.warning("Groq fallback failed: %s", e)
+    return None
 
 
 def generate_study_answer(
@@ -17,9 +73,18 @@ def generate_study_answer(
     max_output_tokens: int = 4000,
     general_knowledge: bool = False,
 ) -> str:
-    """Generate a grounded, comprehensive Study Assistant answer using Google Gemini."""
+    """Generate a comprehensive Study Assistant answer using configured LLM providers."""
 
-    # Exclusively use Google Gemini API as configured
+    groq_first = settings.ai_provider.strip().lower() == "groq"
+    if groq_first:
+        answer = _generate_groq_answer(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            max_output_tokens=max_output_tokens,
+        )
+        if answer:
+            return answer
+
     if settings.gemini_api_key:
         gemini_candidates = [
             model,
@@ -71,6 +136,15 @@ def generate_study_answer(
                     logger.warning("Gemini model %s returned HTTP %s: %s", model_name, response.status_code, response.text[:120])
             except Exception as e:
                 logger.warning("Gemini attempt with %s failed: %s", model_name, e)
+
+    if not groq_first:
+        answer = _generate_groq_answer(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            max_output_tokens=max_output_tokens,
+        )
+        if answer:
+            return answer
 
     # 3. Dynamic context-aware synthesis fallback (never hardcoded static bullets)
     query_line = ""

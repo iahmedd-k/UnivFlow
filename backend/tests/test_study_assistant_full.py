@@ -312,6 +312,25 @@ def test_chat_scopes_uploaded_retrieval_to_selected_documents(client, monkeypatc
     assert response.json()["data"]["sources"][0]["document_id"] == 42
 
 
+def test_chat_accepts_queries_longer_than_500_characters(client, monkeypatch):
+    query = "Explain this topic in detail. " * 300
+    generated = {}
+
+    def generate_answer(**kwargs):
+        generated.update(kwargs)
+        return "Here is a detailed explanation."
+
+    monkeypatch.setattr(rag_endpoint, "generate_study_answer", generate_answer)
+    response = client.post(
+        "/api/v1/rag/chat",
+        json={"query": query, "general_knowledge": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["query"] == query
+    assert query in generated["prompt"]
+
+
 def test_chat_general_knowledge_mode_skips_document_retrieval(client, monkeypatch):
     class RetrievalServiceStub:
         def search(self, **kwargs):
@@ -334,7 +353,7 @@ def test_chat_general_knowledge_mode_skips_document_retrieval(client, monkeypatc
     response = client.post(
         "/api/v1/rag/chat",
         json={
-            "query": "Explain this concept generally.",
+            "query": "can you explain mutlitier architcure and single tier and two tier architcure",
             "conversation_id": conversation_id,
             "general_knowledge": True,
         },
@@ -344,8 +363,10 @@ def test_chat_general_knowledge_mode_skips_document_retrieval(client, monkeypatc
     data = response.json()["data"]
     assert data["answer"] == "Here is a general explanation."
     assert data["sources"] == []
+    assert data["confidence"] is None
     assert "general knowledge" in generated["system_prompt"].lower()
-    assert "No source documents are attached" in generated["prompt"]
+    assert "spelling mistakes" in generated["system_prompt"].lower()
+    assert generated["prompt"] == "can you explain mutlitier architcure and single tier and two tier architcure"
     conversations = client.get("/api/v1/rag/conversations").json()["data"]["conversations"]
     saved_conversation = next(item for item in conversations if item["id"] == conversation_id)
     assert saved_conversation["document_ids"] == []
@@ -353,6 +374,7 @@ def test_chat_general_knowledge_mode_skips_document_retrieval(client, monkeypatc
 
 def test_general_knowledge_fallback_does_not_ask_for_documents(monkeypatch):
     monkeypatch.setattr(gemini_service.settings, "gemini_api_key", "")
+    monkeypatch.setattr(gemini_service.settings, "groq_api_key", "")
 
     answer = gemini_service.generate_study_answer(
         prompt=(
@@ -365,6 +387,44 @@ def test_general_knowledge_fallback_does_not_ask_for_documents(monkeypatch):
 
     assert "temporarily unavailable" in answer
     assert "upload" not in answer.lower()
+
+
+def test_study_answer_falls_back_to_groq_when_gemini_fails(monkeypatch):
+    class MockResponse:
+        def __init__(self, *, status_code, body=None):
+            self.status_code = status_code
+            self._body = body or {}
+            self.is_success = 200 <= status_code < 300
+            self.text = ""
+
+        def json(self):
+            return self._body
+
+    calls = []
+
+    def mock_post(url, **kwargs):
+        calls.append(url)
+        if "generativelanguage.googleapis.com" in url:
+            return MockResponse(status_code=503)
+        return MockResponse(
+            status_code=200,
+            body={"choices": [{"message": {"content": "Here is the answer."}}]},
+        )
+
+    monkeypatch.setattr(gemini_service.settings, "gemini_api_key", "test-gemini-key")
+    monkeypatch.setattr(gemini_service.settings, "groq_api_key", "test-groq-key")
+    monkeypatch.setattr(gemini_service.settings, "ai_provider", "gemini")
+    monkeypatch.setattr(gemini_service.settings, "groq_base_url", "https://api.groq.com")
+    monkeypatch.setattr(gemini_service, "httpx", SimpleNamespace(post=mock_post))
+
+    answer = gemini_service.generate_study_answer(
+        prompt="explain mutlitier architcure",
+        system_prompt="Interpret typos and answer directly.",
+        general_knowledge=True,
+    )
+
+    assert answer == "Here is the answer."
+    assert calls[-1] == "https://api.groq.com/openai/v1/chat/completions"
 
 
 def test_rag_account_mapping_is_stable_and_rejects_shared_email(test_db):

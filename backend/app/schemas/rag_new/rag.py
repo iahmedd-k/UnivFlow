@@ -14,7 +14,6 @@ class RagRequest(BaseModel):
     query: str = Field(
         ...,
         min_length=1,
-        max_length=500,
         description="The user question to answer",
     )
     conversation_id: int | None = Field(

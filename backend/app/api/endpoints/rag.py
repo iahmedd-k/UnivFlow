@@ -999,43 +999,52 @@ async def chat(
         except Exception as e:
             logger.warning("Could not append history: %s", e)
 
-    if general_knowledge:
-        context_parts.append(
-            "No source documents are attached. Answer the question using your general knowledge."
-        )
-    elif evidence_chunks:
+    if not general_knowledge and evidence_chunks:
         context_parts.append("SOURCE DOCUMENTS:\n" + "\n\n---\n\n".join(evidence_chunks[:8]))
-    else:
+    elif not general_knowledge:
         context_parts.append(
             "No specific document text was found in the selected/indexed sources for this query. "
             "Deliver an insightful, high-yield academic explanation based on university course concepts, "
             "and label any general guidance clearly."
         )
 
-    system_prompt = (
-        "You are an exceptionally talented, versatile AI tutor and study partner for university students—combining "
-        "the depth, pedagogical clarity, intuitive warmth, and flexibility of ChatGPT with rigorous academic grounding.\n\n"
-    ) + (
-        "General knowledge mode: no source documents were selected. Answer directly and helpfully using your "
-        "general knowledge. Do not claim that your answer comes from course materials.\n\n"
-        if general_knowledge
-        else ""
-    ) + (
+    if general_knowledge:
+        system_prompt = (
+            "You are a helpful, accurate, conversational study assistant. Answer the user's question directly "
+            "using your general knowledge. Interpret spelling mistakes, typos, and informal phrasing from context; "
+            "silently infer the likely intended meaning and answer instead of refusing or focusing on the spelling. "
+            "If the meaning is genuinely ambiguous, ask one brief clarifying question. Be clear and thorough, "
+            "using examples or formatting when useful."
+        )
+        history_context = "\n\n".join(context_parts)
+        user_prompt = (
+            f"Conversation history:\n{history_context}\n\nCurrent question: {request.query}"
+            if history_context
+            else request.query
+        )
+    else:
+        system_prompt = (
+            "You are an exceptionally talented, versatile AI tutor and study partner for university students—combining "
+            "the depth, pedagogical clarity, intuitive warmth, and flexibility of ChatGPT with rigorous academic grounding.\n\n"
+        ) + (
         "Core Instructions:\n"
         "1. Conversational & Flexible: Match the student's tone and context. If greeted ('hi', 'hello', etc.) or asked casual questions, "
         "respond warmly and helpfully. Never use rigid, robotic, or canned template structures.\n"
-        "2. Grounded Course Intelligence: When course materials, lecture notes, or syllabus content are provided in context, "
+        "2. Spelling Tolerance: Infer the intended meaning of spelling mistakes, typos, and informal phrasing from context. "
+        "Answer the likely question naturally instead of refusing or focusing on the spelling; ask a brief clarification only "
+        "when the meaning is genuinely ambiguous.\n"
+        "3. Grounded Course Intelligence: When course materials, lecture notes, or syllabus content are provided in context, "
         "ground your explanations directly in them. Reference specific terms, definitions, theorems, or document topics naturally.\n"
-        "3. Broad Academic Mastery: If the provided documents do not fully answer the student's question, clearly mention "
+        "4. Broad Academic Mastery: If the provided documents do not fully answer the student's question, clearly mention "
         "what the course documents cover, and then seamlessly draw upon your comprehensive academic knowledge to give a brilliant, "
         "in-depth explanation. Never give lazy refusals or generic placeholders.\n"
-        "4. Elite Teaching Quality: Explain concepts intuitively using vivid real-world analogies, step-by-step walkthroughs, "
+        "5. Elite Teaching Quality: Explain concepts intuitively using vivid real-world analogies, step-by-step walkthroughs, "
         "concrete examples, mathematical formulas ($...$), and clean, well-commented code blocks when applicable.\n"
-        "5. Clean Markdown Output: Format your answer cleanly using standard Markdown: expressive headers (##, ###), bold keywords, "
+        "6. Clean Markdown Output: Format your answer cleanly using standard Markdown: expressive headers (##, ###), bold keywords, "
         "bullet lists, structured comparison tables, and fenced code blocks with language tags (e.g. ```python). "
         "Never output raw HTML tags."
-    )
-    user_prompt = f"Question: {request.query}\n\nContext:\n" + "\n\n".join(context_parts)
+        )
+        user_prompt = f"Question: {request.query}\n\nContext:\n" + "\n\n".join(context_parts)
 
     answer = await run_in_threadpool(
         generate_study_answer,
@@ -1073,7 +1082,7 @@ async def chat(
         abstained=False,
         abstention_reason=None,
         abstention_suggestion=None,
-        confidence=0.95,
+        confidence=None if general_knowledge else 0.95,
         conversation_id=conversation_id,
     )
 
