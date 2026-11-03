@@ -267,8 +267,32 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
 
         # Find Google Doc ID & URL
         submission = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
-        gdoc_id = getattr(solution, "google_doc_id", None) or (submission.google_doc_id if submission else None)
-        gdoc_url = getattr(solution, "google_doc_url", None) or (f"https://docs.google.com/document/d/{gdoc_id}/edit" if gdoc_id else None)
+        gdoc_id = (
+            getattr(solution, "google_doc_id", None)
+            or (submission.google_doc_id if submission else None)
+            or (submission.google_drive_file_id if submission else None)
+        )
+
+        # If no Google Doc exists yet, attempt to export one automatically now so link is included
+        if not gdoc_id:
+            try:
+                from app.services.ai_solution import export_solution_to_google_doc
+                doc_info = export_solution_to_google_doc(
+                    db,
+                    assignment,
+                    raw_content,
+                    execution_results=execution_results,
+                    user_id=user_id,
+                )
+                if doc_info and doc_info.get("doc_id"):
+                    gdoc_id = doc_info.get("doc_id")
+            except Exception as exp_err:
+                logger.warning("send_solution_delivery_email: Could not auto-export Google Doc for assignment %s: %s", assignment_id, exp_err)
+
+        gdoc_url = (
+            getattr(solution, "google_doc_url", None)
+            or (f"https://docs.google.com/document/d/{gdoc_id}/edit" if gdoc_id else None)
+        )
 
         # Attempt to export downloadable PDF of Google Doc
         google_doc_pdf_bytes = None
@@ -282,7 +306,7 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
             except Exception as e:
                 logger.warning("send_solution_delivery_email: Could not export Google Doc %s to PDF: %s", gdoc_id, e)
 
-        # Build clean deliverables ZIP (strictly Google Doc PDF + code + diagrams, NO dump files)
+        # Build clean deliverables ZIP (strictly Google Doc PDF + code + diagrams + report link, NO dump files)
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             items_added = append_clean_deliverables_to_zip(
@@ -292,11 +316,18 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
                 solution_markdown=raw_content,
                 google_doc_pdf_bytes=google_doc_pdf_bytes,
                 doc_pdf_name=f"{safe_name}_Report.pdf",
+                google_doc_url=gdoc_url,
             )
         zip_bytes = zip_buffer.getvalue() if items_added > 0 else None
 
         # Build clean deliverable list for email HTML
         deliverable_items_html = ""
+        if gdoc_url:
+            deliverable_items_html += f"""
+            <li style="margin-bottom: 6px; font-size: 13px; color: #15803d;">
+              <strong>Solved Report (Google Drive):</strong> <a href="{gdoc_url}" target="_blank" style="color: #4f46e5; text-decoration: underline; font-weight: 600;">{assignment_title} (Google Doc)</a>
+            </li>
+            """
         for f in file_items:
             fname = f.get("name") or f.get("filename") or f"task_{f.get('task', 1)}.py"
             fname_lower = fname.lower()
@@ -311,17 +342,21 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
 
         doc_section_html = ""
         if gdoc_url or google_doc_pdf_bytes:
-            pdf_note = '<span style="display: inline-block; margin-left: 10px; font-size: 11px; color: #059669; font-weight: 600; background: #ecfdf5; border: 1px solid #a7f3d0; padding: 3px 8px; border-radius: 99px;">PDF Report Attached</span>' if google_doc_pdf_bytes else ''
-            link_btn = f'<a href="{gdoc_url}" style="display: inline-block; padding: 8px 16px; background: #6657d9; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 12px; font-weight: 600;">Open Google Doc Report &rarr;</a>' if gdoc_url else ''
+            pdf_note = '<span style="display: inline-block; margin-left: 10px; font-size: 11px; color: #047857; font-weight: 600; background: #ecfdf5; border: 1px solid #a7f3d0; padding: 3px 8px; border-radius: 99px;">PDF Report Attached</span>' if google_doc_pdf_bytes else ''
+            link_btn = f'<a href="{gdoc_url}" target="_blank" style="display: inline-block; padding: 10px 20px; background: #4f46e5; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 13px; font-weight: 600; margin-top: 8px;">Open Solved Report in Google Drive &rarr;</a>' if gdoc_url else ''
+            direct_url_html = f'<div style="margin-top: 8px; font-size: 12px; color: #475569; word-break: break-all;"><strong>Google Drive Link:</strong> <a href="{gdoc_url}" target="_blank" style="color: #4f46e5; text-decoration: underline;">{gdoc_url}</a></div>' if gdoc_url else ''
             doc_section_html = f"""
-            <div style="margin: 20px 0; padding: 14px 18px; background: #eeeafe; border: 1px solid #dcd7fa; border-radius: 8px;">
-              <strong style="color: #5b4cc6; font-size: 14px;">Google Doc Academic Report Ready</strong> {pdf_note}
-              <p style="margin: 6px 0 10px; font-size: 12px; color: #4b5563;">A complete formatted academic paper has been exported to your Google Drive and attached as a downloadable PDF.</p>
+            <div style="margin: 20px 0; padding: 16px 20px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px;">
+              <div style="margin-bottom: 6px;">
+                <strong style="color: #15803d; font-size: 14px;">Google Drive Solved Report Ready</strong> {pdf_note}
+              </div>
+              <p style="margin: 4px 0 8px; font-size: 13px; color: #374151;">A complete formatted academic paper has been exported to your Google Drive and attached as a downloadable PDF.</p>
               {link_btn}
+              {direct_url_html}
             </div>
             """
 
-        # Truncated clean preview of solution text
+        dashboard_url = f"{getattr(settings, 'frontend_url', 'https://univ-flow-bt12.vercel.app').rstrip('/')}/dashboard/assignments"
         preview_text = re.sub(r'```[\s\S]*?```', '[Code Block Embedded in Deliverables]', raw_content)
         preview_text = preview_text[:600] + ("..." if len(preview_text) > 600 else "")
         preview_html = preview_text.replace("\n", "<br>")
@@ -369,7 +404,7 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
 
         <div style="margin-top: 28px; padding-top: 20px; border-top: 1px solid #e2e8f0; text-align: center;">
           {zip_note_html}
-          <a href="http://localhost:3000/dashboard/assignments" style="display: inline-block; padding: 10px 20px; background: #4f46e5; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 13px; font-weight: 600;">Go to Uniflow Dashboard &rarr;</a>
+          <a href="{dashboard_url}" style="display: inline-block; padding: 10px 20px; background: #4f46e5; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 13px; font-weight: 600;">Go to Uniflow Dashboard &rarr;</a>
         </div>
       </td>
     </tr>

@@ -228,7 +228,11 @@ Final thoughts.
 
 def test_export_solution_to_google_doc_omits_execution_verification_and_environment_metadata():
     """Verify Google Doc export permanently omits 'Status: Executed (Verified)...' and '& Execution Verification'."""
-    from app.services.ai_solution import strip_disclaimers
+    from app.services.ai_solution import (
+        clean_google_doc_output,
+        extract_task_question_from_markdown,
+        strip_disclaimers,
+    )
 
     # 1. Test strip_disclaimers removes them from markdown
     legacy_text = (
@@ -240,6 +244,18 @@ def test_export_solution_to_google_doc_omits_execution_verification_and_environm
     assert "& Execution Verification" not in cleaned
     assert "Status: Executed" not in cleaned
     assert "@air-desktop" not in cleaned
+    terminal_output = clean_google_doc_output(
+        "## 3. Terminal Output Verification\n"
+        "$ python main.py\n"
+        "Hello\n"
+        "[Process completed with exit code 0]\n"
+        "[Program output verified: execution passed with exit status 0]"
+    )
+    assert "Terminal Output Verification" not in terminal_output
+    assert "Process completed" not in terminal_output
+    assert "Program output verified" not in terminal_output
+    assert "Hello" in terminal_output
+    assert extract_task_question_from_markdown("# Task 1: Missing prompt\n", "1") == ""
 
     # 2. Test export_solution_to_google_doc does not insert them into Google Doc blocks
     mock_db = MagicMock()
@@ -300,6 +316,51 @@ def test_export_solution_to_google_doc_omits_execution_verification_and_environm
     assert not any("@air-desktop" in text for text in appended_texts)
 
 
+def test_export_solution_to_google_doc_omits_manifest_and_quality_status():
+    mock_db = MagicMock()
+    mock_assignment = Assignment(id=8, title="Research Assignment", course_id=101)
+    mock_course = Course(id=101, name="Computer Science")
+
+    def query_side_effect(model):
+        query = MagicMock()
+        if model == Course:
+            query.filter.return_value.first.return_value = mock_course
+        else:
+            query.filter.return_value.first.return_value = None
+            query.filter.return_value.all.return_value = []
+        return query
+
+    mock_db.query.side_effect = query_side_effect
+    mock_docs_service = MagicMock()
+    mock_docs_service.create_document.return_value = {"documentId": "doc_clean_report"}
+    mock_docs_service.create_academic_intro_page.return_value = True
+    mock_docs_service.append_styled_block.return_value = True
+
+    solution_content = (
+        "# Task 1: Research Findings\n"
+        "## 1. Answer\n"
+        "A concise answer containing the actual assignment deliverable.\n\n"
+        "## Quality Status\n"
+        "Completeness: 1 of 1 parts done. QA checklist passed.\n\n"
+        "```manifest\n"
+        '{"track": "D", "status": "solved"}\n'
+        "```\n"
+    )
+
+    with patch("app.services.ai_solution.get_google_docs_service", return_value=mock_docs_service):
+        result = export_solution_to_google_doc(
+            mock_db,
+            assignment=mock_assignment,
+            solution_content=solution_content,
+        )
+
+    assert result is not None
+    appended_texts = [call.args[1] for call in mock_docs_service.append_styled_block.call_args_list]
+    assert any("actual assignment deliverable" in text for text in appended_texts)
+    assert not any("Quality Status" in text for text in appended_texts)
+    assert not any('"track": "D"' in text for text in appended_texts)
+
+
 def test_extract_post_task_sections_does_not_duplicate_task_subsections():
     """Verify that extract_post_task_sections_from_markdown excludes task subheadings
     (e.g., 1. Problem Statement, 2. Source Code, 3. Terminal Output, 4. Discussion)
@@ -351,6 +412,4 @@ Deadlock avoidance guarantees completion.
     # Verify genuine post-task sections ARE extracted
     assert "Combined Analysis" in titles
     assert "Conclusion" in titles
-
-
 

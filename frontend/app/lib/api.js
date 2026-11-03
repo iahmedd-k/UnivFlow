@@ -3,9 +3,9 @@ import { getQueryClient } from '@/app/lib/query-client';
 
 const API_BASE = API_BASE_URL;
 const ROOT_URL = API_ROOT_URL;
-const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 45_000;
 const CACHE_STALE_MS = 60_000;
-const TOKEN_TIMEOUT_MS = 3_000;
+const TOKEN_TIMEOUT_MS = 15_000;
 
 function tokenScope(token) {
   if (!token) return 'anonymous';
@@ -199,6 +199,7 @@ async function fetchApiRequest(endpoint, token = null, options = {}, tokenResolv
         } else {
           featureQueries.add(endpointPrefix);
         }
+        const queryClient = getQueryClient();
         featureQueries.forEach((key) => {
           void queryClient.invalidateQueries({ queryKey: [key] });
         });
@@ -408,11 +409,12 @@ export const api = {
     return fetchFromApi('/classroom/sync', token, {
       method: 'POST',
       body: JSON.stringify(semesterStartDate ? { semester_start_date: semesterStartDate } : {}),
+      timeoutMs: 120_000,
     });
   },
 
   triggerAgentRun: async (trigger = 'manual', token = null) => {
-    return fetchFromApi('/classroom/sync', token, { method: 'POST' });
+    return fetchFromApi('/classroom/sync', token, { method: 'POST', timeoutMs: 120_000 });
   },
 
   // Assignments
@@ -488,7 +490,7 @@ export const api = {
   },
   getRagDocumentStatus: async (documentId, token = null) => fetchFromApi(`/rag/documents/${documentId}/status`, token, { noCache: true }),
   deleteRagDocument: async (documentId, token = null) => fetchFromApi(`/rag/documents/${documentId}`, token, { method: 'DELETE' }),
-  ragChat: async (data, token = null) => fetchFromApi('/rag/chat', token, { method: 'POST', body: JSON.stringify(data) }),
+  ragChat: async (data, token = null) => fetchFromApi('/rag/chat', token, { method: 'POST', body: JSON.stringify(data), timeoutMs: 90_000 }),
   ragChatStream: async (data, token = null) => {
     const url = `${API_BASE}/rag/chat/stream`;
     const res = await fetch(url, {
@@ -512,7 +514,7 @@ export const api = {
   updateRagConversation: async (conversationId, data, token = null) => fetchFromApi(`/rag/conversations/${conversationId}`, token, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteRagConversation: async (conversationId, token = null) => fetchFromApi(`/rag/conversations/${conversationId}`, token, { method: 'DELETE' }),
   getRagUsage: async (token = null, options = {}) => fetchFromApi('/rag/usage', token, { cacheTtlMs: 60_000, direct: true, ...options }),
-  syncRagClassroom: async (token = null) => fetchFromApi('/rag/sync-classroom', token, { method: 'POST' }),
+  syncRagClassroom: async (token = null) => fetchFromApi('/rag/sync-classroom', token, { method: 'POST', timeoutMs: 120_000 }),
   generateStudyPlan: async (payload, token = null, options = {}) => fetchFromApi('/rag/study-plans', token, {
     method: 'POST',
     body: JSON.stringify(payload),

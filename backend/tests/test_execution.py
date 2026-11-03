@@ -296,5 +296,36 @@ class TestExecutionModels:
         assert DatabaseType.MONGODB.value == "mongodb"
 
 
+def test_browser_tool_runner_does_not_invent_output_when_execution_is_unavailable(monkeypatch):
+    from app.services import browser_tool_runner
+
+    class FailedResponse:
+        status_code = 503
+
+    class FailedChromium:
+        def launch(self, **kwargs):
+            raise RuntimeError("Browser launch unavailable")
+
+    class FailedPlaywrightContext:
+        chromium = FailedChromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    monkeypatch.setattr("httpx.post", lambda *args, **kwargs: FailedResponse())
+    monkeypatch.setattr(browser_tool_runner, "sync_playwright", FailedPlaywrightContext)
+
+    result = browser_tool_runner.BrowserToolRunner.run_online_ide("go", "package main")
+
+    assert result["status"] == "needs_input"
+    assert result["exit_code"] is None
+    assert result["terminal_output"] == ""
+    assert result["png_bytes"] is None
+    assert result["error"] == "No execution environment returned program output."
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

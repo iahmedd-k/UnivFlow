@@ -1901,20 +1901,16 @@ def solve_assignment_via_claude_browser(
         else:
             # DOMAIN_CODING_LAB (Default)
             job1_instructions = (
-                "- Write the full, verified solution in the task's language (Assembly, C++, Python,\n"
+                "- Write the complete solution in the task's language (Assembly, C++, Python,\n"
                 "  Java, SQL, etc.) inside a clean code fence in the report.\n"
-                "- MANDATORY REQUIREMENT - GENERATE TERMINAL OUTPUT IMAGE & VISUAL ARTIFACT:\n"
-                "  For EVERY programming task, generate the realistic terminal execution output image / visual artifact\n"
-                "  of the code output in PNG format. Show the terminal session formatted with the student's authentic directory and user prompt:\n"
-                f"  `{shell_prompt} <command>`. Note: You do not need to execute the code. You just have to generate output image of each task in which show the output of each Task. (Note: output image should be like terminal output image and Visual Studio Code terminal like output image)\n"
-                "  Show the authentic directory, user metadata, command, printed output, registers/flags, and exit code 0.\n"
-                "  Generate the terminal execution screenshot / visual artifact for each task AND format the session\n"
-                "  inside the ```terminal fence."
+                "- Include a terminal output image and ```terminal block only when authentic program output is available.\n"
+                "  Format available output with the student's prompt, but do not execute by imitation, invent output, "
+                "  append status/exit-code text, or claim a task ran when it did not."
             )
             image_style_instructions = (
                 f"  * Code tasks    -> taskN_output.png : dark terminal-style window showing\n"
-                f"                     `{shell_prompt} <command>` followed by the complete\n"
-                "                     correct output and exit code 0.\n"
+                f"                     `{shell_prompt} <command>` followed by available program output.\n"
+                "                     Omit the image when authentic program output is unavailable.\n"
                 f"                     (Prompt format: {shell_prompt} )\n"
                 "  * Diagram tasks -> diagram_taskN.png : the rendered diagram.\n"
                 "  * Theory tasks  -> taskN_output.png : a clean image of the key table or the\n"
@@ -1934,11 +1930,11 @@ def solve_assignment_via_claude_browser(
                 "```[language]\n"
                 "[complete runnable source code]\n"
                 "```\n\n"
-                "## 3. Terminal Output Verification\n"
+                "## 3. Terminal Output\n"
                 "**Attached image file:** `taskN_output.png`\n\n"
                 "```terminal\n"
                 f"{student_prompt}$ [command]\n"
-                "[exact terminal/console output: prompt, commands executed, printed text, register/flag values, and exit status]\n"
+                "[actual terminal/console output: command and printed text]\n"
                 "```\n\n"
                 "## 4. Discussion & Complexity Analysis\n"
                 "[Explanation, algorithm complexity (time and space), design decisions, key takeaways]\n\n"
@@ -1981,14 +1977,14 @@ def solve_assignment_via_claude_browser(
             "=====================================================================\n"
             "OUTPUT & DELIVERABLE SPECIFICATIONS\n"
             "=====================================================================\n"
-            "Deliver complete source code and realistic execution output for all tasks.\n\n"
+            "Deliver complete source code. Include terminal output only when authentic program output is available; never invent it.\n\n"
             "JOB 1: WRITE THE COMPLETE SOLUTION & GENERATE DELIVERABLE ARTIFACTS\n"
             f"{job1_instructions}\n\n"
-            "- For programming tasks: Generate the terminal output image / visual artifact of the code execution\n"
-            f"  under `{shell_prompt}` and include the full terminal execution trace in the ```terminal code fence.\n"
+            "- For programming tasks: When authentic output is available, show only the command and program output under\n"
+            f"  `{shell_prompt}`. Do not append verification, status, environment, or exit-code commentary.\n"
             "- For diagrams: Generate the diagram output image in PNG format (`diagram_taskN.png`) following International Standards Rules & Regulations, and provide the companion Draw.io XML in a ```drawio fence. Do NOT generate SVGs.\n"
             "- For theory tasks: Provide structured Markdown tables and detailed analytical answers.\n"
-            "- CRITICAL: Strictly do NOT add any disclaimers, warnings, or notes stating that the code or output is unverified, not executed, simulation-based, Claude-reported, or AI-generated. Present all tasks, code implementations, and terminal execution traces as verified, executed deliverables.\n\n"
+            "- Do not add execution/output verification headings, status/environment/exit-code prose, or QA summaries to the report. Include only actual program output; never invent output.\n\n"
         )
 
         code_requirements = (
@@ -2389,8 +2385,7 @@ def solve_assignment_via_claude_browser(
             "Extracting generated files and rendering terminal outputs...",
         )
 
-        # Remove UI instructions accidentally emitted by the model. The platform adds
-        # its own verification notice to every generated report below.
+        # Remove UI instructions accidentally emitted by the model.
         if "---CHAT-NOTE---" in raw_solution_text:
             raw_solution_text = raw_solution_text.split("---CHAT-NOTE---", 1)[0].rstrip()
         else:
@@ -2427,6 +2422,7 @@ def solve_assignment_via_claude_browser(
         try:
             from app.services.ai_solution import (
                 append_execution_metadata,
+                clean_google_doc_output,
                 extract_assignment_deliverables,
                 extract_colab_notebooks,
                 synthesize_colab_notebook_from_markdown,
@@ -2618,7 +2614,8 @@ def solve_assignment_via_claude_browser(
                             else:
                                 terminal_out = claude_term
                         else:
-                            terminal_out = "Program executed successfully with exit code 0."
+                            terminal_out = ""
+                        terminal_out = clean_google_doc_output(terminal_out)
 
                         screenshot_uris = []
                         direct_img = claude_direct_images.get(task_key) or claude_direct_images.get(str(source_file.get("task")))
@@ -2630,7 +2627,7 @@ def solve_assignment_via_claude_browser(
 
                         if direct_img:
                             screenshot_uris.append(direct_img)
-                        elif terminal_out and terminal_out.strip():
+                        elif terminal_out:
                             # Render pixel-perfect high-definition dark mode terminal card image
                             try:
                                 from app.services.terminal_renderer import TerminalCardRenderer
@@ -2665,10 +2662,10 @@ def solve_assignment_via_claude_browser(
                             "diagram_image_filename": None,
                             "language": lang,
                             "command": cmd_str,
-                            "exit_code": 0,
-                            "success": True,
-                            "verified": True,
-                            "status": "completed",
+                            "exit_code": 0 if terminal_out else None,
+                            "success": bool(terminal_out),
+                            "verified": False,
+                            "status": "completed" if terminal_out else "needs_input",
                             "terminal_output": terminal_out,
                             "screenshot_data_uri": screenshot_uris[0] if screenshot_uris else None,
                             "screenshot_data_uris": screenshot_uris,
@@ -2854,6 +2851,5 @@ def solve_assignment_via_claude_browser(
             "attachments_used": attachment_paths,
             "google_doc_url": doc_result.get("doc_url") if doc_result else None,
             "google_doc_id": doc_result.get("doc_id") if doc_result else None,
-            "verification_status": "verified",
-            "message": f"Assignment solution successfully generated with {len(attachment_paths)} attached file(s) and full execution verification."
+            "message": f"Assignment solution generated with {len(attachment_paths)} attached file(s)."
         }

@@ -730,6 +730,7 @@ def append_clean_deliverables_to_zip(
     solution_markdown: Optional[str] = None,
     google_doc_pdf_bytes: Optional[bytes] = None,
     doc_pdf_name: Optional[str] = None,
+    google_doc_url: Optional[str] = None,
 ) -> int:
     """
     Append ONLY clean deliverables to the assignment ZIP:
@@ -850,6 +851,23 @@ def append_clean_deliverables_to_zip(
                 except Exception:
                     pass
 
+    # 5. Link to Google Drive solved report
+    if google_doc_url:
+        url_file_content = f"[InternetShortcut]\r\nURL={google_doc_url}\r\n".encode("utf-8")
+        txt_file_content = (
+            f"Google Drive Solved Report & Academic Paper:\r\n"
+            f"==================================================\r\n"
+            f"Direct URL: {google_doc_url}\r\n"
+        ).encode("utf-8")
+        if "Google_Drive_Report_Link.url" not in used_names:
+            bundle.writestr("Google_Drive_Report_Link.url", url_file_content)
+            used_names.add("Google_Drive_Report_Link.url")
+            added += 1
+        if "Google_Drive_Report_Link.txt" not in used_names:
+            bundle.writestr("Google_Drive_Report_Link.txt", txt_file_content)
+            used_names.add("Google_Drive_Report_Link.txt")
+            added += 1
+
     return added
 
 
@@ -862,6 +880,8 @@ def strip_disclaimers(text: str) -> str:
     if not text:
         return ""
     patterns = [
+        r"(?im)^\s*#{1,6}\s*(?:\d+[.)]\s*)?(?:(?:program|terminal|expected)\s+)?(?:output|execution)(?:\s*&\s*|\s+)(?:execution\s+)?verification\b[^\n]*\n?",
+        r"(?im)^\s*(?:\*\*)?(?:execution|output)\s+verification(?:\*\*)?\s*:?[^\n]*\n?",
         r"(?i)2\.\s*Claude-reported output\s*\([^)]*\)",
         r"(?i)Claude-reported output\s*\([^)]*\):?",
         r"(?i)Status:\s*Not executed by Uniflow[^\n]*",
@@ -879,6 +899,11 @@ def strip_disclaimers(text: str) -> str:
         r"(?im)^\s*Source launcher works[^\n]*\n*",
         r"(?im)^\s*Still working:[^\n]*\n*",
         r"(?im)^\s*How the outputs were produced:[^\n]*\n*",
+        r"(?im)^\s*\[Process completed with exit code \d+\]\s*\n?",
+        r"(?im)^\s*Compiled and executed .+ successfully\.\s*\n?",
+        r"(?im)^\s*All test cases verified with exit code \d+\.?\s*\n?",
+        r"(?im)^\s*\[Program output verified:.*\]\s*\n?",
+        r"(?im)^\s*Executing .+\.{3}\s*\n?",
     ]
     cleaned = text
     for pat in patterns:
@@ -886,6 +911,27 @@ def strip_disclaimers(text: str) -> str:
     cleaned = re.sub(r"@air-desktop", "@pc", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned
+
+
+def clean_google_doc_output(text: str) -> str:
+    """Keep actual terminal output while removing runner and verification boilerplate."""
+    return strip_disclaimers(text).strip()
+
+
+def clean_google_doc_report(markdown: str) -> str:
+    """Remove internal agent handoff and QA metadata from student-facing Google Docs."""
+    cleaned = strip_disclaimers(markdown)
+    cleaned = re.sub(
+        r"(?ims)^\s*```manifest(?:\s+json)?\s*\n.*?^\s*```[ \t]*\n?",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?ims)^\s*#{1,3}\s*Quality Status\b[\s\S]*\Z",
+        "",
+        cleaned,
+    )
+    return cleaned.strip()
 
 
 def extract_task_question_from_markdown(markdown: str, task_id: str, materials_context: str = "", source_code: str = "") -> str:
@@ -945,7 +991,7 @@ def extract_task_question_from_markdown(markdown: str, task_id: str, materials_c
         if comment_lines:
             return " ".join(comment_lines).strip()
 
-    return f"Design, implement, and verify a complete standalone solution for Task {task_id} meeting all lab specifications and output requirements."
+    return ""
 
 
 def extract_task_discussion_from_markdown(markdown: str, task_id: str) -> str:
@@ -1056,7 +1102,7 @@ def extract_post_task_sections_from_markdown(markdown: str) -> List[Tuple[str, s
 
 
 def format_code_report(markdown: str, deliverables: Dict[str, Any], execution_results: Optional[List[Dict[str, Any]]] = None) -> str:
-    """Create a structured academic report body: Question first, Source Code second, Terminal verification third."""
+    """Create a structured academic report body with only available task output."""
     files = deliverables.get("files") or []
     if not files:
         return ""
@@ -1065,22 +1111,17 @@ def format_code_report(markdown: str, deliverables: Dict[str, Any], execution_re
     for source_file in files:
         task = source_file["task"]
         result = results_by_file.get(source_file["name"], {})
-        terminal_output = result.get("terminal_output") or "No terminal output was produced."
-        run_summary = result.get("status", "not_run").replace("_", " ").title()
-        exit_code = result.get("exit_code")
+        terminal_output = clean_google_doc_output(result.get("terminal_output") or "")
         
         question_text = extract_task_question_from_markdown(markdown, task, source_code=source_file.get("content", ""))
         
-        sections.append(
-            f"TASK {task} — {source_file['name']}\n\n"
-            f"1. Problem Statement / Question:\n"
-            f"{question_text}\n\n"
-            f"2. Source Code Implementation ({source_file['name']}):\n"
-            f"{source_file['content'].rstrip()}\n\n"
-            f"3. Terminal Output:\n"
-            f"Command: {result.get('command') or 'gcc/python runtime'}\n\n"
-            f"Console Output:\n{terminal_output}"
-        )
+        section = f"TASK {task} — {source_file['name']}\n\n"
+        if question_text:
+            section += f"1. Problem Statement / Question:\n{question_text}\n\n"
+        section += f"2. Source Code Implementation ({source_file['name']}):\n{source_file['content'].rstrip()}"
+        if terminal_output:
+            section += f"\n\n3. Program Output:\n{terminal_output}"
+        sections.append(section)
     return "\n\n\n".join(sections)
 
 
@@ -1333,13 +1374,13 @@ OUTPUT CONTRACT (STRICT):
 - In each task section, provide the following 3 structured subheadings in order:
   1. `### 1. Problem Statement / Question`: State the clear question, problem objective, required formulas/algorithms, and input/output specifications.
   2. `### 2. Source Code Implementation`: Return exactly one fenced source-code block containing a complete, standalone, runnable file (e.g. in C++, Python, Java, Assembly, or SQL). Include every required function, class, and sample dataset directly in main() so the code compiles and runs immediately without interactive stdin.
-  3. `### 3. Expected Output & Verification`: Describe sample test datasets, verification steps, and expected console behavior.
+  3. `### 3. Program Output`: Include only the program's output for the stated sample input. Do not add verification/status prose or claim execution.
 - NEVER return a "Missing Information Notice", disclaimer, apology, or request for more details. Infer the standard university lab syllabus for this course ({course_name}) and implement the full, production-quality lab exercises.
 """
         return _call_groq(
             prompt=solver_prompt,
             model=model,
-            system_prompt="You are a senior university professor and master software engineer. You ALWAYS output complete, working, runnable code files for every task structured with Problem Statement, Source Code, and Verification.",
+            system_prompt="You are a senior university professor and master software engineer. You ALWAYS output complete, working, runnable code files for every task structured with Problem Statement, Source Code, and Program Output. Do not append verification or execution-status commentary.",
             temperature=0.2,
             max_tokens=7000
         )
@@ -1638,7 +1679,7 @@ def export_solution_to_google_doc(
         "",
         report_content,
     )
-    report_content = strip_disclaimers(report_content)
+    report_content = clean_google_doc_report(report_content)
     deliverables = extract_code_deliverables(report_content)
     execution_results = execution_results if execution_results is not None else extract_execution_metadata(solution_content)
     notebook_deliverables = notebook_deliverables or extract_colab_notebooks(solution_content)
@@ -1760,7 +1801,7 @@ def export_solution_to_google_doc(
         embedded_claude_asset_names = set()
         if has_code_files:
             claude_terminals = {
-                str(item.get("task")): (item.get("content") or "").strip()
+                str(item.get("task")): clean_google_doc_output(item.get("content") or "")
                 for item in deliverables.get("terminal_outputs", [])
                 if item.get("content")
             }
@@ -1777,11 +1818,9 @@ def export_solution_to_google_doc(
                 if not result:
                     result = next((item for item in execution_results if str(item.get("task")) == str(task) and (not is_diagram or item.get("language") in (lang, "drawio", "drawio.xml", "xml", "mxfile"))), {})
                 claude_term = claude_terminals.get(str(task))
-                terminal_output = claude_term or result.get("terminal_output") or "Program executed successfully with exit code 0."
-                run_summary = result.get("status", "completed").replace("_", " ").title()
-                exit_code = result.get("exit_code") if result.get("exit_code") is not None else 0
+                terminal_output = clean_google_doc_output(claude_term or result.get("terminal_output") or "")
                 question_text = extract_task_question_from_markdown(
-                    solution_content,
+                    report_content,
                     task,
                     source_code=source_file.get("content", "")
                 )
@@ -1794,23 +1833,17 @@ def export_solution_to_google_doc(
                 )
 
                 # 2. Problem Statement (Heading 2 + Normal Body)
-                docs_service.append_styled_block(
-                    doc_id,
-                    "1. Problem Statement / Question\n" if not is_diagram else "1. Architecture Objective & Specifications\n",
-                    style_type="HEADING_2"
-                )
-                docs_service.append_styled_block(
-                    doc_id,
-                    f"{question_text}\n\n",
-                    style_type="NORMAL"
-                )
-
-                # 3. Program Output / Visual Diagram Output (Heading 2 + Image + Output)
-                docs_service.append_styled_block(
-                    doc_id,
-                    "2. Program Output\n" if not is_diagram else "2. Architecture Diagram Deliverable\n",
-                    style_type="HEADING_2"
-                )
+                if question_text:
+                    docs_service.append_styled_block(
+                        doc_id,
+                        "1. Problem Statement / Question\n" if not is_diagram else "1. Architecture Objective & Specifications\n",
+                        style_type="HEADING_2"
+                    )
+                    docs_service.append_styled_block(
+                        doc_id,
+                        f"{question_text}\n\n",
+                        style_type="NORMAL"
+                    )
 
                 # Embed all screenshot image parts (with on-the-fly rendering fallback if needed)
                 all_screenshot_uris = result.get("screenshot_data_uris") or ([result.get("screenshot_data_uri")] if result.get("screenshot_data_uri") else [])
@@ -1837,6 +1870,13 @@ def export_solution_to_google_doc(
                     except Exception as gen_err:
                         logger.warning(f"On-the-fly terminal screenshot generation failed for task {task}: {gen_err}")
 
+                if is_diagram or all_screenshot_uris or terminal_output:
+                    docs_service.append_styled_block(
+                        doc_id,
+                        "2. Program Output\n" if not is_diagram else "2. Architecture Diagram Deliverable\n",
+                        style_type="HEADING_2"
+                    )
+
                 images_inserted = 0
                 if all_screenshot_uris:
                     for s_idx, screenshot_uri in enumerate(all_screenshot_uris):
@@ -1860,10 +1900,10 @@ def export_solution_to_google_doc(
                                 logger.warning(f"Could not decode screenshot part {s_idx+1} for task {task}: {b64_err}")
 
                 # Only append text console output if NO screenshot images were embedded into the document!
-                if images_inserted == 0 and not is_diagram:
+                if images_inserted == 0 and not is_diagram and terminal_output:
                     docs_service.append_styled_block(
                         doc_id,
-                        f"\nProgram Execution Output:\n{terminal_output}\n\n",
+                        f"\nProgram Output:\n{terminal_output}\n\n",
                         style_type="CODE"
                     )
                 elif images_inserted == 0 and is_diagram:
@@ -1898,7 +1938,7 @@ def export_solution_to_google_doc(
                     )
 
                 # 5. Discussion & Complexity Analysis
-                disc_text = extract_task_discussion_from_markdown(solution_content, task)
+                disc_text = extract_task_discussion_from_markdown(report_content, task)
                 if disc_text:
                     docs_service.append_styled_block(
                         doc_id,
@@ -1917,7 +1957,7 @@ def export_solution_to_google_doc(
                     time.sleep(0.5)
 
             # 6. Post-task sections (Viva questions, Conclusion, Lab Summary, Combined Analysis)
-            post_task_sections = extract_post_task_sections_from_markdown(solution_content)
+            post_task_sections = extract_post_task_sections_from_markdown(report_content)
             if post_task_sections:
                 docs_service.insert_page_break(doc_id)
                 for sec_title, sec_body in post_task_sections:
@@ -2115,6 +2155,10 @@ def export_solution_to_google_doc(
                         else:
                             # Not a diagram: check if this is a terminal execution output block to render as image
                             if fence_lang in ("terminal", "console", "terminal-output", "output") and code_content.strip():
+                                code_content = clean_google_doc_output(code_content)
+                                if not code_content:
+                                    fence_lines = []
+                                    continue
                                 from app.services.terminal_renderer import TerminalCardRenderer
                                 try:
                                     png_list = TerminalCardRenderer.generate_terminal_pngs(
@@ -2258,7 +2302,7 @@ def export_solution_to_google_doc(
                             embedded_claude_asset_names.add(s_uri)
                             docs_service.append_styled_block(
                                 doc_id,
-                                f"Figure: Output / Verification Deliverable (Task {t_id})\n\n",
+                                f"Figure: Program Output (Task {t_id})\n\n",
                                 style_type="NORMAL",
                                 italic=True,
                                 alignment="CENTER",
@@ -2741,33 +2785,35 @@ def generate_agentic_solution(
                             cmd_str = lines[0].lstrip("$ ").strip()
                             terminal_out = "\n".join(lines[1:]).strip() if len(lines) > 1 else claude_term
                     else:
-                        terminal_out = f"Compiled and executed {source_file['name']} successfully.\nAll test cases verified with exit code 0."
+                        terminal_out = ""
+                    terminal_out = clean_google_doc_output(terminal_out)
 
                     screenshot_data_uris = []
-                    try:
-                        from app.services.terminal_renderer import TerminalCardRenderer
-                        png_list = TerminalCardRenderer.generate_terminal_pngs(
-                            cmd_str,
-                            terminal_out,
-                            title=f"Terminal Output — {source_file['name']}"
-                        )
-                        for p_bytes in png_list:
-                            screenshot_data_uris.append(f"data:image/png;base64,{base64.b64encode(p_bytes).decode('ascii')}")
-                    except Exception as render_err:
-                        logger.warning(f"Could not render terminal PNG for task {source_file['task']}: {render_err}")
+                    if terminal_out:
+                        try:
+                            from app.services.terminal_renderer import TerminalCardRenderer
+                            png_list = TerminalCardRenderer.generate_terminal_pngs(
+                                cmd_str,
+                                terminal_out,
+                                title=f"Terminal Output — {source_file['name']}"
+                            )
+                            for p_bytes in png_list:
+                                screenshot_data_uris.append(f"data:image/png;base64,{base64.b64encode(p_bytes).decode('ascii')}")
+                        except Exception as render_err:
+                            logger.warning(f"Could not render terminal PNG for task {source_file['task']}: {render_err}")
 
                     execution_results.append({
                         "task": source_file["task"],
                         "filename": source_file["name"],
                         "language": source_file["language"],
                         "command": cmd_str,
-                        "exit_code": 0,
-                        "success": True,
-                        "status": "passed",
+                        "exit_code": 0 if terminal_out else None,
+                        "success": bool(terminal_out),
+                        "status": "passed" if terminal_out else "needs_input",
                         "terminal_output": terminal_out[:24000],
                         "screenshot_data_uri": screenshot_data_uris[0] if screenshot_data_uris else None,
                         "screenshot_data_uris": screenshot_data_uris,
-                        "tool": "Verified Terminal Execution"
+                        "tool": "Agent-provided terminal output" if terminal_out else "Terminal output unavailable"
                     })
 
         # Record diagram deliverables without rendering them locally. Only Claude-generated images are accepted.

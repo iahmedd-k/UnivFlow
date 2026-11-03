@@ -290,6 +290,13 @@ export default function SolutionPanel({ assignment }) {
       const token = getToken ? await getToken() : null;
       const res = await api.emailAssignmentSolution(assignment.id, token);
       setNotice(res.message || 'Solution and deliverables ZIP emailed to your verified address!');
+      if (res?.google_doc_url && !solution?.google_doc_url) {
+        setSolution((prev) => ({
+          ...(prev || {}),
+          google_doc_url: res.google_doc_url,
+          google_doc_id: res.google_doc_id || prev?.google_doc_id,
+        }));
+      }
     } catch (e) {
       setError(e.message || 'Could not send solution email. Check verified recipient settings.');
     } finally {
@@ -1504,7 +1511,7 @@ export default function SolutionPanel({ assignment }) {
                                 marginBottom: 6,
                               }}
                             >
-                              {isDiagram ? 'Visual Diagram Output (.PNG)' : 'Terminal Output & Execution Screenshot'}
+                              {isDiagram ? 'Visual Diagram Output (.PNG)' : 'Terminal Output'}
                             </span>
                             {screenshot?.data_uri ? (
                               <div

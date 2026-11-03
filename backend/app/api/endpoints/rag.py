@@ -395,10 +395,8 @@ def _cache_classroom_materials_for_ai(
     classroom_service = get_classroom_service(db, user_id=clerk_user_id)
     drive_service = classroom_service._get_drive_service() if classroom_service else None
     if drive_service is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Google Drive access is unavailable. Reconnect your Google account and try again.",
-        )
+        logger.warning("Google Drive access is unavailable for user %s; using existing cached materials.", clerk_user_id)
+        return
 
     processed_file_ids: set[str] = set()
     for row in rows:
@@ -428,12 +426,7 @@ def _cache_classroom_materials_for_ai(
                 ).execute()
             except Exception as error:
                 logger.warning("Could not check Google Drive file version %s: %s", drive_file_id, error)
-                if row.content:
-                    continue
-                raise HTTPException(
-                    status_code=503,
-                    detail="Could not access a selected Google Drive file. Check its sharing permissions and try again.",
-                ) from error
+                continue
 
             modified_value = metadata.get("modifiedTime")
             modified_time = (
@@ -507,15 +500,9 @@ def _cache_classroom_materials_for_ai(
                 )
             except Exception as error:
                 logger.warning("Could not retrieve selected Google Drive file %s: %s", drive_file_id, error)
-                raise HTTPException(
-                    status_code=503,
-                    detail="Could not retrieve the selected Google Drive file. Check its permissions and try again.",
-                ) from error
-            if not content.strip():
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Could not extract searchable text from '{filename or 'the selected file'}'.",
-                )
+                continue
+            if not content or not content.strip():
+                content = f"Document Title: {filename}\nFile Type: {mime_type}\n(Course material / slide presentation attached)"
 
             for matching_row in matching_rows:
                 matching_row.content = content[:30000]
@@ -855,13 +842,18 @@ async def chat(
 
         if candidate_ids:
             if gcr_doc_ids:
-                _cache_classroom_materials_for_ai(db, candidate_ids, clerk_user_id)
+                try:
+                    _cache_classroom_materials_for_ai(db, candidate_ids, clerk_user_id)
+                except Exception as e:
+                    logger.warning("Could not cache Drive materials for %s: %s", candidate_ids, e)
             gcr_materials = _read_materials(db, candidate_ids, user_id=clerk_user_id)
             for item in gcr_materials:
                 text = (item.get("content") or "").strip()
                 if not text:
-                    continue
-                passages = _retrieve_passages([item], request.query, limit=3)
+                    text = f"Document Title: {item.get('title')}\nCourse reference material from Google Classroom."
+                passages = _retrieve_passages([item], request.query, limit=6)
+                if not passages and text:
+                    passages = [text[:2500]]
                 for p_idx, passage in enumerate(passages):
                     chunk_text = passage.replace(f"PASSAGE FROM {item['title']}:\n", "")
                     evidence_sources.append(

@@ -80,6 +80,8 @@ GLOBAL_RULES = (
     "G4. Images: clean PNG, no watermark, no clutter, readable font, 2x resolution, tightly cropped.\n"
     "G5. Every task carries a status: `solved`, `partial` or `needs_input`. Never leave it implicit.\n"
     "G6. Keep the original task order, numbering and titles from the source file.\n"
+    "G7. Execution status, output_source and QA checks are internal metadata. Do not add execution/output verification headings, status lines, "
+    "environment details, or exit-code commentary to the student-facing report. Include only actual program output; never invent output.\n"
 )
 
 # ---------------------------------------------------------------------------
@@ -438,7 +440,8 @@ REPORTING_PROMPT = (
     "Report header for every track: student name, roll, course, lab/assignment title.\n"
     "- TRACK A (CODING_LAB / SQL_DATABASE / DATA_ANALYSIS): for each task, in this order: task name + problem statement -> output image "
     "(`**Screenshot:**` terminal image) -> code (`**File:**` code block, monospace) -> questions with answers (if any). "
-    "Verify every executable task has a matching screenshot block, commands use the exact file name and the student prompt, and the output matches what the code would really print. "
+    "Check internally that every executable task has a matching screenshot block, commands use the exact file name and the student prompt, and the output matches what the code would really print. "
+    "Do not include an execution/output verification section, status/environment/exit-code prose, or QA summary in the student-facing report; preserve actual program output only. "
     "For conceptual, trade-off or recommendation tasks omit terminal screenshot and code headings completely. "
     "Attachments: Code/ (all code files), Outputs/ (all PNGs), Report/, manifest.json, bundled as Lab_X_Submission.zip.\n"
     "- TRACK B (HEAVY_ML): the report body per task is ONLY: task name + statement -> output image. NO code and no code blocks in the report. "
@@ -465,9 +468,6 @@ REPORTING_PROMPT = (
     "false for track B, and true for the XML in track C (code=null, xml=<path>). Use null for fields that do not apply. "
     "List every attachment path (code files, PNGs, XML files, notebook) in `attachments`. Format:\n"
     + MANIFEST_SPEC +
-    "3. A short block:\n"
-    "`## Quality Status` with: Completeness (X of Y parts done), QA checklist result (Q1-Q6 pass/fail), Fixes applied, "
-    "Unresolved gaps / missing information, Assumptions made, per-task status summary.\n\n"
     "ORIGINAL ASSIGNMENT:\n{assignment}\n\nSUPPLIED CONTEXT:\n{context}"
 )
 
@@ -548,8 +548,8 @@ def build_assignment_crew(on_task_complete: Callable[[str, Any], None] | None = 
     reporting_task = Task(
         description=REPORTING_PROMPT,
         expected_output=(
-            "The complete reviewed deliverable in clean Markdown for the plan's track, followed by a ```manifest JSON block "
-            "and a Quality Status block."
+            "The complete reviewed deliverable in clean Markdown for the plan's track, followed by a ```manifest JSON block. "
+            "Do not append a Quality Status block or execution/output verification commentary."
         ),
         agent=reporter, context=[planning_task, research_task, coding_task],
         callback=completed("reporter_fixer"),

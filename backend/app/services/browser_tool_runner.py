@@ -446,11 +446,12 @@ class BrowserToolRunner:
             res = run_code_deliverables([{"name": filename, "language": "python", "content": code, "task": task_num}])
             if res and res[0].get("status") == "passed":
                 out = res[0]
+                terminal_output = out.get("terminal_output") or ""
                 png_bytes = TerminalCardRenderer.generate_terminal_png(
                     out.get("command") or f"python {filename}",
-                    out.get("terminal_output") or "Execution successful.",
+                    terminal_output,
                     title=f"Terminal Output — {filename}"
-                )
+                ) if terminal_output else None
                 return {
                     "status": "passed",
                     "exit_code": 0,
@@ -581,19 +582,14 @@ class BrowserToolRunner:
         except Exception as e:
             logger.warning(f"Online IDE automation encountered fallback ({e})")
 
-        # 4. Deterministic sandbox execution fallback
-        simulated_out = f"Executing {filename}...\n[Program output verified: execution passed with exit status 0]"
-        png_bytes = TerminalCardRenderer.generate_terminal_png(
-            f"run {filename}",
-            simulated_out,
-            title=f"Sandbox Execution — {filename}"
-        )
+        # No execution environment returned output; do not manufacture a success result.
         return {
-            "status": "passed",
-            "exit_code": 0,
+            "status": "needs_input",
+            "exit_code": None,
             "command": f"run {filename}",
-            "terminal_output": simulated_out,
-            "png_bytes": png_bytes,
-            "data_uri": f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}",
-            "tool": f"Compiler Sandbox ({slug.upper()})"
+            "terminal_output": "",
+            "png_bytes": None,
+            "data_uri": None,
+            "tool": f"No execution environment available for {slug.upper()}",
+            "error": "No execution environment returned program output.",
         }

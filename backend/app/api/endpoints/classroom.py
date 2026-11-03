@@ -2013,7 +2013,19 @@ def email_solution_manually(
     if not sent:
         raise HTTPException(status_code=500, detail="Failed to send solution email. Ensure a solution has been generated.")
 
-    return {"success": True, "recipient": recipient, "message": f"Solution and deliverables emailed to {recipient}!"}
+    from app.db.models import Submission, AssignmentSolution
+    sub = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
+    sol = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
+    gdoc_id = getattr(sol, "google_doc_id", None) or (sub.google_doc_id if sub else None) or (sub.google_drive_file_id if sub else None)
+    gdoc_url = getattr(sol, "google_doc_url", None) or (f"https://docs.google.com/document/d/{gdoc_id}/edit" if gdoc_id else None)
+
+    return {
+        "success": True,
+        "recipient": recipient,
+        "google_doc_url": gdoc_url,
+        "google_doc_id": gdoc_id,
+        "message": f"Solution, deliverables ZIP, and Google Drive report link emailed to {recipient}!",
+    }
 
 
 @router.get("/courses/{course_id}/auto-turn-in", response_model=dict)
@@ -2777,6 +2789,8 @@ def get_solution_status(
         return {"status": "not_started"}
 
     from app.services.ai_solution import (
+        clean_google_doc_output,
+        clean_google_doc_report,
         extract_assignment_deliverables,
         extract_execution_metadata,
         strip_execution_metadata,
@@ -2784,6 +2798,9 @@ def get_solution_status(
     content = solution.validated_content or solution.draft_content or ""
     deliverables = extract_assignment_deliverables(strip_execution_metadata(content))
     execution_results = extract_execution_metadata(content)
+    for result in execution_results:
+        if result.get("terminal_output"):
+            result["terminal_output"] = clean_google_doc_output(result["terminal_output"])
     result_by_name = {item.get("filename"): item for item in execution_results}
     code_files = []
     for index, source_file in enumerate(deliverables["files"]):
@@ -2803,10 +2820,10 @@ def get_solution_status(
                 image_asset = next((asset for asset in result.get("downloaded_assets", []) if asset.get("is_image") and asset.get("data_uri")), None)
                 data_uri = image_asset.get("data_uri") if image_asset else None
             is_file_attachment = result.get("language") == "artifact"
-            if not data_uri and not is_diagram and not is_file_attachment and result.get("verified") is not False and result.get("tool") != "Claude Text Output (no image artifact)":
+            if not data_uri and not is_diagram and not is_file_attachment and result.get("terminal_output") and result.get("verified") is not False and result.get("tool") != "Claude Text Output (no image artifact)":
                 png = TerminalCardRenderer.generate_terminal_png(
                     result.get("command") or f"Run {result.get('filename') or 'solution file'}",
-                    result.get("terminal_output") or "No terminal output was produced.",
+                    result["terminal_output"],
                     title=f"Assignment run — {result.get('filename') or 'solution'}",
                 )
                 data_uri = f"data:image/png;base64,{base64.b64encode(png).decode('ascii')}"
@@ -2945,8 +2962,8 @@ def get_solution_status(
         "status": "generating" if is_generating else ("completed" if is_completed else ("failed" if is_failed else "not_started")),
         "has_content": has_content,
         "is_re_solving": is_generating and has_content,
-        "draft_content": strip_execution_metadata(solution.draft_content or ""),
-        "validated_content": strip_execution_metadata(solution.validated_content or ""),
+        "draft_content": clean_google_doc_report(strip_execution_metadata(solution.draft_content or "")),
+        "validated_content": clean_google_doc_report(strip_execution_metadata(solution.validated_content or "")),
         "tasks": enriched_tasks,
         "generated_files": code_files,
         "terminal_outputs": execution_results,
@@ -2960,7 +2977,6 @@ def get_solution_status(
         "ai_provider": solution.ai_provider,
         "generated_at": solution.generated_at,
         "validated_at": solution.validated_at,
-        "verification_status": "verified",
         "google_doc_id": google_doc_id,
         "google_doc_url": google_doc_url,
     }

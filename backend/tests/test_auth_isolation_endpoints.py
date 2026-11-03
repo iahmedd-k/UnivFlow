@@ -271,3 +271,61 @@ def test_get_solution_status_handles_stale_browser_logs_without_unbound_error(te
     # Validation errors should have been auto-cleared
     assert data.get("validation_errors") is None
 
+
+def test_get_solution_status_cleans_agent_verification_boilerplate(test_db, client, monkeypatch):
+    from app.services.ai_solution import append_execution_metadata
+
+    monkeypatch.setattr(settings, "environment", "production")
+    user = {"id": "user_output_test", "email": "output@uniflow.app", "name": "Output User"}
+    test_db.add(Setting(
+        key=access_setting_key("grant", "user_output_test"),
+        value='{"granted_at":"test-approved"}',
+    ))
+    course = Course(id=100, name="Test Course", user_id="user_output_test", external_id="ext-course-100")
+    assignment = Assignment(
+        id=191,
+        title="Operating Systems Lab 2",
+        course_id=100,
+        user_id="user_output_test",
+        external_id="ext-assign-191",
+        status=AssignmentStatus.DRAFT,
+    )
+    markdown = (
+        "# Task 1: Output Test\n"
+        "## 2. Terminal Output Verification\n"
+        "Actual output\n"
+        "## Quality Status\n"
+        "All checks passed.\n"
+        "```manifest\n"
+        '{"status": "solved"}\n'
+        "```\n"
+    )
+    execution_results = [{
+        "task": "1",
+        "filename": "task_1.py",
+        "command": "python task_1.py",
+        "terminal_output": "Actual output\n[Process completed with exit code 0]",
+        "verified": False,
+        "status": "needs_input",
+    }]
+    solution = AssignmentSolution(
+        assignment_id=191,
+        draft_content=markdown,
+        validated_content=append_execution_metadata(markdown, execution_results),
+    )
+    test_db.add(course)
+    test_db.add(assignment)
+    test_db.add(solution)
+    test_db.commit()
+
+    app.dependency_overrides[require_current_user] = lambda: user
+    app.dependency_overrides[get_current_user_optional] = lambda: user
+
+    resp = client.get("/api/v1/classroom/assignments/191/solution/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "Quality Status" not in data["validated_content"]
+    assert "Terminal Output Verification" not in data["validated_content"]
+    assert "manifest" not in data["validated_content"]
+    assert data["terminal_outputs"][0]["terminal_output"] == "Actual output"
+    assert "verification_status" not in data
