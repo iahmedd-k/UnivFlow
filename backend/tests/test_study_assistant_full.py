@@ -1,17 +1,19 @@
 import pytest
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.main import app
 from app.api.endpoints import rag as rag_endpoint
+from app.services import gemini as gemini_service
 from app.db.database import Base, get_db
 from app.db.base import Base as RagBase
 from app.auth.clerk_auth import require_current_user
 from app.auth.access_gate import require_access_grant
-from app.db.models import Course, Assignment, AssignmentMaterial
+from app.db.models import Course, Assignment, AssignmentMaterial, Setting
 from app.db.models.enums import AssignmentStatus
 from app.models.user import User, UserRole
 from app.models.document import Document, DocumentStatus
@@ -308,3 +310,185 @@ def test_chat_scopes_uploaded_retrieval_to_selected_documents(client, monkeypatc
     assert response.status_code == 200
     assert retrieval_stub.search_options["document_ids"] == [42]
     assert response.json()["data"]["sources"][0]["document_id"] == 42
+
+
+def test_chat_general_knowledge_mode_skips_document_retrieval(client, monkeypatch):
+    class RetrievalServiceStub:
+        def search(self, **kwargs):
+            pytest.fail("Document retrieval should be skipped in general knowledge mode")
+
+    app.dependency_overrides[rag_endpoint.get_retrieval_service] = lambda: RetrievalServiceStub()
+    generated = {}
+
+    def generate_answer(**kwargs):
+        generated.update(kwargs)
+        return "Here is a general explanation."
+
+    monkeypatch.setattr(rag_endpoint, "generate_study_answer", generate_answer)
+    conversation_response = client.post(
+        "/api/v1/rag/conversations",
+        json={"title": "General chat", "document_ids": ["mat_301", "42"]},
+    )
+    conversation_id = conversation_response.json()["data"]["id"]
+
+    response = client.post(
+        "/api/v1/rag/chat",
+        json={
+            "query": "Explain this concept generally.",
+            "conversation_id": conversation_id,
+            "general_knowledge": True,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["answer"] == "Here is a general explanation."
+    assert data["sources"] == []
+    assert "general knowledge" in generated["system_prompt"].lower()
+    assert "No source documents are attached" in generated["prompt"]
+    conversations = client.get("/api/v1/rag/conversations").json()["data"]["conversations"]
+    saved_conversation = next(item for item in conversations if item["id"] == conversation_id)
+    assert saved_conversation["document_ids"] == []
+
+
+def test_general_knowledge_fallback_does_not_ask_for_documents(monkeypatch):
+    monkeypatch.setattr(gemini_service.settings, "gemini_api_key", "")
+
+    answer = gemini_service.generate_study_answer(
+        prompt=(
+            "Question: Explain recursion.\n\n"
+            "Context:\nNo source documents are attached. Answer the question using your general knowledge."
+        ),
+        system_prompt="Answer using general knowledge.",
+        general_knowledge=True,
+    )
+
+    assert "temporarily unavailable" in answer
+    assert "upload" not in answer.lower()
+
+
+def test_rag_account_mapping_is_stable_and_rejects_shared_email(test_db):
+    first_identity = {"id": "clerk_user_1", "email": "test_student@example.com"}
+    first_user_id, _ = rag_endpoint.resolve_user_context(test_db, first_identity)
+
+    changed_email_user_id, _ = rag_endpoint.resolve_user_context(
+        test_db,
+        {"id": "clerk_user_1", "email": "changed@example.com"},
+    )
+    assert changed_email_user_id == first_user_id
+
+    with pytest.raises(HTTPException) as exc_info:
+        rag_endpoint.resolve_user_context(
+            test_db,
+            {"id": "clerk_user_2", "email": "test_student@example.com"},
+        )
+    assert exc_info.value.status_code == 409
+    assert (
+        test_db.query(Setting)
+        .filter(Setting.key == "rag-account:clerk_user_1")
+        .one()
+        .value
+        == str(first_user_id)
+    )
+
+
+def test_documents_and_status_are_private_to_each_account(test_db, client):
+    second_user = User(
+        id=2,
+        first_name="Second",
+        last_name="Student",
+        email="second_student@example.com",
+        password_hash="pw",
+        role=UserRole.USER,
+        is_active=True,
+        is_verified=True,
+    )
+    test_db.add(second_user)
+    test_db.add_all(
+        [
+            Document(
+                id=101,
+                user_id=1,
+                original_filename="first-private.pdf",
+                storage_key="first-private.pdf",
+                storage_url="",
+                mime_type="application/pdf",
+                file_size=10,
+                status=DocumentStatus.COMPLETED,
+            ),
+            Document(
+                id=202,
+                user_id=2,
+                original_filename="second-private.pdf",
+                storage_key="second-private.pdf",
+                storage_url="",
+                mime_type="application/pdf",
+                file_size=10,
+                status=DocumentStatus.COMPLETED,
+            ),
+        ]
+    )
+    for owner, course_id, assignment_id, material_id, filename in (
+        ("test_clerk_user_123", 11, 111, 1111, "first-classroom.pdf"),
+        ("test_clerk_user_456", 22, 222, 2222, "second-classroom.pdf"),
+    ):
+        test_db.add(Course(id=course_id, user_id=owner, external_id=f"course-{course_id}", name=f"Course {course_id}"))
+        test_db.add(
+            Assignment(
+                id=assignment_id,
+                user_id=owner,
+                external_id=f"assignment-{assignment_id}",
+                course_id=course_id,
+                title=filename,
+                work_type="MATERIAL",
+                status=AssignmentStatus.SUBMITTED,
+            )
+        )
+        test_db.add(
+            AssignmentMaterial(
+                id=material_id,
+                user_id=owner,
+                assignment_id=assignment_id,
+                material_type="drive_file",
+                title=filename,
+                mime_type="application/pdf",
+                file_size=10,
+                content=f"Private material for {owner}",
+            )
+        )
+    test_db.commit()
+
+    first_identity = {
+        "id": "test_clerk_user_123",
+        "email": "test_student@example.com",
+        "name": "First Student",
+    }
+    app.dependency_overrides[require_current_user] = lambda: first_identity
+    first_response = client.get("/api/v1/rag/documents")
+    assert first_response.status_code == 200
+    first_filenames = {item["original_filename"] for item in first_response.json()["data"]}
+    assert any("first-private.pdf" in filename for filename in first_filenames)
+    assert any("first-classroom.pdf" in filename for filename in first_filenames)
+    assert not any("second-private.pdf" in filename for filename in first_filenames)
+    assert not any("second-classroom.pdf" in filename for filename in first_filenames)
+    assert client.get("/api/v1/rag/documents/202").status_code == 404
+    assert client.get("/api/v1/rag/documents/mat_2222").status_code == 404
+    assert client.get("/api/v1/rag/documents/202/status").status_code == 404
+    assert client.get("/api/v1/rag/documents/mat_2222/status").status_code == 404
+    assert client.delete("/api/v1/rag/documents/202").status_code == 404
+    assert client.delete("/api/v1/rag/documents/mat_2222").status_code == 404
+    assert test_db.query(Document).filter(Document.id == 202).one().user_id == 2
+
+    second_identity = {
+        "id": "test_clerk_user_456",
+        "email": "second_student@example.com",
+        "name": "Second Student",
+    }
+    app.dependency_overrides[require_current_user] = lambda: second_identity
+    second_response = client.get("/api/v1/rag/documents")
+    assert second_response.status_code == 200
+    second_filenames = {item["original_filename"] for item in second_response.json()["data"]}
+    assert any("second-private.pdf" in filename for filename in second_filenames)
+    assert any("second-classroom.pdf" in filename for filename in second_filenames)
+    assert not any("first-private.pdf" in filename for filename in second_filenames)
+    assert not any("first-classroom.pdf" in filename for filename in second_filenames)

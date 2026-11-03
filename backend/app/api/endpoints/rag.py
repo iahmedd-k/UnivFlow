@@ -24,7 +24,7 @@ from app.auth.clerk_auth import require_current_user
 from app.auth.ownership import user_owner_ids
 from app.core.config import settings
 from app.db.database import get_db
-from app.db.models import Assignment, AssignmentMaterial, Course
+from app.db.models import Assignment, AssignmentMaterial, Course, Setting
 from app.models.document import Document, DocumentStatus
 from app.models.message import Message, MessageRole
 from app.models.user import User, UserRole
@@ -41,6 +41,7 @@ from app.schemas.rag_new.conversation import (
     MessageResponse,
 )
 from app.schemas.rag_new.document import DocumentResponse, DocumentStatusResponse
+from app.core.exceptions import NotFoundError
 from app.core.redis import invalidate_user_cache, invalidate_user_caches
 from app.schemas.rag_new.rag import ChatResponse, RagRequest, SourceChunk, SourceCitation
 from app.schemas.rag_new.response import ApiResponse
@@ -78,14 +79,27 @@ router = APIRouter(prefix="/rag", tags=["RAG"])
 # --- Helper: User Context Resolution ---
 
 def resolve_user_context(db: Session, current_user: dict) -> tuple[int, str]:
-    """Resolve (db_user_id: int, clerk_user_id: str).
+    """Resolve a stable RAG user ID for the authenticated identity.
 
     Ensures a corresponding integer record in users table exists so foreign keys
     (conversations.user_id, messages.user_id, documents.user_id) never fail.
     """
     clerk_id = current_user.get("id") or "dev_student_user"
-    email = current_user.get("email") or f"{clerk_id}@uniflow.app"
+    mapping_key = f"rag-account:{clerk_id}"
+    mapping = db.query(Setting).filter(Setting.key == mapping_key).first()
+    if mapping:
+        try:
+            mapped_user_id = int(mapping.value)
+        except (TypeError, ValueError) as exc:
+            logger.error("Invalid RAG account mapping for identity %s", clerk_id)
+            raise HTTPException(status_code=500, detail="Unable to resolve account.") from exc
+        mapped_user = db.query(User).filter(User.id == mapped_user_id).first()
+        if mapped_user is None:
+            logger.error("RAG account mapping for identity %s references a missing user", clerk_id)
+            raise HTTPException(status_code=500, detail="Unable to resolve account.")
+        return mapped_user.id, str(clerk_id)
 
+    email = str(current_user.get("email") or f"{clerk_id}@uniflow.app").strip().lower()
     user = db.query(User).filter(User.email == email).first()
     if not user and clerk_id.startswith("dev_"):
         user = db.query(User).filter(User.id == 1).first()
@@ -103,15 +117,44 @@ def resolve_user_context(db: Session, current_user: dict) -> tuple[int, str]:
             is_active=True,
             is_verified=True,
         )
+        db.add(user)
         try:
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-        except Exception:
+            db.flush()
+        except Exception as exc:
             db.rollback()
-            user = db.query(User).filter(User.email == email).first() or db.query(User).filter(User.id == 1).first()
+            logger.exception("Could not create RAG user for identity %s", clerk_id)
+            raise HTTPException(status_code=500, detail="Unable to resolve account.") from exc
 
-    return (user.id if user else 1), str(clerk_id)
+    claimed_mapping = (
+        db.query(Setting)
+        .filter(Setting.key.like("rag-account:%"), Setting.value == str(user.id))
+        .first()
+    )
+    if claimed_mapping and claimed_mapping.key != mapping_key:
+        logger.error(
+            "RAG user %s is already linked to a different authenticated identity",
+            user.id,
+        )
+        raise HTTPException(status_code=409, detail="Account identity is already linked.")
+
+    db.add(Setting(key=mapping_key, value=str(user.id), description="RAG account identity mapping"))
+    try:
+        db.commit()
+        db.refresh(user)
+    except Exception as exc:
+        db.rollback()
+        existing_mapping = db.query(Setting).filter(Setting.key == mapping_key).first()
+        if existing_mapping:
+            try:
+                mapped_user = db.query(User).filter(User.id == int(existing_mapping.value)).first()
+            except (TypeError, ValueError):
+                mapped_user = None
+            if mapped_user:
+                return mapped_user.id, str(clerk_id)
+        logger.exception("Could not persist RAG account mapping for identity %s", clerk_id)
+        raise HTTPException(status_code=500, detail="Unable to resolve account.") from exc
+
+    return user.id, str(clerk_id)
 
 
 # --- Dependencies ---
@@ -680,15 +723,20 @@ def get_document_status(
     db: Session = Depends(get_db),
     document_service: DocumentService = Depends(get_document_service),
 ):
+    db_user_id, clerk_user_id = resolve_user_context(db, current_user)
     if document_id.startswith("mat_") or document_id.startswith("asg_"):
+        if not any(str(doc.id) == document_id for doc in get_classroom_as_documents(db, clerk_user_id)):
+            raise HTTPException(status_code=404, detail="Document not found")
         return ApiResponse(
             success=True,
             data=DocumentStatusResponse(document_id=document_id, status=DocumentStatus.COMPLETED),
             message="Document status retrieved.",
         )
-    db_user_id, _ = resolve_user_context(db, current_user)
     int_id = int(document_id) if document_id.isdigit() else 0
-    result = document_service.get_document_status(db_user_id, int_id)
+    try:
+        result = document_service.get_document_status(db_user_id, int_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Document not found") from exc
     return ApiResponse(success=True, data=result, message="Document status retrieved.")
 
 
@@ -711,7 +759,10 @@ def get_document(
         raise HTTPException(status_code=404, detail="Document not found")
 
     int_id = int(document_id) if document_id.isdigit() else 0
-    d = document_service.get_document(db_user_id, int_id)
+    try:
+        d = document_service.get_document(db_user_id, int_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Document not found") from exc
     return ApiResponse(
         success=True,
         data=DocumentResponse(
@@ -742,15 +793,17 @@ def delete_document(
     db: Session = Depends(get_db),
     document_service: DocumentService = Depends(get_document_service),
 ):
+    db_user_id, clerk_user_id = resolve_user_context(db, current_user)
     if document_id.startswith("mat_") or document_id.startswith("asg_"):
+        if not any(str(doc.id) == document_id for doc in get_classroom_as_documents(db, clerk_user_id)):
+            raise HTTPException(status_code=404, detail="Document not found")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-    db_user_id, _ = resolve_user_context(db, current_user)
     int_id = int(document_id) if document_id.isdigit() else 0
     try:
         document_service.delete_document(db_user_id, int_id)
-    except Exception as e:
-        logger.warning("Document deletion warning for %s: %s", document_id, e)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Document not found") from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -759,7 +812,7 @@ def delete_document(
 @router.post(
     "/chat",
     response_model=ApiResponse[ChatResponse],
-    summary="Ask a document-grounded question across Classroom materials & uploaded files",
+    summary="Answer with selected documents or general knowledge",
 )
 async def chat(
     request: RagRequest,
@@ -772,7 +825,8 @@ async def chat(
 
     conversation_service = ConversationService(db)
     conversation_id = request.conversation_id
-    document_ids = request.document_ids or []
+    general_knowledge = request.general_knowledge
+    document_ids = [] if general_knowledge else request.document_ids or []
 
     if conversation_id is None and request.query:
         try:
@@ -798,8 +852,20 @@ async def chat(
                 conversation_service.auto_title_from_query(conversation_id, db_user_id, request.query)
 
             conv = conversation_service.conversation_repo.get_by_id_and_user(conversation_id, db_user_id)
-            if conv and conv.document_ids and not document_ids:
-                document_ids = conv.document_ids
+            if conv:
+                scope_changed = False
+                if general_knowledge:
+                    if conv.document_ids != []:
+                        conv.document_ids = []
+                        scope_changed = True
+                elif request.document_ids is not None:
+                    if conv.document_ids != request.document_ids:
+                        conv.document_ids = request.document_ids
+                        scope_changed = True
+                elif conv.document_ids:
+                    document_ids = conv.document_ids
+                if scope_changed:
+                    db.commit()
         except Exception as e:
             logger.warning("Could not persist user turn in conversation %s: %s", conversation_id, e)
 
@@ -818,7 +884,7 @@ async def chat(
     citations = []
 
     # 3. Retrieve from Google Classroom materials & coursework
-    if gcr_doc_ids or not document_ids:
+    if gcr_doc_ids or (not document_ids and not general_knowledge):
         candidate_ids = list(gcr_doc_ids)
         if not candidate_ids:
             try:
@@ -888,7 +954,7 @@ async def chat(
                     evidence_chunks.append(f"SOURCE: {item['title']} ({item['id']})\n{chunk_text}")
 
     # 4. Retrieve from user uploaded documents
-    if uploaded_doc_ids or not document_ids:
+    if uploaded_doc_ids or (not document_ids and not general_knowledge):
         try:
             search_res = retrieval_service.search(
                 user_id=db_user_id,
@@ -933,7 +999,11 @@ async def chat(
         except Exception as e:
             logger.warning("Could not append history: %s", e)
 
-    if evidence_chunks:
+    if general_knowledge:
+        context_parts.append(
+            "No source documents are attached. Answer the question using your general knowledge."
+        )
+    elif evidence_chunks:
         context_parts.append("SOURCE DOCUMENTS:\n" + "\n\n---\n\n".join(evidence_chunks[:8]))
     else:
         context_parts.append(
@@ -945,6 +1015,12 @@ async def chat(
     system_prompt = (
         "You are an exceptionally talented, versatile AI tutor and study partner for university students—combining "
         "the depth, pedagogical clarity, intuitive warmth, and flexibility of ChatGPT with rigorous academic grounding.\n\n"
+    ) + (
+        "General knowledge mode: no source documents were selected. Answer directly and helpfully using your "
+        "general knowledge. Do not claim that your answer comes from course materials.\n\n"
+        if general_knowledge
+        else ""
+    ) + (
         "Core Instructions:\n"
         "1. Conversational & Flexible: Match the student's tone and context. If greeted ('hi', 'hello', etc.) or asked casual questions, "
         "respond warmly and helpfully. Never use rigid, robotic, or canned template structures.\n"
@@ -966,6 +1042,7 @@ async def chat(
         prompt=user_prompt,
         system_prompt=system_prompt,
         model=settings.study_assistant_model,
+        general_knowledge=general_knowledge,
     )
 
     # 6. Save assistant turn to conversation in DB

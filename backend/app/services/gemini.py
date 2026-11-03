@@ -15,6 +15,7 @@ def generate_study_answer(
     system_prompt: str,
     model: str | None = None,
     max_output_tokens: int = 4000,
+    general_knowledge: bool = False,
 ) -> str:
     """Generate a grounded, comprehensive Study Assistant answer using Google Gemini."""
 
@@ -101,13 +102,19 @@ def generate_study_answer(
             if len(snippets) >= 4:
                 break
 
-    if snippets:
+    if snippets and not general_knowledge:
         context_summary = " ".join(snippets[:3])
         return (
             f"Based on your course materials regarding **{topic}**:\n\n"
             f"{context_summary}\n\n"
             f"If you'd like an in-depth breakdown, practice problems, or code examples on this topic, "
             f"feel free to ask!"
+        )
+
+    if general_knowledge:
+        return (
+            "I can answer general questions, but the AI service is temporarily unavailable. "
+            "Please try again shortly."
         )
 
     return (

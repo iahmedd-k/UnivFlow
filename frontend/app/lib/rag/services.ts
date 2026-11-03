@@ -130,7 +130,7 @@ export async function listConversations(offset = 0, limit = 50, options: Request
   return res?.data ?? res ?? { conversations: [], total: 0, offset, limit };
 }
 
-export async function createConversation(title?: string, documentIds?: number[]): Promise<Conversation> {
+export async function createConversation(title?: string, documentIds?: (number | string)[]): Promise<Conversation> {
   const res = await createRagConversation({ title: title || "New Conversation", document_ids: documentIds || null });
   return res?.data ?? res;
 }
@@ -155,6 +155,7 @@ export interface ChatRequest {
   query: string;
   conversation_id?: number | null;
   document_ids?: (number | string)[] | null;
+  general_knowledge?: boolean;
   top_k?: number;
 }
 

@@ -27,7 +27,6 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
-  Folder,
   X,
   ArrowRight,
   Database,
@@ -956,7 +955,7 @@ function ChatRow({ chat, isActive, onClick, onDelete }) {
           <span className="text-[12px] text-stone-500">
             {chat.document_ids && chat.document_ids.length > 0
               ? `${chat.document_ids.length} source${chat.document_ids.length === 1 ? "" : "s"}`
-              : "All sources"}
+              : "General knowledge"}
           </span>
           {dateStr && <span className="text-[12px] text-stone-400 ml-auto">{dateStr}</span>}
         </div>
@@ -1059,7 +1058,9 @@ function DocumentPicker({ files, selectedIds, onToggle, onClear, onConfirm, onUp
       {files.length > 0 && (
         <div className="px-3 py-2 border-t border-stone-100 flex items-center justify-between bg-stone-50/50">
           <span className="text-[11.5px] text-stone-400">
-            {selectedIds.length} of {files.length} selected
+            {selectedIds.length === 0
+              ? "General knowledge (no documents attached)"
+              : `${selectedIds.length} of ${files.length} selected`}
           </span>
           <div className="flex items-center gap-2">
             <input ref={fileInputRef} type="file" accept=".pdf,.csv,.xlsx,.xls,.docx,.json" className="hidden" onChange={handleUpload} />
@@ -1088,7 +1089,6 @@ function ChatInboxDashboard({
   usageData,
   refreshFiles,
   refreshUsage,
-  onOpenSources,
 }) {
   const queryClient = useQueryClient();
   const conversationKey = useMemo(() => ['rag', 'conversations', ownerKey], [ownerKey]);
@@ -1115,12 +1115,10 @@ function ChatInboxDashboard({
   const [search, setSearch] = useState("");
   const [scopedDocIds, setScopedDocIds] = useState([]);
   const [showDocPicker, setShowDocPicker] = useState(false);
-  const [inlineUploading, setInlineUploading] = useState(false);
   const [mobileShowSidebar, setMobileShowSidebar] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const scrollRef = useRef(null);
   const docPickerRef = useRef(null);
-  const inlineFileInputRef = useRef(null);
   const mounted = useMountedFade();
 
   const activeChat = conversations.find((c) => c.id === activeId);
@@ -1136,7 +1134,9 @@ function ChatInboxDashboard({
     setConversations((prev) => {
       const remaining = prev.filter((c) => c.id !== chatId);
       if (activeId === chatId) {
-        setActiveId(remaining.length > 0 ? remaining[0].id : null);
+        const nextConversation = remaining[0];
+        setActiveId(nextConversation?.id || null);
+        setScopedDocIds(nextConversation?.document_ids || []);
       }
       return remaining;
     });
@@ -1150,6 +1150,7 @@ function ChatInboxDashboard({
   useEffect(() => {
     if (!activeId && !loadingConversations && conversations.length > 0) {
       setActiveId(conversations[0].id);
+      setScopedDocIds(conversations[0].document_ids || []);
     }
   }, [activeId, loadingConversations, conversations]);
 
@@ -1190,6 +1191,8 @@ function ChatInboxDashboard({
 
   const openChat = (id) => {
     setActiveId(id);
+    const conversation = conversations.find((item) => item.id === id);
+    setScopedDocIds(conversation?.document_ids || []);
     setEditingTitle(false);
     setSearch("");
   };
@@ -1215,21 +1218,6 @@ function ChatInboxDashboard({
     }
   };
 
-  const handleInlineUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setInlineUploading(true);
-    try {
-      await uploadDocument(file);
-      await refreshFiles?.();
-    } catch {
-      // Handled in parent
-    } finally {
-      setInlineUploading(false);
-      if (inlineFileInputRef.current) inlineFileInputRef.current.value = "";
-    }
-  };
-
   useEffect(() => {
     if (!pendingDocTag) return;
     let cancelled = false;
@@ -1242,9 +1230,7 @@ function ChatInboxDashboard({
         setConversations((prev) => [conv, ...prev]);
         setTurnsById((prev) => ({ ...prev, [conv.id]: [] }));
         openChat(conv.id);
-        if (docIds && docIds.length > 0) {
-          setScopedDocIds(docIds);
-        }
+        if (docIds && docIds.length > 0) setScopedDocIds(docIds);
         onConsumePendingDocTag?.();
       } catch {
         // Handled silently
@@ -1287,18 +1273,13 @@ function ChatInboxDashboard({
     const text = (queryText || input).trim();
     if (!text || pipeline || queryLimitReached) return;
 
-    if (files.length === 0) {
-      if (onOpenSources) onOpenSources();
-      return;
-    }
-
     setInput("");
 
     let targetChatId = activeId;
     if (!targetChatId) {
       try {
         const titleSnippet = text.length > 30 ? `${text.slice(0, 30)}…` : text;
-        const newConv = await createConversation(titleSnippet);
+        const newConv = await createConversation(titleSnippet, scopedDocIds);
         setConversations((prev) => [newConv, ...prev]);
         setTurnsById((prev) => ({ ...prev, [newConv.id]: [] }));
         targetChatId = newConv.id;
@@ -1337,6 +1318,7 @@ function ChatInboxDashboard({
         query: text,
         conversation_id: targetChatId,
         document_ids: docIds,
+        general_knowledge: !docIds,
       });
 
       clearInterval(stageTimer);
@@ -1356,7 +1338,11 @@ function ChatInboxDashboard({
 
       setTurnsById((prev) => ({ ...prev, [targetChatId]: [...(prev[targetChatId] || []), assistantTurn] }));
       setConversations((prev) =>
-        prev.map((c) => (c.id === targetChatId ? { ...c, updated_at: new Date().toISOString() } : c))
+        prev.map((c) => (
+          c.id === targetChatId
+            ? { ...c, document_ids: docIds || [], updated_at: new Date().toISOString() }
+            : c
+        ))
       );
       if (refreshUsage) refreshUsage();
     } catch (err) {
@@ -1428,6 +1414,7 @@ function ChatInboxDashboard({
           query: userQuery,
           conversation_id: validConvId,
           document_ids: docIds,
+          general_knowledge: !docIds,
         });
       } catch (chatErr) {
         if (validConvId) {
@@ -1435,6 +1422,7 @@ function ChatInboxDashboard({
             query: userQuery,
             conversation_id: null,
             document_ids: docIds,
+            general_knowledge: !docIds,
           });
           if (result?.conversation_id) {
             setActiveId(result.conversation_id);
@@ -1464,7 +1452,15 @@ function ChatInboxDashboard({
         [targetChatId]: [...(prev[targetChatId] || []), assistantTurn],
       }));
       setConversations((prev) =>
-        prev.map((c) => (c.id === targetChatId ? { ...c, updated_at: new Date().toISOString() } : c))
+        prev.map((c) => (
+          c.id === targetChatId
+            ? {
+                ...c,
+                document_ids: docIds || [],
+                updated_at: new Date().toISOString(),
+              }
+            : c
+        ))
       );
       if (refreshUsage) refreshUsage();
     } catch (err) {
@@ -1558,7 +1554,7 @@ function ChatInboxDashboard({
             </div>
           ) : filtered.length === 0 ? (
             <div className="px-4 py-8 text-center text-[12.5px] text-stone-400">
-              {files.length === 0 ? "No documents uploaded yet" : "No conversations yet"}
+              No conversations yet
             </div>
           ) : (
             filtered.map((chat) => (
@@ -1630,7 +1626,7 @@ function ChatInboxDashboard({
             ) : (
               <>
                 <h2 className="text-[15px] sm:text-[17px] font-semibold text-stone-900 truncate">
-                  {activeChat?.title || (files.length === 0 ? "Knowledge Base Setup" : "RAG Query Console")}
+                  {activeChat?.title || "Study Assistant"}
                 </h2>
                 {activeChat && (
                   <button onClick={startEditTitle} title="Rename chat" className="text-stone-400 hover:text-stone-600 shrink-0 cursor-pointer">
@@ -1643,62 +1639,33 @@ function ChatInboxDashboard({
         </header>
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 sm:px-8">
-          {files.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center py-12 sm:py-16 max-w-md mx-auto">
-              <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center mb-4 shadow-xs">
-                {inlineUploading ? (
-                  <Loader2 className="w-7 h-7 text-indigo-600 animate-spin" />
-                ) : (
-                  <UploadCloud className="w-7 h-7 text-indigo-600" />
-                )}
-              </div>
-              <h3 className="text-[17px] font-semibold text-stone-900">Upload your first document</h3>
-              <p className="text-[13px] text-stone-500 mt-1.5 mb-6 leading-relaxed">
-                RAG Assistant provides verifiable answers grounded in your own documents. Add a PDF, DOCX, CSV, Excel, or JSON file to start querying.
-              </p>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={onOpenSources}
-                  className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-[13px] font-medium px-4 py-2.5 rounded-lg shadow-xs cursor-pointer transition-all"
-                >
-                  <Folder className="w-4 h-4" />
-                  Go to Knowledge Sources
-                </button>
-                <button
-                  onClick={() => inlineFileInputRef.current?.click()}
-                  disabled={inlineUploading}
-                  className="flex items-center gap-2 bg-stone-100 hover:bg-stone-200 text-stone-700 text-[13px] font-medium px-4 py-2.5 rounded-lg cursor-pointer transition-all disabled:opacity-50"
-                >
-                  <FileText className="w-4 h-4 text-stone-500" />
-                  {inlineUploading ? "Uploading…" : "Browse File"}
-                </button>
-              </div>
-              <input
-                ref={inlineFileInputRef}
-                type="file"
-                accept=".pdf,.csv,.xlsx,.xls,.docx,.json"
-                className="hidden"
-                onChange={handleInlineUpload}
-              />
-            </div>
-          ) : !activeId || turns.length === 0 ? (
+          {!activeId || turns.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center py-12 max-w-lg mx-auto">
               <div className="w-12 h-12 rounded-2xl bg-indigo-50 flex items-center justify-center mb-3">
                 <Sparkles className="w-6 h-6 text-indigo-600" />
               </div>
               <h3 className="text-[17px] font-semibold text-stone-900">What would you like to know?</h3>
               <p className="text-[13px] text-stone-500 mt-1 mb-6">
-                RAG Assistant is ready. Searching across <span className="font-semibold text-stone-700">{files.length} indexed document{files.length === 1 ? "" : "s"}</span>.
+                {scopedDocIds.length > 0
+                  ? `Answers will be grounded in ${scopedDocIds.length} selected document${scopedDocIds.length === 1 ? "" : "s"}.`
+                  : "Ask anything using general knowledge, or attach documents for answers based on your course materials."}
               </p>
               <div className="w-full space-y-2 text-left">
                 <p className="text-[11.5px] font-medium text-stone-400 uppercase tracking-wide px-1">
                   Suggested Questions
                 </p>
-                {[
-                  "Summarize the main points and key takeaways",
-                  "List down all the topics discussed in the slides and the examples discussed or any questions",
-                  "Extract all important facts, metrics, and dates",
-                ].map((suggestion, idx) => (
+                {(scopedDocIds.length > 0
+                  ? [
+                      "Summarize the main points and key takeaways",
+                      "List the topics and examples discussed in my documents",
+                      "Extract important facts, metrics, and dates",
+                    ]
+                  : [
+                      "Explain a challenging concept in simple terms",
+                      "Help me make a study plan for my next exam",
+                      "Quiz me on an academic topic",
+                    ]
+                ).map((suggestion, idx) => (
                   <button
                     key={idx}
                     onClick={() => {
@@ -1745,6 +1712,11 @@ function ChatInboxDashboard({
             />
           ) : (
             <>
+              {scopedDocIds.length === 0 && (
+                <div className="mb-2 text-[11.5px] text-stone-400">
+                  General knowledge mode · attach documents to ground answers in your materials
+                </div>
+              )}
               {scopedDocIds.length > 0 && (
                 <div className="flex items-center gap-1.5 mb-2 flex-wrap">
                   <span className="text-[11.5px] text-stone-400">Scoped to:</span>
@@ -1774,11 +1746,11 @@ function ChatInboxDashboard({
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && submitQuery()}
                   placeholder={
-                    files.length === 0
-                      ? "Upload a document to start asking questions…"
-                      : pipeline
-                      ? "Retrieving and synthesizing…"
-                      : "Ask a question about your documents…"
+                    pipeline
+                      ? "Thinking…"
+                      : scopedDocIds.length > 0
+                      ? "Ask about your selected documents…"
+                      : "Ask me anything…"
                   }
                   disabled={!!pipeline}
                   className="bg-transparent text-[13.5px] outline-none w-full placeholder:text-stone-400 text-stone-900"
@@ -1789,7 +1761,7 @@ function ChatInboxDashboard({
                   className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-colors cursor-pointer ${
                     scopedDocIds.length > 0 ? "bg-indigo-100 text-indigo-600 hover:bg-indigo-200" : "hover:bg-stone-200 text-stone-500"
                   }`}
-                  title={files.length === 0 ? "Upload documents" : "Filter documents"}
+                  title="Attach documents"
                 >
                   <Paperclip className="w-4 h-4" />
                 </button>
@@ -2811,7 +2783,6 @@ export default function RagAssistantPage() {
           usageData={usageData}
           refreshFiles={refreshFiles}
           refreshUsage={refreshUsage}
-          onOpenSources={() => goToRoute("sources")}
         />
       </div>
       <div className={`flex-1 min-h-0 ${route === "sources" ? "" : "hidden"}`}>

@@ -25,6 +25,10 @@ class RagRequest(BaseModel):
         default=None,
         description="Optional list of document IDs to scope retrieval to",
     )
+    general_knowledge: bool = Field(
+        default=False,
+        description="Answer without retrieving user documents",
+    )
     top_k: int | None = Field(
         default=None,
         ge=1,

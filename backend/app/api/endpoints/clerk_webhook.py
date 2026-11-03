@@ -262,8 +262,8 @@ async def handle_user_deleted(data: dict, db: Session):
         if hasattr(model, "user_id"):
             db.query(model).filter(model.user_id == user_id).delete(synchronize_session=False)
 
-    # Remove account-scoped settings but retain a revocation marker so old Clerk
-    # session tokens cannot regain access after the profile record is deleted.
+    # Keep the RAG identity mapping so a later account with a reused email
+    # cannot be linked to this account's retained uploaded documents.
     db.query(Setting).filter(
         (Setting.key == f"clerk_user_{user_id}")
         | (Setting.key == f"notification_email_{user_id}")
