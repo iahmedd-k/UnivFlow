@@ -35,6 +35,17 @@ const refreshAuthBtn = document.getElementById("refreshAuthBtn");
 const tokenExpiryStatus = document.getElementById("tokenExpiryStatus");
 const toggleAuthVisibilityBtn = document.getElementById("toggleAuthVisibilityBtn");
 
+const DEFAULT_PRODUCTION_API = "https://univlfow.koreacentral.cloudapp.azure.com/api/v1";
+
+function normalizeApiUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== "string") return DEFAULT_PRODUCTION_API;
+  let clean = rawUrl.trim().replace(/\/+$/, "");
+  if (!clean.endsWith("/api/v1")) {
+    clean = `${clean}/api/v1`;
+  }
+  return clean;
+}
+
 function showNotice(text, type = "ok") {
   noticeBox.style.display = "block";
   noticeBox.className = "notice " + (type === "err" ? "notice-err" : type === "info" ? "notice-info" : "notice-ok");
@@ -98,8 +109,9 @@ if (authTokenInput) {
 
 function autoDetectAuthToken(interactive = false) {
   if (refreshAuthBtn) refreshAuthBtn.textContent = "⏳ Detecting…";
+  const normalized = normalizeApiUrl(apiUrlInput.value);
   chrome.runtime.sendMessage(
-    { action: "DETECT_AUTH_TOKEN", payload: { apiUrl: apiUrlInput.value.trim() } },
+    { action: "DETECT_AUTH_TOKEN", payload: { apiUrl: normalized } },
     (res) => {
       if (refreshAuthBtn) refreshAuthBtn.textContent = "🔄 Auto-Detect";
       if (res?.success && res.token && !isTokenExpired(res.token)) {
@@ -125,7 +137,21 @@ if (refreshAuthBtn) {
 chrome.storage.local.get(
   ["uniflowApiUrl", "uniflowAuthToken", "claudeConnected", "portalConnected", "gcrConnected"],
   (data) => {
-    if (data.uniflowApiUrl) apiUrlInput.value = data.uniflowApiUrl;
+    if (data.uniflowApiUrl) {
+      apiUrlInput.value = normalizeApiUrl(data.uniflowApiUrl);
+    } else {
+      // Auto-detect if active tab is local development
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs && tabs[0]?.url) {
+          try {
+            const u = new URL(tabs[0].url);
+            if (u.hostname === "localhost" || u.hostname === "127.0.0.1") {
+              apiUrlInput.value = `http://${u.hostname}:8000/api/v1`;
+            }
+          } catch (_) {}
+        }
+      });
+    }
 
     const storedToken = data.uniflowAuthToken || "";
     if (storedToken && !isTokenExpired(storedToken)) {
@@ -133,17 +159,15 @@ chrome.storage.local.get(
       updateTokenBadge(storedToken);
     } else {
       updateTokenBadge("");
-      // Stored token is missing or expired, automatically fetch fresh token from browser
       autoDetectAuthToken(false);
     }
 
-    // Rule: Claude & Portal are only fetched if NOT connected before
     if (data.claudeConnected) {
-      checkClaude.checked = false; // Don't re-fetch by default
+      checkClaude.checked = false;
       claudeConnectedNote.style.display = "block";
     }
     if (data.portalConnected) {
-      checkPortal.checked = false; // Don't re-fetch by default
+      checkPortal.checked = false;
       portalConnectedNote.style.display = "block";
     }
   }
@@ -165,22 +189,27 @@ chrome.cookies.get({ url: "https://claude.ai", name: "sessionKey" }, (cookie) =>
   }
 });
 
-// 3. Check Google Classroom & Drive/Docs cookies
+// 3. Check Google Classroom auth cookies
+const GOOGLE_AUTH_NAMES = new Set([
+  "OSID", "SID", "HSID", "SSID", "APISID", "SAPISID", "SIDCC",
+  "__Secure-1PSID", "__Secure-3PSID", "__Secure-1PAPISID", "__Secure-3PAPISID",
+  "__Secure-OSID", "__Secure-1PSIDCC", "__Secure-3PSIDCC"
+]);
+
 Promise.all([
+  chrome.cookies.getAll({ domain: ".google.com" }),
   chrome.cookies.getAll({ domain: "google.com" }),
+  chrome.cookies.getAll({ domain: ".classroom.google.com" }),
+  chrome.cookies.getAll({ domain: "classroom.google.com" }),
+  chrome.cookies.getAll({ domain: ".accounts.google.com" }),
+  chrome.cookies.getAll({ domain: "accounts.google.com" }),
   chrome.cookies.getAll({ url: "https://classroom.google.com" }),
-  chrome.cookies.getAll({ url: "https://docs.google.com" }),
-  chrome.cookies.getAll({ url: "https://drive.google.com" }),
-]).then(([gCookies, cCookies, dCookies, drvCookies]) => {
-  const combined = [
-    ...(gCookies || []),
-    ...(cCookies || []),
-    ...(dCookies || []),
-    ...(drvCookies || []),
-  ];
+]).then((cookieArrays) => {
+  const combined = cookieArrays.flatMap((arr) => arr || []);
   const unique = [];
   const seen = new Set();
   for (const c of combined) {
+    if (!c || !c.name || !c.domain) continue;
     const key = `${c.name}@${c.domain}`;
     if (!seen.has(key)) {
       seen.add(key);
@@ -188,39 +217,35 @@ Promise.all([
     }
   }
 
-    const authCookies = unique.filter((c) => {
-      const n = c.name;
-      return (
-        n === "OSID" || n === "SID" || n === "HSID" || n === "SSID" ||
-        n === "APISID" || n === "SAPISID" || n === "SIDCC" ||
-        n.startsWith("__Secure-")
-      );
-    });
-
-    if (authCookies.length > 0) {
-      foundGcrCookies = authCookies.map((c) => ({
-        name: c.name,
-        value: c.value,
-        domain: c.domain,
-        path: c.path,
-        secure: c.secure,
-        httpOnly: c.httpOnly,
-        sameSite: c.sameSite,
-      }));
-      gcrSessionStatus.textContent = "Active Session";
-      gcrSessionStatus.className = "badge badge-ok";
-      const osid = authCookies.find((c) => c.name === "OSID" || c.name === "SID");
-      gcrCookieBox.textContent = osid
-        ? `${osid.name}=${osid.value.slice(0, 14)}… (${authCookies.length} auth cookies)`
-        : `${authCookies.length} auth cookies found`;
-      syncGcrBtn.disabled = false;
-    } else {
-      gcrSessionStatus.textContent = "Not Signed In";
-      gcrSessionStatus.className = "badge badge-warn";
-      gcrCookieBox.innerHTML = 'Log into <a href="https://classroom.google.com" target="_blank">Classroom</a> or click Auto-Visit.';
-      syncGcrBtn.disabled = true;
-    }
+  const authCookies = unique.filter((c) => {
+    const n = c.name;
+    return GOOGLE_AUTH_NAMES.has(n) || n.startsWith("__Secure-");
   });
+
+  if (authCookies.length > 0) {
+    foundGcrCookies = authCookies.map((c) => ({
+      name: c.name,
+      value: c.value,
+      domain: c.domain,
+      path: c.path,
+      secure: c.secure,
+      httpOnly: c.httpOnly,
+      sameSite: c.sameSite,
+    }));
+    gcrSessionStatus.textContent = "Active Session";
+    gcrSessionStatus.className = "badge badge-ok";
+    const osid = authCookies.find((c) => c.name === "OSID" || c.name === "SID");
+    gcrCookieBox.textContent = osid
+      ? `${osid.name}=${osid.value.slice(0, 14)}… (${authCookies.length} auth cookies)`
+      : `${authCookies.length} auth cookies found`;
+    syncGcrBtn.disabled = false;
+  } else {
+    gcrSessionStatus.textContent = "Not Signed In";
+    gcrSessionStatus.className = "badge badge-warn";
+    gcrCookieBox.innerHTML = 'Log into <a href="https://classroom.google.com" target="_blank">Classroom</a> or click Auto-Visit.';
+    syncGcrBtn.disabled = true;
+  }
+});
 
 // 4. Check University Portal cookies
 chrome.cookies.getAll({ domain: "portals.au.edu.pk" }, (cookies) => {
@@ -242,12 +267,12 @@ chrome.cookies.getAll({ domain: "portals.au.edu.pk" }, (cookies) => {
 });
 
 function getTargetConfig() {
-  const baseUrl = apiUrlInput.value.trim().replace(/\/+$/, "");
+  const normalized = normalizeApiUrl(apiUrlInput.value);
   const token = authTokenInput.value.trim();
-  if (baseUrl) {
-    chrome.storage.local.set({ uniflowApiUrl: baseUrl, uniflowAuthToken: token });
+  if (normalized) {
+    chrome.storage.local.set({ uniflowApiUrl: normalized, uniflowAuthToken: token });
   }
-  return { apiUrl: baseUrl, token };
+  return { apiUrl: normalized, token };
 }
 
 // 5. Individual Sync & Auto-Visit actions

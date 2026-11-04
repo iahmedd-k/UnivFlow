@@ -5,7 +5,7 @@
 
 import { API_BASE_URL } from '@/app/lib/api-config';
 
-export const EXTENSION_VERSION = '1.3.6';
+export const EXTENSION_VERSION = '1.3.7';
 
 export function isExtensionInstalled() {
   if (typeof window === 'undefined') return false;
@@ -50,11 +50,17 @@ function sendExtensionMessage(action, payload, timeoutMs = 20000) {
       reject(new Error('Extension response timed out. Please ensure the Uniflow Companion extension is installed and active.'));
     }, timeoutMs);
 
+    const resolvedPayload = { ...(payload || {}) };
+    if (!resolvedPayload.token && typeof window !== 'undefined') {
+      const manualToken = localStorage.getItem('uniflow_manual_token');
+      if (manualToken) resolvedPayload.token = manualToken;
+    }
+
     window.postMessage(
       {
         type: `UNIFLOW_EXT_REQ_${action}`,
         requestId,
-        payload: payload || {},
+        payload: resolvedPayload,
       },
       '*'
     );

@@ -18,7 +18,10 @@ function tokenScope(token) {
 }
 
 async function resolveClerkToken(getToken) {
-  if (typeof window !== 'undefined' && localStorage.getItem('uniflow_manual_token')) return null;
+  if (typeof window !== 'undefined') {
+    const manualToken = localStorage.getItem('uniflow_manual_token');
+    if (manualToken) return manualToken;
+  }
   if (!getToken) return null;
   let timeout;
   try {

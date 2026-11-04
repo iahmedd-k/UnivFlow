@@ -1,4 +1,16 @@
-// Uniflow Academic Companion - Background Service Worker (Manifest V3)
+// Uniflow Academic Companion - Background Service Worker (Manifest V3) (v1.3.7)
+
+const DEFAULT_PRODUCTION_API = "https://univlfow.koreacentral.cloudapp.azure.com/api/v1";
+
+// Helper: Normalize any backend URL to guarantee /api/v1 prefix without duplicate slashes
+function normalizeApiUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== "string") return DEFAULT_PRODUCTION_API;
+  let clean = rawUrl.trim().replace(/\/+$/, "");
+  if (!clean.endsWith("/api/v1")) {
+    clean = `${clean}/api/v1`;
+  }
+  return clean;
+}
 
 // Store connection state locally
 async function getStoredState() {
@@ -7,6 +19,12 @@ async function getStoredState() {
       ["uniflowApiUrl", "uniflowAuthToken", "claudeConnected", "portalConnected", "gcrConnected", "uniflowGcrCookieFingerprint"],
       (data) => resolve(data || {})
     );
+  });
+}
+
+async function setStoredState(updates) {
+  return new Promise((resolve) => {
+    chrome.storage.local.set(updates, () => resolve(true));
   });
 }
 
@@ -42,32 +60,36 @@ async function syncGoogleCookiesToBackend(cookies, userAgent, apiUrl, token, { s
   return result;
 }
 
-async function setStoredState(updates) {
-  return new Promise((resolve) => {
-    chrome.storage.local.set(updates, () => resolve(true));
+const GOOGLE_AUTH_NAMES = new Set([
+  "OSID", "SID", "HSID", "SSID", "APISID", "SAPISID", "SIDCC",
+  "__Secure-1PSID", "__Secure-3PSID", "__Secure-1PAPISID", "__Secure-3PAPISID",
+  "__Secure-OSID", "__Secure-1PSIDCC", "__Secure-3PSIDCC"
+]);
+
+function hasGoogleAuthCookie(cookies) {
+  return (cookies || []).some((c) => {
+    const n = c?.name || "";
+    return GOOGLE_AUTH_NAMES.has(n) || n.startsWith("__Secure-");
   });
 }
 
-// 1. Fetch Google Classroom, Accounts, and Google Drive/Docs auth cookies
+// 1. Fetch Google Classroom, Accounts, and Google Drive/Docs auth cookies (targeted domain queries only)
 async function getGoogleClassroomCookies() {
   const querySpecs = [
-    {},
-    { domain: "google.com" },
     { domain: ".google.com" },
-    { domain: "accounts.google.com" },
-    { domain: ".accounts.google.com" },
-    { domain: "classroom.google.com" },
+    { domain: "google.com" },
     { domain: ".classroom.google.com" },
-    { domain: "drive.google.com" },
+    { domain: "classroom.google.com" },
+    { domain: ".accounts.google.com" },
+    { domain: "accounts.google.com" },
     { domain: ".drive.google.com" },
-    { domain: "docs.google.com" },
+    { domain: "drive.google.com" },
     { domain: ".docs.google.com" },
-    { url: "https://google.com" },
-    { url: "https://www.google.com" },
-    { url: "https://accounts.google.com" },
+    { domain: "docs.google.com" },
     { url: "https://classroom.google.com" },
-    { url: "https://docs.google.com" },
+    { url: "https://accounts.google.com" },
     { url: "https://drive.google.com" },
+    { url: "https://docs.google.com" },
   ];
 
   const results = await Promise.allSettled(
@@ -79,9 +101,8 @@ async function getGoogleClassroomCookies() {
       }
     })
   );
-  const explicitCookies = results.flatMap((r) => (r.status === "fulfilled" && Array.isArray(r.value) ? r.value : []));
 
-  const combined = explicitCookies;
+  const combined = results.flatMap((r) => (r.status === "fulfilled" && Array.isArray(r.value) ? r.value : []));
   const unique = [];
   const seen = new Set();
   for (const c of combined) {
@@ -133,7 +154,6 @@ async function autoVisitAndExtract(service, maxWaitMs = 15000) {
   if (service === "claude") targetUrl = "https://claude.ai";
   if (service === "portal") targetUrl = "https://portals.au.edu.pk/students/";
 
-  // Create an active tab to visit the service
   const tab = await chrome.tabs.create({ url: targetUrl, active: true });
 
   const startTime = Date.now();
@@ -142,7 +162,7 @@ async function autoVisitAndExtract(service, maxWaitMs = 15000) {
 
     if (service === "gcr") {
       const cookies = await getGoogleClassroomCookies();
-      if (cookies.length >= 2) {
+      if (cookies.length >= 2 && hasGoogleAuthCookie(cookies)) {
         return { success: true, cookies, tabId: tab.id };
       }
     } else if (service === "claude") {
@@ -161,7 +181,7 @@ async function autoVisitAndExtract(service, maxWaitMs = 15000) {
   return { success: false, error: `Timed out waiting for ${service} login cookies`, tabId: tab.id };
 }
 
-// Helper: Verify if a Clerk JWT token has expired
+// Helper: Verify if a Clerk JWT or manual token has expired
 function isTokenExpired(token) {
   if (!token || typeof token !== "string") return true;
   try {
@@ -177,39 +197,37 @@ function isTokenExpired(token) {
     );
     const payload = JSON.parse(jsonPayload);
     if (!payload.exp) return false;
-    // Expired or expiring within 10 seconds
     return payload.exp * 1000 <= Date.now() + 10000;
   } catch (e) {
     return true;
   }
 }
 
-// Helper: Auto-detect fresh, non-expired Clerk JWT session token from browser cookies
+// Helper: Auto-detect fresh, non-expired JWT session token from browser cookies (__session or uniflow_manual_token)
 async function detectFreshAuthToken(baseUrl) {
   try {
-    // 1. Check exact baseUrl domain for __session cookie
-    if (baseUrl) {
-      try {
-        const u = new URL(baseUrl);
-        const cookie = await chrome.cookies.get({ url: u.origin, name: "__session" });
-        if (cookie && cookie.value && !isTokenExpired(cookie.value)) {
-          return cookie.value;
-        }
-      } catch (_) {}
-    }
+    const candidateCookieNames = ["__session", "uniflow_manual_token"];
 
-    // 2. Query all __session cookies across all domains
-    const sessionCookies = await chrome.cookies.getAll({ name: "__session" });
-    if (sessionCookies && sessionCookies.length > 0) {
-      // Filter out any expired tokens
-      const validCookies = sessionCookies.filter((c) => c.value && !isTokenExpired(c.value));
-      if (validCookies.length > 0) {
-        let targetHost = "";
-        try { targetHost = new URL(baseUrl).hostname; } catch (_) {}
-        const best = validCookies.find((c) => targetHost && c.domain && c.domain.includes(targetHost))
-          || validCookies.find((c) => c.domain && (c.domain.includes("cloudapp.azure.com") || c.domain.includes("univlfow") || c.domain.includes("vercel.app") || c.domain.includes("localhost")))
-          || validCookies[0];
-        if (best && best.value) return best.value;
+    for (const cookieName of candidateCookieNames) {
+      // 1. Direct query across all domains
+      const cookies = await chrome.cookies.getAll({ name: cookieName });
+      if (cookies && cookies.length > 0) {
+        const valid = cookies.filter((c) => c.value && !isTokenExpired(c.value));
+        if (valid.length > 0) {
+          let targetHost = "";
+          try { targetHost = new URL(baseUrl).hostname; } catch (_) {}
+          const best =
+            valid.find((c) => targetHost && c.domain && c.domain.includes(targetHost)) ||
+            valid.find((c) => c.domain && (
+              c.domain.includes("vercel.app") ||
+              c.domain.includes("localhost") ||
+              c.domain.includes("127.0.0.1") ||
+              c.domain.includes("cloudapp.azure.com") ||
+              c.domain.includes("univlfow")
+            )) ||
+            valid[0];
+          if (best && best.value) return best.value;
+        }
       }
     }
   } catch (e) {
@@ -220,22 +238,24 @@ async function detectFreshAuthToken(baseUrl) {
 
 // 5. Send synced cookies to Uniflow backend with auto-token detection and 401 retry
 async function sendToBackend(endpoint, payload, baseUrl, token) {
-  if (!baseUrl) throw new Error("Uniflow Backend URL not configured.");
-  const cleanBase = baseUrl.replace(/\/+$/, "");
+  const normalizedBase = normalizeApiUrl(baseUrl || (await getStoredState()).uniflowApiUrl);
+  const cleanEndpoint = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+  const fullUrl = `${normalizedBase}${cleanEndpoint}`;
 
   let activeToken = token;
-  // If no token or provided token is expired, auto-detect a fresh one!
   if (!activeToken || isTokenExpired(activeToken)) {
-    const detected = await detectFreshAuthToken(baseUrl);
+    const detected = await detectFreshAuthToken(baseUrl || normalizedBase);
     if (detected) activeToken = detected;
   }
 
   const makeRequest = async (tok) => {
     const headers = { "Content-Type": "application/json" };
     if (tok) {
-      headers["Authorization"] = tok.startsWith("Bearer ") ? tok : `Bearer ${tok}`;
+      const cleanTok = tok.startsWith("Bearer ") ? tok.slice(7).trim() : tok.trim();
+      headers["Authorization"] = `Bearer ${cleanTok}`;
+      headers["X-Manual-Auth-Token"] = cleanTok;
     }
-    return fetch(`${cleanBase}${endpoint}`, {
+    return fetch(fullUrl, {
       method: "POST",
       headers,
       body: JSON.stringify(payload),
@@ -244,9 +264,9 @@ async function sendToBackend(endpoint, payload, baseUrl, token) {
 
   let resp = await makeRequest(activeToken);
 
-  // If 401 Unauthorized (e.g. token expired), try to auto-detect a fresh token and retry once
+  // If 401 Unauthorized, detect fresh token and retry once
   if (resp.status === 401) {
-    const freshToken = await detectFreshAuthToken(baseUrl);
+    const freshToken = await detectFreshAuthToken(baseUrl || normalizedBase);
     if (freshToken && freshToken !== activeToken) {
       activeToken = freshToken;
       resp = await makeRequest(freshToken);
@@ -275,22 +295,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   (async () => {
     try {
       const state = await getStoredState();
-      const apiUrl = payload?.apiUrl || state.uniflowApiUrl || "http://localhost:8000";
+      const apiUrl = normalizeApiUrl(payload?.apiUrl || state.uniflowApiUrl);
       const token = payload?.token || state.uniflowAuthToken || "";
 
       if (action === "PING") {
-        sendResponse({ success: true, version: chrome.runtime.getManifest()?.version || "1.3.6" });
+        sendResponse({ success: true, version: chrome.runtime.getManifest()?.version || "1.3.7" });
       } else if (action === "DETECT_AUTH_TOKEN") {
         const detected = await detectFreshAuthToken(payload?.apiUrl || apiUrl);
         if (detected) {
           await setStoredState({ uniflowAuthToken: detected });
           sendResponse({ success: true, token: detected });
         } else {
-          sendResponse({ success: false, error: "No active Uniflow __session cookie found in browser." });
+          sendResponse({ success: false, error: "No active Uniflow __session or manual auth cookie found in browser." });
         }
       } else if (action === "SET_CONFIG") {
         await setStoredState({
-          ...(payload?.apiUrl ? { uniflowApiUrl: payload.apiUrl } : {}),
+          ...(payload?.apiUrl ? { uniflowApiUrl: normalizeApiUrl(payload.apiUrl) } : {}),
           ...(payload?.token ? { uniflowAuthToken: payload.token } : {}),
         });
         sendResponse({ success: true });
@@ -302,12 +322,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         ]);
         sendResponse({
           success: true,
-          version: "1.3.0",
+          version: chrome.runtime.getManifest()?.version || "1.3.7",
           status: {
             gcrCount: gcr.length,
             claudeConnected: Boolean(claude || state.claudeConnected),
             portalConnected: Boolean(portal || state.portalConnected),
-            hasGcr: gcr.length > 0,
+            hasGcr: gcr.length > 0 && hasGoogleAuthCookie(gcr),
             hasClaude: Boolean(claude),
             hasPortal: Boolean(portal),
           },
@@ -316,8 +336,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         let cookies = await getGoogleClassroomCookies();
         let autoVisited = false;
 
-        // If autoVisit requested or no cookies found and autoVisit allowed
-        if ((!cookies || cookies.length === 0) && payload?.autoVisit) {
+        if ((!cookies || cookies.length === 0 || !hasGoogleAuthCookie(cookies)) && payload?.autoVisit) {
           const visitRes = await autoVisitAndExtract("gcr", 20000);
           if (visitRes.success) {
             cookies = visitRes.cookies;
@@ -325,7 +344,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           }
         }
 
-        if (!cookies || cookies.length === 0) {
+        if (!cookies || cookies.length === 0 || !hasGoogleAuthCookie(cookies)) {
           sendResponse({
             success: false,
             needsLogin: true,
@@ -355,12 +374,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         });
         sendResponse({ success: true, message: res.message || "Classroom session captured & synced!" });
       } else if (action === "SYNC_SELECTED") {
-        // Enforce rule: Portal and Claude should only be fetched if not connected before!
         const results = { gcr: null, claude: null, portal: null };
         const forceClaude = Boolean(payload?.forceClaude);
         const forcePortal = Boolean(payload?.forcePortal);
 
-        // Store apiUrl and token for background auto-renewal
         await setStoredState({
           ...(apiUrl ? { uniflowApiUrl: apiUrl } : {}),
           ...(token ? { uniflowAuthToken: token } : {}),
@@ -369,15 +386,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // 1. Google Classroom
         if (payload?.syncGcr !== false) {
           let gcrCookies = await getGoogleClassroomCookies();
-          if ((!gcrCookies || gcrCookies.length === 0) && payload?.autoVisit) {
+          if ((!gcrCookies || gcrCookies.length === 0 || !hasGoogleAuthCookie(gcrCookies)) && payload?.autoVisit) {
             const vRes = await autoVisitAndExtract("gcr", 15000);
             if (vRes.success) gcrCookies = vRes.cookies;
           }
-          if (gcrCookies && gcrCookies.length > 0) {
+          if (gcrCookies && gcrCookies.length > 0 && hasGoogleAuthCookie(gcrCookies)) {
             results.gcr = await syncGoogleCookiesToBackend(gcrCookies, navigator.userAgent, apiUrl, token);
             await setStoredState({ gcrConnected: true });
           } else {
-            results.gcr = { skipped: true, reason: "No cookies found in browser" };
+            results.gcr = { skipped: true, reason: "No active Google Classroom cookies found in browser" };
           }
         }
 
@@ -436,14 +453,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           return;
         }
 
-        // 1. Find existing tab or create new tab with classroomUrl
         const cleanTarget = classroomUrl.split("?")[0].replace(/\/+$/, "");
         const tabs = await chrome.tabs.query({ url: "*://classroom.google.com/*" });
-        let targetTab = tabs.find((t) => t.url && t.url.includes(cleanTarget)) || tabs[0];
+        let targetTab = tabs.find((t) => t.url && t.url.includes(cleanTarget));
 
         if (!targetTab) {
           targetTab = await chrome.tabs.create({ url: classroomUrl, active: true });
-          // Wait for tab to complete loading
           await new Promise((resolve) => {
             const listener = (tabId, info) => {
               if (tabId === targetTab.id && info.status === "complete") {
@@ -456,18 +471,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           });
         } else {
           await chrome.tabs.update(targetTab.id, { url: classroomUrl, active: true });
-          await new Promise((r) => setTimeout(r, 2000));
+          await new Promise((resolve) => {
+            const listener = (tabId, info) => {
+              if (tabId === targetTab.id && info.status === "complete") {
+                chrome.tabs.onUpdated.removeListener(listener);
+                resolve();
+              }
+            };
+            chrome.tabs.onUpdated.addListener(listener);
+            setTimeout(resolve, 4000);
+          });
         }
 
-        // Small grace period for DOM rendering
         await new Promise((r) => setTimeout(r, 1200));
 
-        // Send CLASSROOM_CLICK_TURN_IN to tab
         let turnInResult = null;
         try {
           turnInResult = await chrome.tabs.sendMessage(targetTab.id, { action: "CLASSROOM_CLICK_TURN_IN" });
         } catch (msgErr) {
-          // If content script was not injected, inject it dynamically via chrome.scripting
           try {
             await chrome.scripting.executeScript({
               target: { tabId: targetTab.id },
@@ -480,7 +501,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           }
         }
 
-        // If turn-in was successful, notify Uniflow backend to mark assignment as SUBMITTED!
         if (turnInResult?.success && assignmentId) {
           try {
             await sendToBackend(
@@ -513,9 +533,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // ==========================================
 // BACKGROUND AUTOMATIC SESSION AUTO-RENEWAL
 // ==========================================
-// Watches active browser cookies. When Google Classroom, Claude, or Student Portal
-// sessions rotate during normal browsing, automatically and silently synchronizes
-// fresh cookies to the Uniflow backend.
 const autoRenewTimers = {
   gcr: null,
   claude: null,
@@ -523,7 +540,7 @@ const autoRenewTimers = {
 };
 
 chrome.cookies.onChanged.addListener((changeInfo) => {
-  if (changeInfo.removed) return; // Ignore deletions / expirations
+  if (changeInfo.removed) return;
 
   const cookie = changeInfo.cookie;
   if (!cookie) return;
@@ -533,11 +550,9 @@ chrome.cookies.onChanged.addListener((changeInfo) => {
 
   const isGoogleAuth =
     (domain.includes("google.com") || domain.includes("classroom.google.com")) &&
-    (name === "OSID" || name === "SID" || name === "HSID" || name === "SSID" ||
-     name === "APISID" || name === "SAPISID" || name === "SIDCC" || name.startsWith("__Secure-"));
+    (GOOGLE_AUTH_NAMES.has(name) || name.startsWith("__Secure-"));
 
   const isClaudeAuth = domain.includes("claude.ai") && name === "sessionKey";
-
   const isPortalAuth = domain.includes("portals.au.edu.pk") && (name.includes("Session") || name.includes("ASP"));
 
   if (!isGoogleAuth && !isClaudeAuth && !isPortalAuth) return;
@@ -548,17 +563,24 @@ chrome.cookies.onChanged.addListener((changeInfo) => {
     autoRenewTimers.gcr = setTimeout(async () => {
       try {
         const state = await getStoredState();
-        if (state.gcrConnected && state.uniflowApiUrl && state.uniflowAuthToken) {
-          const cookies = await getGoogleClassroomCookies();
-          if (cookies && cookies.length > 0) {
-            const result = await syncGoogleCookiesToBackend(
-              cookies,
-              navigator.userAgent,
-              state.uniflowApiUrl,
-              state.uniflowAuthToken,
-              { skipUnchanged: true },
-            );
-            if (!result.unchanged) console.log("[Uniflow Companion] Auto-renewed Google Classroom session in background.");
+        if (state.gcrConnected) {
+          const apiUrl = normalizeApiUrl(state.uniflowApiUrl);
+          let token = state.uniflowAuthToken;
+          if (!token || isTokenExpired(token)) {
+            token = await detectFreshAuthToken(apiUrl);
+          }
+          if (token) {
+            const cookies = await getGoogleClassroomCookies();
+            if (cookies && cookies.length > 0 && hasGoogleAuthCookie(cookies)) {
+              const result = await syncGoogleCookiesToBackend(
+                cookies,
+                navigator.userAgent,
+                apiUrl,
+                token,
+                { skipUnchanged: true },
+              );
+              if (!result.unchanged) console.log("[Uniflow Companion] Auto-renewed Google Classroom session in background.");
+            }
           }
         }
       } catch (err) {
@@ -573,16 +595,23 @@ chrome.cookies.onChanged.addListener((changeInfo) => {
     autoRenewTimers.claude = setTimeout(async () => {
       try {
         const state = await getStoredState();
-        if (state.claudeConnected && state.uniflowApiUrl && state.uniflowAuthToken) {
-          const key = await getClaudeSessionKey();
-          if (key) {
-            await sendToBackend(
-              "/classroom/claude-browser/sync-session",
-              { session_key: key, user_agent: navigator.userAgent },
-              state.uniflowApiUrl,
-              state.uniflowAuthToken
-            );
-            console.log("[Uniflow Companion] Auto-renewed Claude session in background.");
+        if (state.claudeConnected) {
+          const apiUrl = normalizeApiUrl(state.uniflowApiUrl);
+          let token = state.uniflowAuthToken;
+          if (!token || isTokenExpired(token)) {
+            token = await detectFreshAuthToken(apiUrl);
+          }
+          if (token) {
+            const key = await getClaudeSessionKey();
+            if (key) {
+              await sendToBackend(
+                "/classroom/claude-browser/sync-session",
+                { session_key: key, user_agent: navigator.userAgent },
+                apiUrl,
+                token
+              );
+              console.log("[Uniflow Companion] Auto-renewed Claude session in background.");
+            }
           }
         }
       } catch (err) {
@@ -597,16 +626,23 @@ chrome.cookies.onChanged.addListener((changeInfo) => {
     autoRenewTimers.portal = setTimeout(async () => {
       try {
         const state = await getStoredState();
-        if (state.portalConnected && state.uniflowApiUrl && state.uniflowAuthToken) {
-          const cookies = await getPortalCookies();
-          if (cookies) {
-            await sendToBackend(
-              "/portal/sync-cookies",
-              { cookies },
-              state.uniflowApiUrl,
-              state.uniflowAuthToken
-            );
-            console.log("[Uniflow Companion] Auto-renewed Portal session in background.");
+        if (state.portalConnected) {
+          const apiUrl = normalizeApiUrl(state.uniflowApiUrl);
+          let token = state.uniflowAuthToken;
+          if (!token || isTokenExpired(token)) {
+            token = await detectFreshAuthToken(apiUrl);
+          }
+          if (token) {
+            const cookies = await getPortalCookies();
+            if (cookies) {
+              await sendToBackend(
+                "/portal/sync-cookies",
+                { cookies },
+                apiUrl,
+                token
+              );
+              console.log("[Uniflow Companion] Auto-renewed Portal session in background.");
+            }
           }
         }
       } catch (err) {

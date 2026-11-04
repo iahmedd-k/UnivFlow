@@ -1461,6 +1461,13 @@ def _attach_submission_files(
             except Exception as attach_err:
                 err_str = str(attach_err)
                 logger.error(f"Failed to modifyAttachments on submission {submission_id}: {attach_err}")
+                if "ProjectPermissionDenied" in err_str:
+                    detail = (
+                        "Google Classroom rejected file attachments because the configured Google "
+                        "Cloud project is not permitted to call modifyAttachments. Enable the "
+                        "Classroom API submission attachment permission for this OAuth project."
+                    )
+                    raise HTTPException(status_code=503, detail=detail) from attach_err
                 raise HTTPException(status_code=502, detail="Failed to attach files to Google Classroom") from attach_err
 
         if return_state:
@@ -1538,8 +1545,25 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str, action:
             detail="Google Docs / Drive is not configured or authorization expired. Please connect Google Classroom to enable Drive uploads."
         )
 
-    solution = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
-    existing_sub = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
+    # Assignment ownership was verified above; the solution is uniquely keyed
+    # by assignment, so legacy solution rows remain usable during migration.
+    solution = db.query(AssignmentSolution).filter(
+        AssignmentSolution.assignment_id == assignment_id,
+    ).first()
+    existing_sub = db.query(Submission).filter(
+        Submission.assignment_id == assignment_id,
+        Submission.user_id.in_(owners),
+    ).first()
+    if not existing_sub:
+        # Submission rows predate user ownership in some local databases. The
+        # assignment was ownership-checked above, so adopting its lone legacy
+        # row preserves the unique assignment constraint without cross-user reuse.
+        existing_sub = db.query(Submission).filter(
+            Submission.assignment_id == assignment_id,
+        ).first()
+        if existing_sub and existing_sub.user_id != user_id:
+            existing_sub.user_id = user_id
+            db.flush()
     student_doc_id = existing_sub.google_doc_id if (existing_sub and existing_sub.google_doc_id) else None
     # The solution exporter persists its Doc ID before quick-turn-in attaches
     # anything. If a prior attempt stopped at the exporter/response-contract
@@ -1934,7 +1958,8 @@ def auto_turn_in_completed_solution(db: Session, assignment_id: int, user_id: st
         return None
 
     existing_submission = db.query(Submission).filter(
-        Submission.assignment_id == assignment_id
+        Submission.assignment_id == assignment_id,
+        Submission.user_id.in_(user_owner_ids(user_id)),
     ).first()
     submission_state = (
         getattr(existing_submission.submission_state, "value", existing_submission.submission_state)

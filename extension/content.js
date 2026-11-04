@@ -1,40 +1,82 @@
-// Uniflow Academic Companion - Content Script Bridge
+// Uniflow Academic Companion - Content Script Bridge (v1.3.7)
 
 (function () {
-  // Mark DOM so the web app can immediately detect the extension
-  document.documentElement.dataset.uniflowCompanionInstalled = "true";
-  document.documentElement.dataset.uniflowCompanionVersion = "1.3.6";
+  const VERSION = "1.3.7";
 
-  // Dispatch custom event for immediate frontend detection
+  // 1. Mark DOM dataset immediately so frontend detects extension synchronously
+  try {
+    if (document.documentElement) {
+      document.documentElement.dataset.uniflowCompanionInstalled = "true";
+      document.documentElement.dataset.uniflowCompanionVersion = VERSION;
+    }
+  } catch (_) {}
+
+  // 2. Inject main-world properties so React/Next.js window checks succeed
+  try {
+    const script = document.createElement("script");
+    script.textContent = `
+      window.__UNIFLOW_EXTENSION_INSTALLED__ = true;
+      window.__UNIFLOW_EXTENSION_VERSION__ = "${VERSION}";
+      window.dispatchEvent(new CustomEvent("uniflow-companion-ready", { detail: { version: "${VERSION}" } }));
+    `;
+    (document.head || document.documentElement).appendChild(script);
+    script.remove();
+  } catch (_) {}
+
+  // 3. Dispatch ready event in content script world too
   window.dispatchEvent(
     new CustomEvent("uniflow-companion-ready", {
-      detail: { version: "1.3.6" },
+      detail: { version: VERSION },
     })
   );
 
-  // Relay messages between Web App (window) and Extension (background.js)
+  // 4. Relay messages between Web App (window) and Extension (background.js)
   window.addEventListener("message", (event) => {
-    // Only accept messages from the same window
     if (event.source !== window || !event.data || typeof event.data !== "object") return;
     const { type, requestId, payload } = event.data;
 
-    // We only process UNIFLOW_* request messages
     if (!type || !type.startsWith("UNIFLOW_EXT_REQ_")) return;
 
     const action = type.replace("UNIFLOW_EXT_REQ_", "");
 
-    chrome.runtime.sendMessage({ action, payload }, (response) => {
-      const err = chrome.runtime.lastError;
+    // Quick local response for PING
+    if (action === "PING") {
+      window.postMessage(
+        {
+          type: "UNIFLOW_EXT_RESP_PING",
+          requestId,
+          success: true,
+          data: { success: true, version: VERSION },
+        },
+        "*"
+      );
+      return;
+    }
+
+    try {
+      chrome.runtime.sendMessage({ action, payload }, (response) => {
+        const err = chrome.runtime.lastError;
+        window.postMessage(
+          {
+            type: "UNIFLOW_EXT_RESP_" + action,
+            requestId,
+            success: !err && response?.success,
+            error: err ? err.message : response?.error,
+            data: response,
+          },
+          "*"
+        );
+      });
+    } catch (e) {
       window.postMessage(
         {
           type: "UNIFLOW_EXT_RESP_" + action,
           requestId,
-          success: !err && response?.success,
-          error: err ? err.message : response?.error,
-          data: response,
+          success: false,
+          error: "Could not send message to companion extension: " + e.message,
         },
         "*"
       );
-    });
+    }
   });
 })();
