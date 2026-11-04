@@ -1963,6 +1963,8 @@ def quick_turn_in_assignment(
         raise HTTPException(status_code=400, detail="Explicit confirmation is required before submitting to Google Classroom.")
     user_id = _classroom_user_id(clerk_user)
     action = payload.action or "turn_in"
+    if action not in {"attach_only", "turn_in"}:
+        raise HTTPException(status_code=400, detail="Unsupported quick turn-in action.")
     return execute_quick_turn_in(db, assignment_id, user_id, action=action)
 
 
@@ -2015,7 +2017,11 @@ def email_solution_manually(
     from app.db.models import Submission, AssignmentSolution
     sub = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
     sol = db.query(AssignmentSolution).filter(AssignmentSolution.assignment_id == assignment_id).first()
-    gdoc_id = getattr(sol, "google_doc_id", None) or (sub.google_doc_id if sub else None) or (sub.google_drive_file_id if sub else None)
+    gdoc_id = (
+        getattr(sol, "google_doc_id", None)
+        or (sub.google_doc_id if sub else None)
+        or (sub.google_drive_file_id if sub else None)
+    )
     gdoc_url = getattr(sol, "google_doc_url", None) or (f"https://docs.google.com/document/d/{gdoc_id}/edit" if gdoc_id else None)
 
     return {

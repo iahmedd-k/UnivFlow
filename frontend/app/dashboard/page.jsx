@@ -31,7 +31,7 @@ function MetricCard({ label, value, detail, icon, href, tone = 'violet' }) {
         <strong className="text-3xl font-semibold leading-none tracking-tight text-heading tabular-nums">{value}</strong>
         {detail && <span className="text-sm text-muted">{detail}</span>}
       </div>
-      <Link href={href} className="mt-4 inline-flex text-sm font-medium text-violet no-underline hover:text-violet-dark">
+      <Link href={href} prefetch={false} className="mt-4 inline-flex text-sm font-medium text-violet no-underline hover:text-violet-dark">
         View details <span aria-hidden="true" className="ml-1">→</span>
       </Link>
     </article>
@@ -77,10 +77,10 @@ export default function DashboardOverview() {
           </h1>
         </div>
         <nav aria-label="Overview shortcuts" className="flex flex-wrap gap-2">
-          <Link href="/dashboard/classroom" className="inline-flex h-10 items-center gap-2 rounded-lg border border-line bg-surface px-3.5 text-sm font-medium text-body no-underline hover:bg-surface-secondary">
+          <Link href="/dashboard/classroom" prefetch={false} className="inline-flex h-10 items-center gap-2 rounded-lg border border-line bg-surface px-3.5 text-sm font-medium text-body no-underline hover:bg-surface-secondary">
             <Icon name="school" size={16} /> Google Classroom
           </Link>
-          <Link href="/dashboard/assignments" className="inline-flex h-10 items-center gap-2 rounded-lg bg-violet px-3.5 text-sm font-medium text-white no-underline hover:bg-violet-dark">
+          <Link href="/dashboard/assignments" prefetch={false} className="inline-flex h-10 items-center gap-2 rounded-lg bg-violet px-3.5 text-sm font-medium text-white no-underline hover:bg-violet-dark">
             <Icon name="listChecks" size={16} /> Assignments
           </Link>
         </nav>
@@ -101,7 +101,7 @@ export default function DashboardOverview() {
             <div>
               <h2 className="text-lg font-semibold tracking-tight text-heading">Assignments to review</h2>
             </div>
-            <Link href="/dashboard/assignments" className="shrink-0 text-sm font-medium text-violet no-underline hover:text-violet-dark">All assignments →</Link>
+            <Link href="/dashboard/assignments" prefetch={false} className="shrink-0 text-sm font-medium text-violet no-underline hover:text-violet-dark">All assignments →</Link>
           </header>
           {isPending ? (
             <p className="py-8 text-center text-sm text-muted">Loading assignments…</p>
@@ -165,11 +165,11 @@ export default function DashboardOverview() {
       </section>
 
       <section aria-label="Academic tools" className="grid gap-4 sm:grid-cols-2">
-        <Link href="/dashboard/rag-assistant" className={`${cardClass} group flex gap-4 no-underline transition-colors hover:border-violet/30`}>
+        <Link href="/dashboard/rag-assistant" prefetch={false} className={`${cardClass} group flex gap-4 no-underline transition-colors hover:border-violet/30`}>
           <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-violet-light text-violet"><Icon name="brain" size={19} /></span>
           <span><strong className="block text-sm font-semibold text-heading">Study Assistant</strong><span className="mt-1 block text-sm leading-5 text-muted">Ask questions about your course materials and notes.</span><span className="mt-3 block text-sm font-medium text-violet group-hover:text-violet-dark">Open Study Assistant →</span></span>
         </Link>
-        <Link href="/dashboard/portal" className={`${cardClass} group flex gap-4 no-underline transition-colors hover:border-violet/30`}>
+        <Link href="/dashboard/portal" prefetch={false} className={`${cardClass} group flex gap-4 no-underline transition-colors hover:border-violet/30`}>
           <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-info-bg text-info"><Icon name="globe" size={19} /></span>
           <span><strong className="block text-sm font-semibold text-heading">Academic record</strong><span className="mt-1 block text-sm leading-5 text-muted">{academicSummary?.cgpa != null ? `CGPA ${Number(academicSummary.cgpa).toFixed(2)}${academicSummary.sgpa != null ? ` · SGPA ${Number(academicSummary.sgpa).toFixed(2)}` : ''}` : 'View grades and information synced from your university portal.'}</span><span className="mt-3 block text-sm font-medium text-violet group-hover:text-violet-dark">Open university portal →</span></span>
         </Link>

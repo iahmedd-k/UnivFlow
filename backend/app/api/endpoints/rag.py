@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -268,16 +269,17 @@ async def generate_study_material_index(
     if not source_parts:
         raise HTTPException(status_code=409, detail="This material is still being indexed or has no readable text yet.")
 
-    sections = _study_index_sections(source_parts)
-    if len(sections) > 20:
-        sections = sections[:20]
-    system_prompt = (
-        "You build precise, useful study indexes from academic source material. "
-        "Only use the supplied source. Preserve its page or slide labels. Do not answer exercises."
-    )
-    indexed_sections: list[str] = []
-    for number, section in enumerate(sections, start=1):
-        prompt = f"""Create a detailed study index for part {number} of {len(sections)} of '{title}'.
+    try:
+        sections = _study_index_sections(source_parts)
+        if len(sections) > 20:
+            sections = sections[:20]
+        system_prompt = (
+            "You build precise, useful study indexes from academic source material. "
+            "Only use the supplied source. Preserve its page or slide labels. Do not answer exercises."
+        )
+        indexed_sections: list[str] = []
+        for number, section in enumerate(sections, start=1):
+            prompt = f"""Create a detailed study index for part {number} of {len(sections)} of '{title}'.
 
 For every page or slide in this source portion, write a section headed with its page/slide label. Under it include:
 1. Topic(s) discussed.
@@ -288,35 +290,41 @@ For every page or slide in this source portion, write a section headed with its 
 Do not skip slides that contain meaningful text. If a page is unreadable or only decorative, say so briefly. This must be detailed enough for a student to paste into another AI and request notes or answers later.
 
 SOURCE:\n{section}"""
-        answer = await run_in_threadpool(
-            generate_study_answer,
-            prompt=prompt,
-            system_prompt=system_prompt,
-            model=settings.study_assistant_model,
-            max_output_tokens=5000,
-            general_knowledge=False,
-        )
-        indexed_sections.append(answer)
+            answer = await run_in_threadpool(
+                generate_study_answer,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                model=settings.study_assistant_model,
+                max_output_tokens=5000,
+                general_knowledge=False,
+            )
+            indexed_sections.append(answer)
 
-    index_content = "\n\n---\n\n".join(indexed_sections)
-    index_key = f"study_material_index:{clerk_user_id}:{document_id}"
-    stored_index = {
-        "title": title,
-        "course": "",
-        "content": index_content,
-        "status": "complete",
-    }
-    row = db.query(Setting).filter(Setting.key == index_key).first()
-    if row:
-        row.value = json.dumps(stored_index, ensure_ascii=False)
-        row.description = "RAG generated study material index"
-    else:
-        db.add(Setting(
-            key=index_key,
-            value=json.dumps(stored_index, ensure_ascii=False),
-            description="RAG generated study material index",
-        ))
-    db.commit()
+        index_content = "\n\n---\n\n".join(indexed_sections)
+        index_key = f"study_material_index:{clerk_user_id}:{document_id}"
+        stored_index = {
+            "title": title,
+            "course": "",
+            "content": index_content,
+            "status": "complete",
+        }
+        row = db.query(Setting).filter(Setting.key == index_key).first()
+        if row:
+            row.value = json.dumps(stored_index, ensure_ascii=False)
+            row.description = "RAG generated study material index"
+        else:
+            db.add(Setting(
+                key=index_key,
+                value=json.dumps(stored_index, ensure_ascii=False),
+                description="RAG generated study material index",
+            ))
+        db.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to generate study material index for %s: %s", document_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to generate study index: {str(exc)}")
 
     return ApiResponse(
         success=True,

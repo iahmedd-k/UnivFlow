@@ -44,7 +44,10 @@ def get_assignment_service(db: Session = Depends(get_db)) -> AssignmentService:
         from app.assignments.services.requirements_extractor import RequirementsExtractor
         from app.assignments.services.solution_generator import SolutionGenerator
         from app.google_docs.template_engine import GoogleDocsTemplateEngine
-        from app.assignments.services.submission_service import SubmissionService
+        from app.assignments.services.submission_executor import (
+            SubmissionExecutorFactory,
+            SubmissionService,
+        )
         from app.services.google_docs import get_google_docs_service
 
         docs_svc = get_google_docs_service(db)
@@ -53,11 +56,12 @@ def get_assignment_service(db: Session = Depends(get_db)) -> AssignmentService:
             requirements_extractor=RequirementsExtractor(),
             solution_generator=SolutionGenerator(),
             template_engine=GoogleDocsTemplateEngine(docs_svc) if docs_svc else None,
-            submission_service=SubmissionService(),
+            submission_service=SubmissionService(SubmissionExecutorFactory()),
             db_session=db
         )
     except Exception:
-        return assignment_service
+        logger.exception("Could not construct assignment service")
+        raise
 
 
 # ============================================================

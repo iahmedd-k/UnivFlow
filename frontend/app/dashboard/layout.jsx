@@ -268,7 +268,7 @@ export default function DashboardLayout({ children }) {
       {!isStudyAssistant && <aside className={`fixed inset-y-0 left-0 z-50 w-64 flex flex-col bg-surface border-r border-line lg:translate-x-0 transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         {/* Brand Header */}
         <div className="px-5 pt-5 pb-4 border-b border-border-light flex items-center justify-between">
-          <Link href="/dashboard" className="flex items-center gap-2.5 no-underline group" onClick={() => setSidebarOpen(false)}>
+          <Link href="/dashboard" prefetch={false} className="flex items-center gap-2.5 no-underline group" onClick={() => setSidebarOpen(false)}>
             <div className="size-8.5 rounded-xl bg-gradient-to-tr from-violet to-violet-dark text-white flex items-center justify-center shadow-md shadow-violet/20 font-semibold text-lg">
               u
             </div>
@@ -291,6 +291,7 @@ export default function DashboardLayout({ children }) {
                   <Link
                     key={item.href}
                     href={item.href}
+                    prefetch={false}
                     onClick={() => setSidebarOpen(false)}
                     className={`flex items-center gap-3 h-10 px-3 rounded-xl text-sm transition-all duration-150 no-underline ${
                       active
@@ -430,6 +431,7 @@ export default function DashboardLayout({ children }) {
                     </button>
                     <Link
                       href="/dashboard/portal"
+                      prefetch={false}
                       onClick={() => setSyncMenuOpen(false)}
                       className="w-full flex items-center justify-between p-2.5 rounded-xl text-left hover:bg-surface-secondary transition cursor-pointer text-xs font-semibold text-heading no-underline"
                     >

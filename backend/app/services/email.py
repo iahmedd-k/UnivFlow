@@ -220,7 +220,10 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
 
     try:
         owners = user_owner_ids(user_id) if user_id else []
-        assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+        assignment = db.query(Assignment).filter(
+            Assignment.id == assignment_id,
+            Assignment.user_id.in_(owners) if owners else True,
+        ).first()
         if not assignment:
             logger.warning("send_solution_delivery_email: Assignment %s not found", assignment_id)
             return False
@@ -232,6 +235,7 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
         course = db.query(Course).filter(Course.id == assignment.course_id).first()
         solution = db.query(AssignmentSolution).filter(
             AssignmentSolution.assignment_id == assignment_id,
+            AssignmentSolution.user_id.in_(owners) if owners else True,
         ).first()
         if not solution:
             logger.warning("send_solution_delivery_email: Solution not found for assignment %s", assignment_id)
@@ -263,7 +267,10 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
         execution_results = extract_execution_metadata(raw_content) if raw_content else []
 
         # Find Google Doc ID & URL
-        submission = db.query(Submission).filter(Submission.assignment_id == assignment_id).first()
+        submission = db.query(Submission).filter(
+            Submission.assignment_id == assignment_id,
+            Submission.user_id.in_(owners) if owners else True,
+        ).first()
         gdoc_id = (
             getattr(solution, "google_doc_id", None)
             or (submission.google_doc_id if submission else None)
@@ -281,8 +288,12 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
                     execution_results=execution_results,
                     user_id=user_id,
                 )
-                if doc_info and doc_info.get("doc_id"):
-                    gdoc_id = doc_info.get("doc_id")
+                if doc_info:
+                    gdoc_id = (
+                        doc_info.get("doc_id")
+                        or doc_info.get("google_doc_id")
+                        or doc_info.get("drive_file_id")
+                    )
             except Exception as exp_err:
                 logger.warning("send_solution_delivery_email: Could not auto-export Google Doc for assignment %s: %s", assignment_id, exp_err)
 
