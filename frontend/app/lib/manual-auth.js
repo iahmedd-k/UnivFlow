@@ -35,6 +35,11 @@ export function clearManualSession() {
 }
 
 export function isManualAuthEnabled() {
+  if (typeof window !== 'undefined') {
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      return true;
+    }
+  }
   const val = (
     process.env.NEXT_PUBLIC_ENABLE_MANUAL_AUTH ||
     process.env.NEXT_PUBLIC_MANUAL_AUTH ||

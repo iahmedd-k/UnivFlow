@@ -23,7 +23,7 @@ async function resolveClerkToken(getToken) {
   let timeout;
   try {
     return await Promise.race([
-      getToken(),
+      getToken({ skipCache: true }),
       new Promise((_, reject) => {
         timeout = setTimeout(() => reject(new DOMException('Authentication is taking too long. Please try again.', 'TimeoutError')), TOKEN_TIMEOUT_MS);
       }),
@@ -327,7 +327,6 @@ export const api = {
   getUpcoming: async (days = 7, token = null) => {
     return fetchFromApi(`/dashboard/upcoming?days=${days}`, token);
   },
-  getAutomationHistory: async (limit = 40, token = null, options = {}) => fetchFromApi(`/dashboard/automation-history?limit=${limit}`, token, options),
 
   getAttendanceSummary: async (token = null, options = {}) => {
     return fetchFromApi('/dashboard/attendance-summary', token, { cacheTtlMs: 60_000, ...options });
@@ -337,9 +336,6 @@ export const api = {
     return fetchFromApi(`/dashboard/active-crew-runs/${assignmentId}/dismiss`, token, { method: 'POST', noCache: true });
   },
 
-  getAgentRuns: async (limit = 20, token = null, options = {}) => fetchFromApi(`/agent/runs?limit=${Math.min(100, Math.max(1, Number(limit) || 20))}`, token, options),
-  getAgentRunStats: async (token = null, options = {}) => fetchFromApi('/agent/stats', token, options),
-  getAgentRunEvents: async (runId, token = null, options = {}) => fetchFromApi(`/agent/runs/${encodeURIComponent(runId)}/events`, token, options),
 
   // Classroom & Courses
   getCourses: async (token = null, since = null, options = {}) => {
@@ -456,6 +452,14 @@ export const api = {
     if (since) params.set('since', since);
     return fetchFromApi(`/university/exams?${params.toString()}`, token, requestOptions);
   },
+  parseExamSlip: async (file, token = null) => {
+    const form = new FormData(); form.append('file', file);
+    return fetchFromApi('/university/exams/parse-slip', token, { method: 'POST', body: form, timeoutMs: 0, noTimeout: true });
+  },
+  createExam: async (data, token = null) => fetchFromApi('/university/exams', token, { method: 'POST', body: JSON.stringify(data) }),
+  getStudyMaterialIndexes: async (token = null, options = {}) => fetchFromApi('/university/study-material-indexes', token, { direct: true, ...options }),
+  saveStudyMaterialIndex: async (materialId, data, token = null) => fetchFromApi(`/university/study-material-indexes/${encodeURIComponent(materialId)}`, token, { method: 'PUT', body: JSON.stringify(data) }),
+  generateStudyMaterialIndex: async (materialId, token = null) => fetchFromApi(`/rag/study-material-index/${encodeURIComponent(materialId)}`, token, { method: 'POST', timeoutMs: 0, noTimeout: true }),
 
   getQuizzes: async (token = null, since = null, options = {}) => {
     const { limit = 500, offset = 0, ...requestOptions } = options || {};
@@ -564,6 +568,50 @@ export const api = {
     method: 'PATCH',
     body: JSON.stringify(payload),
   }),
+
+  // Web AI Chat PDF Export
+  exportWebChatToPdf: async (payload, token = null, options = {}) => fetchFromApi('/rag/export-web-chat', token, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 120_000,
+    noTimeout: true,
+    ...options,
+  }),
+  getExportedChats: async (token = null, options = {}) => fetchFromApi('/rag/exported-chats', token, { direct: true, noCache: true, ...options }),
+  updateExportedChat: async (chatId, data, token = null) => fetchFromApi(`/rag/exported-chats/${chatId}`, token, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  }),
+  deleteExportedChat: async (chatId, token = null) => fetchFromApi(`/rag/exported-chats/${chatId}`, token, {
+    method: 'DELETE',
+  }),
+  openExportedChatInDrive: async (chatId, token = null) => fetchFromApi(`/rag/exported-chats/${chatId}/open-in-drive`, token, {
+    method: 'POST',
+  }),
+  downloadExportedChat: async (chatId, filename = 'exported_chat.pdf', token = null) => {
+    let authToken = token;
+    if (!authToken && typeof window !== 'undefined') {
+      authToken = localStorage.getItem('uniflow_manual_token');
+    }
+    const headers = { 'X-Request-ID': createRequestId() };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const res = await fetch(`${API_BASE}/rag/exported-chats/${chatId}/download`, {
+      method: 'GET',
+      headers,
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to download PDF (${res.status})`);
+    }
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename.endsWith('.pdf') ? filename : `${filename}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  },
 
   // Assignment Templates
   getAssignmentTemplates: async (token = null, options = {}) => fetchFromApi('/classroom/templates', token, options),

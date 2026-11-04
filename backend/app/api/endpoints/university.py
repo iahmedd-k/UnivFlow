@@ -1,7 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Body
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
+import io, json, re
+import os
+import httpx
+from pypdf import PdfReader
+from PIL import Image
+import pytesseract
+from app.core.config import settings
+from app.core.logging import logger
 
 from app.db.database import get_db
 from app.db.repositories import ExamRepository, AnnouncementRepository
@@ -11,6 +19,118 @@ from app.auth.ownership import require_user_id, user_owner_ids
 from app.schemas.coursework import AcademicRecordListItem
 
 router = APIRouter(prefix="/university", tags=["University"])
+
+for tesseract_path in (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    os.path.expanduser(r"~\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"),
+):
+    if os.path.exists(tesseract_path):
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
+        break
+
+
+def _poppler_path() -> str | None:
+    """Find Poppler for scanned PDF rendering on Windows and deployed hosts."""
+    candidates = [
+        os.getenv("POPPLER_PATH"),
+        r"C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\poppler\Library\bin",
+        r"C:\Program Files\poppler\Library\bin",
+    ]
+    return next((path for path in candidates if path and os.path.exists(path)), None)
+
+
+def _ocr_image(image: Image.Image) -> str:
+    prepared = image.convert("L")
+    if prepared.width * prepared.height < 4_000_000:
+        prepared = prepared.resize((prepared.width * 2, prepared.height * 2))
+    return pytesseract.image_to_string(prepared, config="--psm 6")
+
+
+@router.post("/exams/parse-slip", response_model=dict)
+async def parse_exam_slip(file: UploadFile = File(...), clerk_user: dict | None = Depends(get_current_user_optional)):
+    """Extract exam slip fields for user review; never saves uncertain OCR results."""
+    require_user_id(clerk_user)
+    filename = (file.filename or "").lower()
+    content_type = (file.content_type or "").lower()
+    payload = await file.read(20 * 1024 * 1024 + 1)
+    if len(payload) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="The exam slip must be 20 MB or smaller.")
+    try:
+        if content_type == "application/pdf" or filename.endswith(".pdf"):
+            text = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(payload)).pages)
+            if not text.strip():
+                from pdf2image import convert_from_bytes
+                pages = convert_from_bytes(
+                    payload,
+                    dpi=300,
+                    first_page=1,
+                    last_page=8,
+                    poppler_path=_poppler_path(),
+                    thread_count=2,
+                )
+                text = "\n".join(_ocr_image(page) for page in pages)
+        elif content_type.startswith("image/"):
+            text = _ocr_image(Image.open(io.BytesIO(payload)))
+        else:
+            raise HTTPException(status_code=415, detail="Upload a PDF or image exam slip.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Exam slip OCR failed: %s", exc)
+        raise HTTPException(status_code=400, detail="Could not read this exam slip. Try a clearer PDF or image.") from exc
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="No readable text was found in this exam slip.")
+    key = settings.groq_api_key
+    if not key:
+        return {"exams": [], "raw_text": text[:12000], "message": "Text was extracted, but structured extraction is unavailable. Enter the exam details manually."}
+    prompt = "Extract every examination from this roll number slip. Return only JSON: {exams:[{subject, date (YYYY-MM-DD), time, room, seating_plan, instructions}]}. Do not guess missing values; use empty strings. Text:\n" + text[:12000]
+    try:
+        response = httpx.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {key}"}, json={"model":"openai/gpt-oss-20b","messages":[{"role":"user","content":prompt}],"temperature":0,"max_tokens":1800}, timeout=30)
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        match = re.search(r"\{[\s\S]*\}", content)
+        parsed = json.loads(match.group()) if match else {}
+        return {"exams": parsed.get("exams", []), "raw_text": text[:12000], "message": "Review all extracted fields before saving."}
+    except Exception as exc:
+        logger.warning("Exam slip extraction failed: %s", exc)
+        return {"exams": [], "raw_text": text[:12000], "message": "Text was extracted, but the exam details need to be entered manually."}
+
+
+@router.get("/study-material-indexes", response_model=dict)
+def get_study_material_indexes(db: Session = Depends(get_db), clerk_user: dict | None = Depends(get_current_user_optional)):
+    user_id = require_user_id(clerk_user)
+    rows = db.query(Setting).filter(Setting.key.like(f"study_material_index:{user_id}:%")).all()
+    indexes = []
+    for row in rows:
+        try:
+            item = json.loads(row.value or "{}")
+            item["material_id"] = row.key.rsplit(":", 1)[-1]
+            indexes.append(item)
+        except (TypeError, ValueError):
+            logger.warning("Skipping invalid study material index setting %s", row.key)
+    return {"items": indexes}
+
+
+@router.put("/study-material-indexes/{material_id}", response_model=dict)
+def save_study_material_index(material_id: str, payload: dict = Body(...), db: Session = Depends(get_db), clerk_user: dict | None = Depends(get_current_user_optional)):
+    user_id = require_user_id(clerk_user)
+    title = str(payload.get("title") or "Untitled material")[:500]
+    course = str(payload.get("course") or "")[:500]
+    content = str(payload.get("content") or "")
+    status = str(payload.get("status") or "complete")
+    if len(material_id) > 255 or len(content) > 200_000 or status not in {"complete", "failed"}:
+        raise HTTPException(status_code=422, detail="The study index is invalid or too large.")
+    key = f"study_material_index:{user_id}:{material_id}"
+    row = db.query(Setting).filter(Setting.key == key).first()
+    value = json.dumps({"title": title, "course": course, "content": content, "status": status}, ensure_ascii=False)
+    if row:
+        row.value = value
+        row.description = "RAG generated study material index"
+    else:
+        db.add(Setting(key=key, value=value, description="RAG generated study material index"))
+    db.commit()
+    return {"material_id": material_id, "title": title, "course": course, "content": content, "status": status}
 
 
 def _semester_start(db: Session, value: Optional[str] = None, user_id: str = "") -> Optional[datetime]:

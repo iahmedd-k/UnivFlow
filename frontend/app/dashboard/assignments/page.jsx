@@ -186,17 +186,13 @@ export default function AssignmentsPage() {
   };
 
   return (
-    <main className="mx-auto flex w-full max-w-6xl flex-col gap-5 pb-12 text-ink">
+    <main className="mx-auto flex w-full max-w-none flex-col gap-4 pb-8 text-ink">
       {/* Header */}
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wider text-label">COURSEWORK & DEADLINES</p>
-          <h1 className="my-1 text-2xl sm:text-3xl font-semibold tracking-tight text-heading">
+          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-heading">
             Assignments
           </h1>
-          <p className="text-sm font-normal text-muted leading-relaxed">
-            Review deadlines, query your AI academic tutor, test solutions, and turn in to Google Classroom.
-          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Link href="/dashboard/templates" className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-border-input bg-surface px-3 text-sm font-medium text-nav no-underline hover:bg-surface-secondary">

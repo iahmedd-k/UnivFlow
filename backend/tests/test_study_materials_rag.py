@@ -254,8 +254,43 @@ def test_sync_classroom_study_materials_reconnect_required(db_session, monkeypat
         def sync_all(self):
             return {"courses": 1, "assignments": 0, "course_materials": 0, "errors": []}
 
+    class MockLock:
+        released = False
+
+        def acquire(self, blocking=False):
+            return True
+
+        def release(self):
+            self.released = True
+
+    sync_lock = MockLock()
+    monkeypatch.setattr("app.services.classroom_sync.get_classroom_sync_lock", lambda user_id: sync_lock)
     monkeypatch.setattr("app.services.classroom_sync.get_classroom_service", lambda db, user_id: MockClassroomService())
 
     response = sync_classroom_materials(current_user={"id": "dev_student_user"}, db=db_session)
     assert response.success is True
     assert response.data["courses"] == 1
+    assert sync_lock.released is True
+
+
+def test_sync_classroom_study_materials_skips_when_sync_is_running(db_session, monkeypatch):
+    class MockLock:
+        def acquire(self, blocking=False):
+            return False
+
+        def release(self):
+            pytest.fail("A lock that was not acquired must not be released")
+
+    monkeypatch.setattr(
+        "app.services.classroom_sync.get_classroom_sync_lock",
+        lambda user_id: MockLock(),
+    )
+    monkeypatch.setattr(
+        "app.services.classroom_sync.get_classroom_service",
+        lambda db, user_id: pytest.fail("Do not start a second Classroom sync"),
+    )
+
+    response = sync_classroom_materials(current_user={"id": "dev_student_user"}, db=db_session)
+
+    assert response.success is True
+    assert response.data == {"synced": False, "status": "already_running"}

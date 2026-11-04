@@ -24,10 +24,8 @@ from app.db.models import (
     AttendanceRecord,
     Exam,
     AssignmentStatus,
-    SubmissionState,
     AssignmentSolution,
     Submission,
-    BrowserAutomationJob,
     Setting,
     TimetableEntry,
 )
@@ -45,80 +43,6 @@ from app.services.alert_service import (
 )
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
-
-
-@router.get("/automation-history", response_model=List[dict])
-def get_automation_history(
-    limit: int = Query(40, ge=1, le=100),
-    db: Session = Depends(get_db),
-    user: dict = Depends(require_current_user),
-):
-    """Return this account's Claude solve and Classroom turn-in history."""
-    user_id = str((user or {}).get("id") or "dev_student_user")
-    owners = user_owner_ids(user_id)
-    history = []
-
-    jobs = (
-        db.query(BrowserAutomationJob)
-        .join(Assignment, BrowserAutomationJob.assignment_id == Assignment.id)
-        .filter(BrowserAutomationJob.user_id.in_(owners), Assignment.user_id.in_(owners))
-        .order_by(BrowserAutomationJob.queued_at.desc())
-        .limit(limit)
-        .all()
-    )
-    for job in jobs:
-        assignment = job.assignment
-        course = assignment.course if assignment and assignment.course and assignment.course.user_id in owners else None
-        history.append({
-            "id": f"claude-{job.id}",
-            "kind": "claude_assignment",
-            "assignment_id": job.assignment_id,
-            "assignment_title": assignment.title if assignment else "Assignment",
-            "course_name": course.name if course else "Course",
-            "status": job.status,
-            "started_at": job.started_at,
-            "finished_at": job.finished_at,
-            "created_at": job.queued_at,
-            "error": job.error,
-            "retryable": job.status in {"failed", "needs_login", "cancelled"},
-        })
-
-    submissions = (
-        db.query(Submission)
-        .join(Assignment, Submission.assignment_id == Assignment.id)
-        .filter(Submission.user_id.in_(owners), Assignment.user_id.in_(owners))
-        .order_by(Submission.submitted_at.desc().nullslast(), Submission.created_at.desc())
-        .limit(limit)
-        .all()
-    )
-    for submission in submissions:
-        assignment = submission.assignment
-        course = assignment.course if assignment and assignment.course and assignment.course.user_id in owners else None
-        state = getattr(submission.submission_state, "value", submission.submission_state) or "unknown"
-        history.append({
-            "id": f"turn-in-{submission.id}",
-            "kind": "classroom_turn_in",
-            "assignment_id": submission.assignment_id,
-            "assignment_title": assignment.title if assignment else "Assignment",
-            "course_name": course.name if course else "Course",
-            "status": state,
-            "started_at": submission.submitted_at or submission.created_at,
-            "finished_at": submission.submitted_at,
-            "created_at": submission.created_at,
-            "error": None,
-            "retryable": state != SubmissionState.TURNED_IN.value and bool(submission.google_doc_id and submission.google_drive_file_id),
-        })
-
-    def _sort_timestamp(item):
-        stamp = item.get("started_at") or item.get("created_at")
-        if not stamp:
-            return 0.0
-        if stamp.tzinfo is None:
-            stamp = stamp.replace(tzinfo=timezone.utc)
-        return stamp.timestamp()
-
-    history.sort(key=_sort_timestamp, reverse=True)
-    return history[:limit]
 
 
 def _get_semester_start_dt(

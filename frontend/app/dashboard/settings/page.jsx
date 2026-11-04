@@ -538,7 +538,7 @@ export default function SettingsPage() {
     try {
       const token = await getToken();
       const res = await api.sendTestEmail(notificationEmail.trim(), token);
-      setSuccess(res?.message || `Test alert successfully delivered to ${notificationEmail.trim()} via SendGrid! Check your inbox.`);
+      setSuccess(res?.message || `Test email submitted to ${notificationEmail.trim()}. Check your inbox.`);
     } catch (err) {
       setError(err.message || 'Could not send test email');
     } finally {
@@ -549,12 +549,10 @@ export default function SettingsPage() {
   const userEmail = user?.primaryEmailAddress?.emailAddress || 'your-email@example.com';
 
   return (
-    <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-heading">
+    <div className="mx-auto flex w-full max-w-none flex-col gap-4 pb-8 text-heading">
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wider text-label">PREFERENCES</p>
-          <h1 className="my-1 text-2xl sm:text-3xl font-semibold tracking-tight text-heading">Settings</h1>
-          <p className="text-sm font-normal text-muted leading-relaxed">Manage your notification preferences and account settings.</p>
+          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-heading">Settings</h1>
         </div>
       </header>
 

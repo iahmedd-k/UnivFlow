@@ -29,7 +29,7 @@ export default function AnnouncementDetailPage() {
   const publishedAt = announcement.published_at ? format(new Date(announcement.published_at), 'MMMM d, yyyy \'at\' h:mm a') : 'Unknown';
 
   return (
-    <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-ink">
+    <main className="mx-auto flex w-full max-w-none flex-col gap-4 pb-8 text-ink">
       <header className="flex items-center gap-4">
         <Link href="/dashboard/announcements" className="grid size-10 shrink-0 place-items-center rounded-lg border border-line bg-white text-muted transition hover:bg-paper hover:text-ink" aria-label="Back to announcements"><Icon name="arrowLeft" size={16}/></Link>
         <div>

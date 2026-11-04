@@ -26,11 +26,19 @@ from app.db.models import (
 from app.core.config import settings
 from app.core.security import get_google_credential_tokens, encrypt_token_if_needed
 from app.core.logging import logger
-from app.core.redis import check_rate_limit as redis_check_rate_limit
+from app.core.redis import (
+    DistributedLock,
+    check_rate_limit as redis_check_rate_limit,
+    get_user_lock,
+)
 
 CLASSROOM_SYNC_RATE_LIMIT_KEY = "classroom_sync_api"
 CLASSROOM_SYNC_RATE_LIMIT = 60  # requests per minute
 CLASSROOM_SYNC_RATE_WINDOW = 60  # seconds
+
+
+def get_classroom_sync_lock(user_id: str) -> DistributedLock:
+    return get_user_lock("classroom_sync", user_id, ttl_seconds=300)
 
 
 class ClassroomSyncService:

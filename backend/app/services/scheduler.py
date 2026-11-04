@@ -123,12 +123,16 @@ def _run_gcr_sync_job():
     logger.info("[Scheduler] Starting scheduled Google Classroom (GCR) sync...")
     db = SessionLocal()
     try:
-        from app.services.classroom_sync import ClassroomSyncService
+        from app.services.classroom_sync import ClassroomSyncService, get_classroom_sync_lock
         user_ids = [
             user_id for (user_id,) in db.query(GoogleCredential.user_id).all()
             if user_id and user_id != "legacy" and _has_private_access(db, user_id)
         ]
         for user_id in user_ids:
+            sync_lock = get_classroom_sync_lock(user_id)
+            if not sync_lock.acquire(blocking=False):
+                logger.info("[Scheduler] Skipping GCR sync for %s; another sync is running.", user_id)
+                continue
             try:
                 service = ClassroomSyncService(db, user_id=user_id)
                 if not service.service:
@@ -145,6 +149,8 @@ def _run_gcr_sync_job():
             except Exception:
                 db.rollback()
                 logger.exception("[Scheduler] GCR sync failed for %s.", user_id)
+            finally:
+                sync_lock.release()
     except Exception as e:
         logger.warning(f"[Scheduler] GCR sync skipped or error: {e}")
     finally:
@@ -186,13 +192,13 @@ def _run_daily_morning_digest_job():
                 user_zone = ZoneInfo(timezone_name)
             except ZoneInfoNotFoundError:
                 user_zone = ZoneInfo(settings.timezone)
-            run_time = str(saved.get("time", "07:00"))
+            run_time = str(saved.get("time", "07:30"))
             try:
                 from datetime import time as datetime_time
                 hour, minute = map(int, run_time.split(":"))
                 scheduled_time = datetime_time(hour, minute)
             except (ValueError, TypeError):
-                scheduled_time = datetime_time(7, 0)
+                scheduled_time = datetime_time(7, 30)
             user_now = datetime.now(user_zone)
             if user_now.time().replace(tzinfo=None) < scheduled_time:
                 continue
@@ -229,7 +235,7 @@ def _run_attendance_warning_job():
 
 
 def _run_timetable_reminder_job():
-    """Scan classes starting in 20 minutes or 5 minutes and dispatch immediate reminders."""
+    """Scan for class slots inside the single pre-class reminder window."""
     db = SessionLocal()
     try:
         from app.services.alert_service import AlertService
@@ -239,6 +245,65 @@ def _run_timetable_reminder_job():
             logger.info(f"[Scheduler] Generated and dispatched {len(reminders)} upcoming class reminder(s).")
     except Exception as e:
         logger.warning(f"[Scheduler] Timetable reminder check error: {e}")
+    finally:
+        db.close()
+
+
+def _run_exam_reminder_job():
+    """Email exam reminders at the one-hour and thirty-minute milestones."""
+    from datetime import timedelta
+    from html import escape
+    import json
+    from app.db.models import Exam
+    from app.services.alert_service import get_user_recipient_email
+    from app.services.email import send_email
+    db = SessionLocal()
+    try:
+        now = datetime.now(ZoneInfo(settings.timezone))
+        exams = db.query(Exam).filter(Exam.date.isnot(None)).all()
+        for exam in exams:
+            try:
+                raw_time = (exam.time or "").strip()
+                raw_time_lower = raw_time.lower()
+                for separator in ("–", "—", " to ", " - "):
+                    if separator in raw_time_lower:
+                        raw_time = raw_time[:raw_time_lower.index(separator)].strip()
+                        break
+                exam_time = None
+                for fmt in ("%H:%M", "%I:%M %p", "%I:%M%p", "%I %p", "%I%p", "%H%M"):
+                    try:
+                        exam_time = datetime.strptime(raw_time, fmt).time()
+                        break
+                    except ValueError:
+                        continue
+                if not exam_time:
+                    continue
+                exam_date = exam.date.date() if isinstance(exam.date, datetime) else exam.date
+                scheduled = datetime.combine(exam_date, exam_time, tzinfo=ZoneInfo(settings.timezone))
+                remaining = scheduled - now
+                milestone = "60" if timedelta(minutes=55) <= remaining <= timedelta(minutes=65) else None
+                if not milestone:
+                    continue
+                sent_key = f"exam_reminder_sent:{exam.user_id}:{exam.id}:{milestone}"
+                if db.query(Setting).filter(Setting.key == sent_key).first():
+                    continue
+                recipient = get_user_recipient_email(db, exam.user_id)
+                if not recipient:
+                    continue
+                when = scheduled.strftime("%A, %B %d at %I:%M %p %Z")
+                exam_title_html = escape(exam.title or "Exam")
+                room_text = exam.room or "See your roll number slip"
+                room_html = escape(room_text)
+                ok = send_email(recipient, f"Exam reminder: {exam.title or 'Exam'} in {milestone} minutes", f"<p>Your <strong>{exam_title_html}</strong> exam starts in {milestone} minutes.</p><p>Time: {when}<br>Room: {room_html}</p>", f"Your {exam.title or 'Exam'} exam starts in {milestone} minutes. Time: {when}. Room: {room_text}", categories=["exam-reminder", f"exam-reminder-{milestone}"])
+                if ok:
+                    db.add(Setting(key=sent_key, value=json.dumps({"sent_at": now.isoformat()}), description="Sent exam reminder milestone"))
+                    db.commit()
+            except Exception:
+                db.rollback()
+                logger.exception("Exam reminder failed for exam %s", getattr(exam, "id", "unknown"))
+    except Exception:
+        db.rollback()
+        logger.exception("Exam reminder scan failed")
     finally:
         db.close()
 
@@ -450,38 +515,26 @@ def start_scheduler():
             coalesce=True,
         )
 
-        # 4. Day-of-Class Attendance Warnings: Check every 30 minutes
-        scheduler.add_job(
-            _run_attendance_warning_job,
-            IntervalTrigger(minutes=30),
-            id="attendance_low_warning_check",
-            name="Low Attendance Day-of-Class Warnings (Every 30m)",
-            replace_existing=True,
-            misfire_grace_time=300,
-            coalesce=True,
-        )
-
-        # 5. Timetable Class Reminders: Hourly at :40 past the hour (between 7 AM and 10 PM)
-        # Checks once per hour (at 6:40, 7:40, ..., 21:40) to alert 20 minutes prior to the upcoming hour's class
+        # Poll every five minutes to reach the single class reminder window.
         scheduler.add_job(
             _run_timetable_reminder_job,
-            CronTrigger(hour="6-21", minute="40", timezone=settings.timezone),
+            IntervalTrigger(minutes=5),
             id="timetable_class_reminders",
-            name="Timetable Hourly Class Reminders (6:40 AM - 9:40 PM)",
+            name="Timetable Class Reminder (Every 5m; one notice near class time)",
             replace_existing=True,
             misfire_grace_time=300,
             max_instances=1,
             coalesce=True,
         )
 
-        # 6. Google Classroom Assignment Deadlines (Once per day per item): Check every 30 minutes
         scheduler.add_job(
-            _run_assignment_deadline_job,
-            IntervalTrigger(minutes=30),
-            id="assignment_deadline_reminders",
-            name="GCR Assignment Deadline Alerts (Every 30m)",
+            _run_exam_reminder_job,
+            IntervalTrigger(minutes=5),
+            id="exam_email_reminders",
+            name="Roll Number Slip Exam Email Reminders",
             replace_existing=True,
             misfire_grace_time=300,
+            max_instances=1,
             coalesce=True,
         )
 
@@ -552,18 +605,6 @@ def start_scheduler():
             name="Zombie Background Job Reaper (Every 10m)",
             replace_existing=True,
             misfire_grace_time=60,
-            max_instances=1,
-            coalesce=True,
-        )
-
-        # 12. Daily Class Schedule at 7:00 AM: Dispatches daily list of all classes with room numbers
-        scheduler.add_job(
-            _run_daily_class_list_email,
-            CronTrigger(hour=7, minute=0, timezone=settings.timezone),
-            id="daily_class_schedule_7am",
-            name="Daily Class Schedule at 7:00 AM (All Classes with Rooms)",
-            replace_existing=True,
-            misfire_grace_time=300,
             max_instances=1,
             coalesce=True,
         )

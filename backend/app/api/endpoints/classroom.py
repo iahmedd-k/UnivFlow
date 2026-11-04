@@ -24,7 +24,7 @@ from app.db.models import (
 from app.core.logging import logger
 from app.core.config import settings
 from app.core.security import encrypt_token_if_needed
-from app.services.classroom_sync import get_classroom_service
+from app.services.classroom_sync import get_classroom_service, get_classroom_sync_lock
 from app.services.google_docs import get_google_docs_service
 from app.auth.clerk_auth import get_current_user_optional
 from app.auth.ownership import require_user_id, user_owner_ids
@@ -64,8 +64,7 @@ def _get_owned_assignment(db: Session, assignment_id: int, user_id: str) -> Assi
 
 
 def _get_user_lock(user_id: str):
-    from app.core.redis import get_user_lock
-    return get_user_lock("classroom_sync", user_id, ttl_seconds=300)
+    return get_classroom_sync_lock(user_id)
 
 
 def _get_semester_start_dt(db: Session, override: Optional[str] = None, user_id: str = "default") -> datetime:
@@ -2007,7 +2006,7 @@ def email_solution_manually(
 
     recipient = get_user_recipient_email(db, user_id)
     if not recipient:
-        raise HTTPException(status_code=400, detail="No verified recipient email found in your profile or settings.")
+        raise HTTPException(status_code=400, detail="No notification email is configured in your profile or settings.")
 
     sent = send_solution_delivery_email(db, assignment_id, user_id)
     if not sent:
@@ -2317,14 +2316,8 @@ def generate_assignment_solution(
                         asg.status = AssignmentStatus.FAILED
                     sync_db.commit()
                 elif result.get("status") == "completed":
-                    # 1. Immediately deliver solution and files to student's email
-                    try:
-                        from app.services.email import send_solution_delivery_email
-                        send_solution_delivery_email(sync_db, assignment_id, user_id)
-                    except Exception as mail_err:
-                        logger.warning("Could not dispatch auto-solution email for assignment %s: %s", assignment_id, mail_err)
-
-                    # 2. Check if student opted in to auto-submission/attachment on dashboard
+                    # Email delivery remains an explicit user action from the solution panel.
+                    # Check if student opted in to auto-submission/attachment on dashboard.
                     try:
                         submission_result = auto_turn_in_completed_solution(sync_db, assignment_id, user_id)
                         if submission_result and submission_result.get("success"):

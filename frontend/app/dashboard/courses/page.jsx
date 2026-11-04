@@ -337,7 +337,6 @@ function LegacyCoursesPage() {
       <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between pb-1 shrink-0">
         <div>
           <div className="flex items-center gap-2 mb-0.5">
-            <span className="inline-block text-[11px] font-bold uppercase tracking-wider text-muted">Study Workspace</span>
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-violet-light text-violet-dark border border-violet/20">
               <span className="size-1.5 rounded-full bg-violet" />
               GCR Grounded

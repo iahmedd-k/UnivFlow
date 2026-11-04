@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends
 
-from app.api.endpoints.agent import router as agent_router
 from app.api.endpoints.assignments import router as assignments_router
 from app.api.endpoints.attendance import router as attendance_router
 from app.api.endpoints.auth import router as auth_router
@@ -31,7 +30,6 @@ for router in (
     dashboard_router,
     documents_router,
     notifications_router,
-    agent_router,
     integrations_router,
     timetable_router,
     portal_router,

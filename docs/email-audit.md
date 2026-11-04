@@ -1,0 +1,44 @@
+# Outbound email audit
+
+Reviewed the outbound paths in the API, scheduler, sync services, notification service, and solution delivery service. “Sent” below means the provider call returned success; the app does not currently confirm inbox placement or user receipt.
+
+## Email inventory
+
+| Message | Trigger and recipient | Current timing / frequency | Purpose and content | Assessment |
+| --- | --- | --- | --- | --- |
+| Private access OTP | User requests private access; sent to `ACCESS_ADMIN_EMAIL` | On request; 8-digit code, configured TTL clamped to 2–30 minutes; user throttled for 10 minutes, global caps also apply | Identifies applicant and gives administrator an approval code | Appropriate security message. State is stored before send and cleared on provider failure; throttles remain. OTP is confidential and should not be forwarded. |
+| Generated assignment solution | User explicitly selects “Email to Me”; configured personal recipient | On demand only | Summary/report, Google Doc link, PDF when export succeeds, and deliverables ZIP | Automatic copies on generation were redundant with the explicit email action and could repeat across solver flows. Automatic delivery is disabled; ownership mismatch aborts delivery. |
+| Notification queue email | Explicit notification create/send endpoints or scheduled pending-notification processor; stored recipient | Immediate background dispatch for create/manual send; pending queue every 5 minutes; failed retry queue every 15 minutes | User supplied or stored subject/body wrapped in a standard template | Queue supports idempotency keys and retry counts. Manual send endpoints and scheduler can race: no atomic claim/“sending” state, so concurrent workers may both deliver. Preferences apply only through `NotificationService`, not every direct alert path. |
+| Low-attendance advisory | Included in the daily academic briefing; configured personal recipient | At most once as part of that day’s briefing | Current percentage, recovery estimate, today’s time/room/instructor | Removed the separate scheduled email because it duplicated the briefing and could arrive well before class. A preview endpoint remains; the manual alert check no longer sends a separate attendance email. |
+| Daily academic briefing | Five-minute scheduler poll after each user’s configured local time; configured personal recipient | Once per local date, default 07:30; user can disable/change time and timezone | Today’s timetable, attendance/advisories, coursework due within 48 hours | The single scheduled morning summary. Late scheduler startup can send after the chosen time on the same day. Date key prevents a second same-day dispatch. |
+| Daily class-only schedule | Explicit `/daily-class-schedule` endpoint; configured personal recipient | On demand, idempotent once per date | Today’s classes and rooms | The separate automatic 07:00 send duplicated the fuller briefing; that scheduler job was removed. On-demand endpoint remains. |
+| Class reminder | Scheduler polls every 5 minutes; configured personal recipient | Once near 15 minutes (12–18 minute window) before each class slot; continuous same-course lab slots are collapsed | Course, session type, start/end, room, instructor | Replaced the two-message cadence with one useful pre-class notice. No per-type preference is wired into this direct-send path. |
+| Coursework deadline | No standalone scheduled email | Coursework due within 48 hours appears in the daily briefing; new assignments still trigger one event email | Assignment/quiz, course, due time and Classroom link in the briefing | Removed the separate daily 24-hour reminder because it could duplicate both the new-assignment notice and daily briefing. |
+| New coursework assigned | Classroom sync detects an assignment; configured personal recipient | Once per assignment ID | Assignment title/course, due time, link and description | Useful event-driven message. Sync backfills can look like “new” work unless sync distinguishes historical imports from new assignments. |
+| Exam reminder | Five-minute scheduler poll; configured personal recipient | One reminder about 60 minutes before the exam | Exam title, time and room | Kept the earlier notice for travel/preparation and removed the redundant 30-minute follow-up. HTML title and room are now escaped. `Setting` marker checks are not an atomic claim across multiple app processes; concurrent schedulers can duplicate a reminder. |
+| Test email | User action in Settings; configured personal recipient | Only when requested | Confirms a test message was submitted | Copy previously claimed SendGrid and specific alert features were active regardless of configuration. It now describes only what the test proves. |
+
+## Changes made
+
+- Changed class reminders to one message near 15 minutes before class and poll every five minutes.
+- Removed the automatic 07:00 class-only send; the user-configurable full daily briefing remains the single scheduled morning email.
+- Removed separate scheduled attendance and assignment-deadline emails because the briefing already covers advisories and upcoming work; the manual alert check no longer dispatches those duplicates.
+- Removed the 30-minute exam follow-up; kept one reminder about an hour before the paper.
+- Disabled automatic solution-delivery emails; users can still email a solution from its panel.
+- Removed production recipient fallbacks to shared provider/SMTP addresses. Alerts now require a user-associated address (or an explicitly saved notification address); development-only fixtures retain their local fallback.
+- Stopped solution email delivery when assignment ownership does not match the requesting user.
+- Corrected the test-email copy and success text so they no longer promise SendGrid or enabled alert types without evidence.
+- Prevented SMTP failover after ambiguous SendGrid exceptions/5xx results, where a second provider could create duplicate mail.
+- Escaped exam title and room values in reminder HTML.
+- Aligned the daily briefing scheduler’s missing/invalid preference fallback with the UI/API default of 07:30.
+
+## Remaining risks and recommendations
+
+1. **Delivery is not atomic across processes.** Notification queue rows are read as pending and sent without a database claim. A second API worker or scheduler process can send the same row concurrently. The exam marker has the same read-send-write race. A durable `sending` claim with lease recovery and a unique persisted delivery key is the right fix; provider acceptance followed by a network timeout still makes strict exactly-once delivery impossible without provider-side idempotency.
+2. **Provider retries can still duplicate after an ambiguous result.** SMTP fallback now happens only when SendGrid is not configured or gives a definite 4xx rejection; exceptions and 5xx responses do not trigger a second provider send. The generic queue still retries a failed notification later, so a timeout after provider acceptance can still produce a later duplicate. Strict exactly-once delivery requires provider idempotency or a manual review state for ambiguous outcomes.
+3. **Preference coverage is incomplete.** The notification preference model is checked in the generic queue processor, but attendance, briefing, class, deadline, exam, and new-assignment direct sends bypass it. Only the daily briefing currently has an obvious user-facing schedule/enable control. Consolidate those controls before promising users they can mute each email type.
+4. **New assignment imports may look new.** Classroom sync backfills can trigger the immediate assignment notice unless sync distinguishes historical imports from newly published work.
+5. **Recipient verification is not implemented.** Saved notification email is preferred; otherwise the app uses the same account’s Clerk, portal, or connected Google email. These addresses are syntactically checked but are not verified by a confirmation loop. Shared sender/provider settings must never be treated as a recipient.
+6. **Template and deliverability coverage is uneven.** Most alerts have HTML and plain text; exam and test messages have plain text, while solution delivery currently relies on generated HTML. Provider “sent” status does not mean delivered, and the notification UI may overstate that distinction. Solution email HTML previously inserted assignment titles, file names, language labels, and solution previews without escaping, described a PDF as attached when export could fail, and claimed Claude generated every solution. Those content inaccuracies and HTML injection points are now corrected.
+
+No live provider was contacted during this audit. The repo does not contain provider delivery events or production scheduler logs, so actual send counts and inbox delivery cannot be established from source alone.

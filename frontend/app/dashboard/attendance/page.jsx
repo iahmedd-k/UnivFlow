@@ -149,7 +149,7 @@ export default function AttendancePage() {
   }, [courses, attendance]);
 
   return (
-    <main className="mx-auto -mt-3 flex w-full max-w-[1080px] flex-col gap-4 pb-10 text-heading">
+    <main className="mx-auto flex w-full max-w-none flex-col gap-4 pb-8 text-heading">
       <header className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:items-end">
         <div>
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-heading">Attendance</h1>

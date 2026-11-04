@@ -162,7 +162,6 @@ export default function ServiceConnectionPopup() {
   // Manual re-sync action
   const handleManualResync = async () => {
     if (syncing) return;
-    setIsAutoDismissing(false);
     if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
 
     setSyncing(true);
@@ -221,7 +220,7 @@ export default function ServiceConnectionPopup() {
           type="button"
           onClick={() => {
             setIsMinimized(false);
-            setIsAutoDismissing(false);
+            setKeepOpen(true);
             fetchStatus();
           }}
           className={`flex items-center gap-2.5 px-3.5 py-2 rounded-full border shadow-lg backdrop-blur-md transition-all cursor-pointer hover:scale-105 active:scale-95 ${
@@ -477,4 +476,3 @@ export default function ServiceConnectionPopup() {
     </aside>
   );
 }
-

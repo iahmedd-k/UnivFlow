@@ -42,6 +42,24 @@ router = APIRouter(prefix="/timetable", tags=["Timetable"])
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
+def _poppler_path() -> str | None:
+    """Find Poppler for high-resolution OCR of scanned timetable PDFs."""
+    candidates = [
+        os.getenv("POPPLER_PATH"),
+        r"C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\poppler\Library\bin",
+        r"C:\Program Files\poppler\Library\bin",
+    ]
+    return next((path for path in candidates if path and os.path.exists(path)), None)
+
+
+def _ocr_timetable_image(image: Image.Image) -> str:
+    """Use the same enlarged grayscale Tesseract pass as roll-number slips."""
+    prepared = ImageOps.exif_transpose(image).convert("L")
+    if prepared.width * prepared.height < 4_000_000:
+        prepared = prepared.resize((prepared.width * 2, prepared.height * 2))
+    return pytesseract.image_to_string(prepared, config="--psm 6")
+
+
 def _get_semester_start_dt(db: Session, override: Optional[str] = None, user_id: str = "") -> Optional[datetime]:
     """Get semester start date from database settings if configured"""
     val = override
@@ -616,6 +634,19 @@ async def parse_timetable_image(
             from pypdf import PdfReader
             reader = PdfReader(io.BytesIO(payload))
             raw_text = "\n".join((page.extract_text() or "") for page in reader.pages)
+            # Scanned timetable PDFs have no embedded text. Render them at 300 DPI
+            # before OCR, matching the proven roll-number-slip flow.
+            if not raw_text.strip():
+                from pdf2image import convert_from_bytes
+                pages = convert_from_bytes(
+                    payload,
+                    dpi=300,
+                    first_page=1,
+                    last_page=8,
+                    poppler_path=_poppler_path(),
+                    thread_count=2,
+                )
+                raw_text = "\n".join(_ocr_timetable_image(page) for page in pages)
             ai_result = _extract_timetable_with_ai(raw_text)
             if ai_result and ai_result.get("classes"):
                 candidates = ai_result["classes"]
@@ -643,7 +674,7 @@ async def parse_timetable_image(
                 if source.width * source.height > 25_000_000:
                     source.thumbnail((4000, 4000), Image.Resampling.LANCZOS)
                 source = ImageOps.exif_transpose(source)
-                raw_text = pytesseract.image_to_string(source)
+                raw_text = _ocr_timetable_image(source)
             except Exception:
                 raw_text = ""
 

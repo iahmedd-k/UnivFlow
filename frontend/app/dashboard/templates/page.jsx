@@ -201,21 +201,14 @@ export default function TemplatesPage() {
   const defaultTemplate = templates.find((t) => t.is_default) || templates[0];
 
   return (
-    <div className="max-w-7xl mx-auto space-y-8 pb-12">
+    <div className="max-w-none mx-auto space-y-4 pb-8">
       {(error || templatesQuery.error?.message) && <div role="alert" className="rounded-lg border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose">{error || templatesQuery.error.message}<button type="button" className="ml-2 font-semibold underline" onClick={() => loadTemplates()}>Retry</button></div>}
       {/* Top Banner Header */}
-      <div className="bg-gradient-to-r from-indigo-900 via-indigo-800 to-blue-900 rounded-3xl p-8 text-white shadow-xl relative overflow-hidden">
+      <div className="bg-gradient-to-r from-indigo-900 via-indigo-800 to-blue-900 rounded-2xl p-5 text-white shadow-xl relative overflow-hidden sm:p-6">
         <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-white/5 skew-x-12 pointer-events-none transform translate-x-12"></div>
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-6">
-          <div className="space-y-2 max-w-2xl">
-            <div className="inline-flex items-center gap-2 px-3 py-1 bg-indigo-500/30 rounded-full text-indigo-200 text-xs font-semibold backdrop-blur-sm border border-indigo-400/30">
-              <Icon name="graduation" size={16}/>
-              <span>Report & Assignment Cover Engine</span>
-            </div>
+        <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div className="max-w-2xl">
             <h1 className="text-3xl font-extrabold tracking-tight">Google Docs Report Templates</h1>
-            <p className="text-indigo-200 text-sm md:text-base leading-relaxed">
-              Choose the cover page used for AI-generated assignment reports. Uniflow copies the document and fills the supported fields before adding the solution.
-            </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <button

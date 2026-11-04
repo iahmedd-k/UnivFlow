@@ -23,18 +23,16 @@ export default function AnnouncementsPage() {
   if (error) return <div className="rounded-lg border border-rose-border bg-rose-bg p-4 text-sm text-rose" role="alert">Error: {error}<button type="button" className="ml-2 font-semibold underline" onClick={() => announcementsQuery.refetch()}>Retry</button></div>;
 
   return (
-    <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-ink">
+    <main className="mx-auto flex w-full max-w-none flex-col gap-4 pb-8 text-ink">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Activity & updates</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">Announcements</h1>
-          <p className="mt-1 text-sm text-muted">Class announcements and updates</p>
+          <h1 className="text-2xl font-semibold tracking-tight">Announcements</h1>
         </div>
       </header>
 
       <section className="overflow-hidden rounded-xl border border-line bg-white shadow-sm" aria-label="Announcements">
         {announcements.length === 0 ? (
-          <div className="p-12 text-center text-sm text-muted">
+          <div className="p-8 text-center text-sm text-muted">
             No announcements.
           </div>
         ) : (

@@ -3,6 +3,7 @@ from sendgrid.helpers.mail import Mail, Email, To, Content, Header
 from app.core.config import settings
 import logging
 import re
+from html import escape
 
 logger = logging.getLogger(__name__)
 
@@ -113,13 +114,19 @@ def send_email(
             safe_subj = subject.encode("ascii", "replace").decode("ascii")
             logger.info(f"Email sent to {to_email}: {safe_subj} (status: {response.status_code})")
             return True
-        else:
-            logger.warning(f"SendGrid error: {response.status_code} - {response.body}, falling back to SMTP")
+        elif 400 <= response.status_code < 500:
+            # A definite provider rejection can safely use the configured SMTP alternative.
+            logger.warning("SendGrid rejected email with status %s; trying SMTP fallback", response.status_code)
             return send_smtp_email(to_email, subject, html_content, text_content, attachments=attachments)
+        else:
+            # A 5xx may follow provider acceptance; avoid a second copy through SMTP.
+            logger.error("SendGrid returned ambiguous status %s for %s; not retrying through SMTP", response.status_code, to_email)
+            return False
 
     except Exception as e:
-        logger.warning(f"SendGrid send failed for {to_email}: {e}, falling back to SMTP")
-        return send_smtp_email(to_email, subject, html_content, text_content, attachments=attachments)
+        # The request may have reached SendGrid before the connection failed.
+        logger.error("SendGrid outcome is ambiguous for %s: %s; not retrying through SMTP", to_email, e)
+        return False
 
 
 def send_smtp_email(
@@ -136,10 +143,6 @@ def send_smtp_email(
     from email.mime.base import MIMEBase
     from email import encoders
 
-    user = settings.smtp_username or settings.smtp_user or ""
-    pwd = (settings.smtp_password or "").replace(" ", "")
-    host = settings.smtp_host or "smtp.gmail.com"
-    port = settings.smtp_port or 587
     user = settings.smtp_username or settings.smtp_user or ""
     pwd = (settings.smtp_password or "").replace(" ", "")
     host = settings.smtp_host or "smtp.gmail.com"
@@ -199,8 +202,8 @@ def send_smtp_email(
 
 def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
     """
-    Automatically deliver generated assignment solution and attached deliverables
-    to the student's selected/verified email address immediately upon generation.
+    Deliver a generated assignment solution and attached deliverables to the
+    account's configured notification address after an explicit user request.
     """
     import io
     import zipfile
@@ -224,6 +227,7 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
 
         if owners and assignment.user_id not in owners and assignment.user_id != user_id:
             logger.warning("send_solution_delivery_email: Assignment %s ownership mismatch for user %s", assignment_id, user_id)
+            return False
 
         course = db.query(Course).filter(Course.id == assignment.course_id).first()
         solution = db.query(AssignmentSolution).filter(
@@ -239,13 +243,6 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
             return False
 
         to_email = get_user_recipient_email(db, user_id)
-        if not to_email or "@" not in to_email:
-            to_email = (
-                getattr(settings, "notification_email", None)
-                or getattr(settings, "smtp_username", None)
-                or getattr(settings, "smtp_user", None)
-            )
-
         if not to_email or "@" not in to_email:
             logger.warning("send_solution_delivery_email: No verified recipient email found for user %s", user_id)
             return False
@@ -322,10 +319,12 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
 
         # Build clean deliverable list for email HTML
         deliverable_items_html = ""
+        assignment_title_html = escape(assignment_title)
+        safe_gdoc_url = escape(gdoc_url, quote=True) if gdoc_url else ""
         if gdoc_url:
             deliverable_items_html += f"""
             <li style="margin-bottom: 6px; font-size: 13px; color: #15803d;">
-              <strong>Solved Report (Google Drive):</strong> <a href="{gdoc_url}" target="_blank" style="color: #4f46e5; text-decoration: underline; font-weight: 600;">{assignment_title} (Google Doc)</a>
+              <strong>Solved Report (Google Drive):</strong> <a href="{safe_gdoc_url}" target="_blank" style="color: #4f46e5; text-decoration: underline; font-weight: 600;">{assignment_title_html} (Google Doc)</a>
             </li>
             """
         for f in file_items:
@@ -334,23 +333,31 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
             if any(d in fname_lower for d in ("terminal_output", "claude_reported_output", "stdout", "stderr")):
                 continue
             lang = f.get("language") or "Code"
+            fname_html = escape(fname)
+            lang_html = escape(lang)
             deliverable_items_html += f"""
             <li style="margin-bottom: 6px; font-size: 13px; color: #374151;">
-              <strong>{fname}</strong> <span style="background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 11px; color: #4b5563;">{lang}</span>
+              <strong>{fname_html}</strong> <span style="background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 11px; color: #4b5563;">{lang_html}</span>
             </li>
             """
 
         doc_section_html = ""
         if gdoc_url or google_doc_pdf_bytes:
             pdf_note = '<span style="display: inline-block; margin-left: 10px; font-size: 11px; color: #047857; font-weight: 600; background: #ecfdf5; border: 1px solid #a7f3d0; padding: 3px 8px; border-radius: 99px;">PDF Report Attached</span>' if google_doc_pdf_bytes else ''
-            link_btn = f'<a href="{gdoc_url}" target="_blank" style="display: inline-block; padding: 10px 20px; background: #4f46e5; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 13px; font-weight: 600; margin-top: 8px;">Open Solved Report in Google Drive &rarr;</a>' if gdoc_url else ''
-            direct_url_html = f'<div style="margin-top: 8px; font-size: 12px; color: #475569; word-break: break-all;"><strong>Google Drive Link:</strong> <a href="{gdoc_url}" target="_blank" style="color: #4f46e5; text-decoration: underline;">{gdoc_url}</a></div>' if gdoc_url else ''
+            report_note = (
+                "A formatted report is available in Google Drive. "
+                if gdoc_url else ""
+            )
+            if google_doc_pdf_bytes:
+                report_note += "A PDF copy is attached."
+            link_btn = f'<a href="{safe_gdoc_url}" target="_blank" style="display: inline-block; padding: 10px 20px; background: #4f46e5; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 13px; font-weight: 600; margin-top: 8px;">Open Solved Report in Google Drive &rarr;</a>' if gdoc_url else ''
+            direct_url_html = f'<div style="margin-top: 8px; font-size: 12px; color: #475569; word-break: break-all;"><strong>Google Drive Link:</strong> <a href="{safe_gdoc_url}" target="_blank" style="color: #4f46e5; text-decoration: underline;">{safe_gdoc_url}</a></div>' if gdoc_url else ''
             doc_section_html = f"""
             <div style="margin: 20px 0; padding: 16px 20px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px;">
               <div style="margin-bottom: 6px;">
-                <strong style="color: #15803d; font-size: 14px;">Google Drive Solved Report Ready</strong> {pdf_note}
+                <strong style="color: #15803d; font-size: 14px;">Solved Report Ready</strong> {pdf_note}
               </div>
-              <p style="margin: 4px 0 8px; font-size: 13px; color: #374151;">A complete formatted academic paper has been exported to your Google Drive and attached as a downloadable PDF.</p>
+              <p style="margin: 4px 0 8px; font-size: 13px; color: #374151;">{report_note}</p>
               {link_btn}
               {direct_url_html}
             </div>
@@ -359,11 +366,12 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
         dashboard_url = f"{getattr(settings, 'frontend_url', 'https://univ-flow-bt12.vercel.app').rstrip('/')}/dashboard/assignments"
         preview_text = re.sub(r'```[\s\S]*?```', '[Code Block Embedded in Deliverables]', raw_content)
         preview_text = preview_text[:600] + ("..." if len(preview_text) > 600 else "")
-        preview_html = preview_text.replace("\n", "<br>")
+        preview_html = escape(preview_text).replace("\n", "<br>")
+        course_name_html = escape(course_name)
 
         zip_note_html = ""
         if zip_bytes:
-            zip_note_html = f'<p style="font-size: 12px; color: #64748b; margin-bottom: 12px;">Attached deliverables bundle: <strong>{safe_name}_deliverables.zip</strong> (includes Google Doc PDF and source files).</p>'
+            zip_note_html = f'<p style="font-size: 12px; color: #64748b; margin-bottom: 12px;">Attached deliverables bundle: <strong>{escape(safe_name)}_deliverables.zip</strong>.</p>'
 
         html_body = f"""<!DOCTYPE html>
 <html>
@@ -375,15 +383,15 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
   <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 640px; margin: 0 auto; background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.04);">
     <tr>
       <td style="padding: 24px 32px; background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%); color: #ffffff;">
-        <span style="display: inline-block; padding: 4px 10px; background: rgba(255,255,255,0.15); border-radius: 99px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Claude Solution Delivered</span>
-        <h1 style="margin: 12px 0 4px; font-size: 20px; font-weight: 700; color: #ffffff;">{assignment_title}</h1>
-        <p style="margin: 0; font-size: 13px; color: #c7d2fe;">Course: {course_name}</p>
+        <span style="display: inline-block; padding: 4px 10px; background: rgba(255,255,255,0.15); border-radius: 99px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Solution deliverables</span>
+        <h1 style="margin: 12px 0 4px; font-size: 20px; font-weight: 700; color: #ffffff;">{assignment_title_html}</h1>
+        <p style="margin: 0; font-size: 13px; color: #c7d2fe;">Course: {course_name_html}</p>
       </td>
     </tr>
     <tr>
       <td style="padding: 28px 32px;">
         <p style="font-size: 14px; line-height: 1.6; color: #334155; margin-top: 0;">
-          Hello, your academic solution and deliverables have been compiled and verified by Uniflow Claude solver.
+          Hello, your academic solution and deliverables are ready from Uniflow.
         </p>
 
         {doc_section_html}
@@ -410,7 +418,7 @@ def send_solution_delivery_email(db, assignment_id: int, user_id: str) -> bool:
     </tr>
     <tr>
       <td style="padding: 16px 32px; background: #f8fafc; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center;">
-        Uniflow Academic Orchestration · Sent immediately upon solution generation to {to_email}
+        Uniflow Academic Orchestration · Solution files for {escape(to_email)}
       </td>
     </tr>
   </table>

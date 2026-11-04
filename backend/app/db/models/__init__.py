@@ -34,6 +34,7 @@ from .chat import ChatConversation
 from .chat import ChatMessage
 from .study_plans import StudyPlan
 from .study_plans import StudyPlanSession
+from .exported_chats import ExportedChat
 from . import indexes as _indexes  # Register named database indexes.
 
 __all__ = [
@@ -71,4 +72,5 @@ __all__ = [
     "ChatMessage",
     "StudyPlan",
     "StudyPlanSession",
+    "ExportedChat",
 ]

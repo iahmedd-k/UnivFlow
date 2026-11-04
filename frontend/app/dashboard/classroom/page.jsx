@@ -176,12 +176,10 @@ export default function ClassroomPage() {
   const isSyncRunning = syncRun?.status === 'running' || busy;
 
   return (
-    <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-heading">
+    <main className="mx-auto flex w-full max-w-none flex-col gap-4 pb-8 text-heading">
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wider text-label">COURSE CONNECTION</p>
-          <h1 className="my-1 text-2xl sm:text-3xl font-semibold tracking-tight text-heading">Google Classroom</h1>
-          <p className="text-sm font-normal text-muted leading-relaxed">Connect your account, sync course work, and review the courses available in Uniflow.</p>
+          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-heading">Google Classroom</h1>
         </div>
         <div className="flex items-center gap-2">
           <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${isConnected ? 'bg-success-bg text-success' : 'bg-warning-bg text-warning'}`}>
@@ -208,8 +206,8 @@ export default function ClassroomPage() {
       </section>
 
       <section className="min-w-0 rounded-xl border border-border bg-surface shadow-xs">
-        <header className="flex items-center justify-between gap-3.5 border-b border-border-light px-5 py-4"><div><p className="text-xs font-medium uppercase tracking-wider text-label">SYNC SETTINGS</p><h2 className="text-lg font-semibold text-heading">Coursework sync</h2></div></header>
-        <div className="p-5">
+        <header className="flex items-center justify-between gap-3.5 border-b border-border-light px-4 py-3"><h2 className="text-lg font-semibold text-heading">Coursework sync</h2></header>
+        <div className="p-4">
           <p className="mb-4 text-sm leading-relaxed text-muted font-normal">Sync runs in the background. You can leave this page while courses and assignments are updated.</p>
           {syncRun?.status === 'running' && <p className="mb-4 rounded-lg bg-violet-light px-3 py-2.5 text-sm leading-relaxed text-violet" role="status">Sync in progress. This page will update when it finishes.</p>}
           <div className="flex flex-col gap-3 border-t border-border-light pt-4 sm:flex-row sm:items-end">
@@ -222,7 +220,7 @@ export default function ClassroomPage() {
 
       <section aria-labelledby="classroom-courses-heading">
         <header className="mb-3 flex items-end justify-between gap-3">
-          <div><p className="text-xs font-medium uppercase tracking-wider text-label">YOUR CLASSROOM</p><h2 id="classroom-courses-heading" className="mt-1 text-lg font-semibold text-heading">Your courses</h2></div>
+          <h2 id="classroom-courses-heading" className="text-lg font-semibold text-heading">Your courses</h2>
           <span className="inline-flex items-center rounded-full bg-surface-secondary px-2.5 py-0.5 text-xs font-medium text-nav tabular-nums">{loading ? '…' : courses.length}</span>
         </header>
         {loading ? (

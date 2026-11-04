@@ -75,7 +75,9 @@ def generate_study_answer(
 ) -> str:
     """Generate a comprehensive Study Assistant answer using configured LLM providers."""
 
-    groq_first = settings.ai_provider.strip().lower() == "groq"
+    # An explicit Gemini model is used for source-index jobs. Respect that
+    # request even when Groq is the general chat provider.
+    groq_first = settings.ai_provider.strip().lower() == "groq" and not model
     if groq_first:
         answer = _generate_groq_answer(
             prompt=prompt,
@@ -86,19 +88,15 @@ def generate_study_answer(
             return answer
 
     if settings.gemini_api_key:
-        gemini_candidates = [
-            model,
-            settings.study_assistant_model or "gemini-3.5-flash",
-            "gemini-3.5-flash",
-            "gemini-2.5-flash",
-            "gemini-flash-latest",
-            "gemini-3.8-flash",
-            "gemini-3.5-flash-lite",
-            "gemini-2.5-flash-lite",
-            "gemini-3-flash-preview",
-        ]
+        # Current free-tier models. Keep this short: retrying retired aliases burns
+        # the request deadline before a usable model gets a chance to respond.
+        gemini_candidates = (
+            [model, "gemini-3.1-flash-lite"]
+            if model
+            else [settings.study_assistant_model or "gemini-3.6-flash", "gemini-3.1-flash-lite"]
+        )
         seen_gemini = set()
-        deadline = time.monotonic() + 45
+        deadline = time.monotonic() + 55
         for model_candidate in gemini_candidates:
             if not model_candidate or model_candidate in seen_gemini:
                 continue
@@ -119,7 +117,7 @@ def generate_study_answer(
                             "temperature": 0.4,
                         },
                     },
-                    timeout=min(20.0, remaining),
+                    timeout=min(35.0, remaining),
                 )
                 if response.is_success:
                     body = response.json()

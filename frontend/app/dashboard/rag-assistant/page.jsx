@@ -6,7 +6,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
-import { UserButton } from "@clerk/nextjs";
 import {
   Search,
   SlidersHorizontal,
@@ -51,6 +50,7 @@ import {
   PanelLeftOpen,
   Copy,
   Check,
+  FileDown,
 } from "lucide-react";
 
 import {
@@ -67,14 +67,17 @@ import {
   syncClassroom,
 } from "@/app/lib/rag/services";
 import { getQueryOwnerKey } from "@/app/lib/manual-auth";
+import WebChatImportModal from "./WebChatImportModal";
+import ExportedChatsLibrary from "./ExportedChatsLibrary";
 
 /* =====================================================================
    SHARED APP SHELL — Navigation & Plans
 ===================================================================== */
 
 const NAV = [
-  { id: "inbox", label: "Query Console", icon: Inbox },
-  { id: "sources", label: "Knowledge Sources", icon: Database },
+  { id: "inbox", label: "Chat", icon: Inbox },
+  { id: "sources", label: "Sources", icon: Database },
+  { id: "web_chats", label: "AI chats", icon: FileDown },
 ];
 
 const PLANS = {
@@ -398,13 +401,11 @@ function TopBar({ route, onRouteChange, plan, onOpenUsage, onLogout, files, onTa
   }, [route]);
 
   return (
-    <div className="h-13 shrink-0 border-b border-stone-200 flex items-center justify-between gap-2 sm:gap-4 px-3 sm:px-4 bg-white/95 backdrop-blur-sm sticky top-0 z-20">
-      <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-        <div className="flex items-center gap-1">
-          <div className="w-6 h-6 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-xs">R</div>
-          <span className="text-sm font-semibold text-stone-900 hidden sm:inline">RAG Assistant</span>
-        </div>
+    <div className="h-12 shrink-0 border-b border-stone-200/80 flex items-center gap-3 px-3 sm:px-4 bg-white">
+      <div className="flex items-center gap-3 shrink-0">
+        <a href="/dashboard" className="hidden sm:inline text-[12px] font-medium text-stone-500 hover:text-stone-900 transition-colors">Workspace</a>
         <div className="hidden sm:block h-4 w-px bg-stone-200" />
+        <span className="text-[14px] font-semibold tracking-tight text-stone-900">Study Assistant</span>
 
         <div className="relative flex items-center gap-1 shrink-0">
           {indicator && (
@@ -421,7 +422,7 @@ function TopBar({ route, onRouteChange, plan, onOpenUsage, onLogout, files, onTa
                 key={item.id}
                 ref={(el) => (btnRefs.current[item.id] = el)}
                 onClick={() => onRouteChange(item.id)}
-                className={`relative z-10 flex items-center gap-1.5 text-[12px] sm:text-[12.5px] font-medium px-2.5 sm:px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+                className={`relative z-10 flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-md transition-colors cursor-pointer ${
                   active ? "text-stone-900" : "text-stone-500 hover:text-stone-700"
                 }`}
               >
@@ -433,30 +434,8 @@ function TopBar({ route, onRouteChange, plan, onOpenUsage, onLogout, files, onTa
         </div>
       </div>
 
-      <div className="hidden md:flex flex-1 justify-center min-w-0 max-w-sm">
+      <div className="hidden md:flex justify-end min-w-0 max-w-[280px] ml-auto">
         <DocSearch files={files} onSelect={onTagDoc} />
-      </div>
-
-      <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
-        <PlanBadge plan={plan} onClick={onOpenUsage} />
-        <div className="flex items-center gap-1.5 sm:gap-2 pl-1 border-l border-stone-200">
-          <UserButton
-            afterSignOutUrl="/sign-in"
-            appearance={{
-              elements: {
-                avatarBox: "w-7 h-7",
-              },
-            }}
-          />
-          <button
-            onClick={onLogout}
-            title="Sign out"
-            className="flex items-center gap-1 text-[12px] sm:text-[12.5px] font-medium p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg text-stone-500 hover:text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer"
-          >
-            <LogOut className="w-3.5 h-3.5 shrink-0" />
-            <span className="hidden sm:inline">Sign out</span>
-          </button>
-        </div>
       </div>
     </div>
   );
@@ -1000,84 +979,84 @@ function DocumentPicker({ files, selectedIds, onToggle, onClear, onConfirm, onUp
   };
 
   return (
-    <div ref={pickerRef} className="absolute bottom-full left-0 mb-2 w-80 bg-white border border-stone-200 rounded-xl shadow-xl overflow-hidden z-50">
-      <div className="flex items-center justify-between px-3 py-2.5 border-b border-stone-100">
-        <span className="text-[13px] font-semibold text-stone-800">Select documents</span>
-        <div className="flex items-center gap-1">
-          <button onClick={onClear} className="text-[11.5px] text-stone-400 hover:text-stone-600 px-1.5 py-0.5 rounded hover:bg-stone-50 cursor-pointer">
-            Clear
-          </button>
-          <button onClick={() => onConfirm()} className="text-[11.5px] text-indigo-600 hover:text-indigo-700 font-medium px-1.5 py-0.5 rounded hover:bg-indigo-50 cursor-pointer">
-            Done
-          </button>
+    <div ref={pickerRef} className="absolute bottom-full left-0 z-50 mb-3 w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-stone-200/90 bg-white shadow-[0_18px_55px_-18px_rgba(15,23,42,0.28)]">
+      <input ref={fileInputRef} type="file" accept=".pdf,.csv,.xlsx,.xls,.docx,.json" className="hidden" onChange={handleUpload} />
+      <div className="flex items-start justify-between gap-3 border-b border-stone-100 bg-gradient-to-br from-white to-indigo-50/50 px-4 py-3.5">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="grid size-8 shrink-0 place-items-center rounded-xl bg-indigo-100 text-indigo-700"><Paperclip className="size-4" /></span>
+            <div>
+              <span className="block text-[13px] font-semibold text-stone-900">Choose sources</span>
+              <span className="block text-[11px] text-stone-500">Ground this answer in your materials</span>
+            </div>
+          </div>
         </div>
+        <button type="button" onClick={onConfirm} aria-label="Close source picker" className="grid size-7 shrink-0 place-items-center rounded-lg text-stone-400 transition hover:bg-white hover:text-stone-700"><X className="size-4" /></button>
       </div>
-      <div className="max-h-56 overflow-y-auto">
+
+      <div className="max-h-64 overflow-y-auto p-2">
         {files.length === 0 ? (
-          <div className="px-3 py-6 text-center">
-            <FileText className="w-8 h-8 text-stone-300 mx-auto mb-2" />
-            <p className="text-[12.5px] text-stone-500 mb-3">No documents uploaded yet.</p>
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-indigo-600 hover:text-indigo-700 disabled:opacity-50 cursor-pointer"
-            >
-              {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UploadCloud className="w-3.5 h-3.5" />}
-              {uploading ? "Uploading…" : "Upload a document"}
-            </button>
-            <input ref={fileInputRef} type="file" accept=".pdf,.csv,.xlsx,.xls,.docx,.json" className="hidden" onChange={handleUpload} />
+          <div className="px-4 py-7 text-center">
+            <span className="mx-auto grid size-11 place-items-center rounded-2xl bg-stone-100 text-stone-400"><FileText className="size-5" /></span>
+            <p className="mt-3 text-[12.5px] font-medium text-stone-700">No sources yet</p>
+            <p className="mt-1 text-[11px] leading-5 text-stone-400">Upload a document to ask questions about its contents.</p>
           </div>
         ) : (
           files.map((f) => {
             const selected = selectedIds.includes(f.id);
+            const indexed = f.status === "completed" || f.status === "indexed";
             return (
               <button
                 key={f.id}
+                type="button"
                 onClick={() => onToggle(f.id)}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors cursor-pointer ${
-                  selected ? "bg-indigo-50/70" : "hover:bg-stone-50"
+                aria-pressed={selected}
+                className={`group mb-1 flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-all ${
+                  selected
+                    ? "border-indigo-200 bg-indigo-50/80 shadow-[0_2px_8px_-6px_rgba(79,70,229,0.35)]"
+                    : "border-transparent hover:border-stone-200 hover:bg-stone-50"
                 }`}
               >
-                <span
-                  className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
-                    selected ? "bg-indigo-600 border-indigo-600" : "border-stone-300"
-                  }`}
-                >
-                  {selected && <CheckCircle2 className="w-3 h-3 text-white" />}
+                <span className={`grid size-[18px] shrink-0 place-items-center rounded-md border transition-all ${
+                  selected ? "border-indigo-600 bg-indigo-600 text-white shadow-sm" : "border-stone-300 bg-white text-transparent group-hover:border-indigo-300"
+                }`}>
+                  {selected && <Check className="size-3" strokeWidth={3} />}
                 </span>
-                <FileTypeIcon type={f.type} className="w-3.5 h-3.5 text-stone-400 shrink-0" />
-                <div className="min-w-0 flex-1">
-                  <div className="text-[12.5px] text-stone-700 truncate">{f.name}</div>
-                  <div className="text-[10.5px] text-stone-400 truncate">
-                    {f.course_name || "General"} · {CATEGORY_CONFIG[f.category]?.label || "Document"}
-                  </div>
-                </div>
-                <span className="text-[11px] text-stone-400 shrink-0">{f.status === "completed" ? "Indexed" : f.status}</span>
+                <span className={`grid size-9 shrink-0 place-items-center rounded-xl ${selected ? "bg-white text-indigo-600" : "bg-stone-100 text-stone-500"}`}>
+                  <FileTypeIcon type={f.type} className="size-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[12px] font-semibold text-stone-800">{f.name}</span>
+                  <span className="mt-0.5 block truncate text-[10px] text-stone-400">{f.course_name || "General"} · {CATEGORY_CONFIG[f.category]?.label || "Document"}</span>
+                </span>
+                <span className={`shrink-0 rounded-full px-2 py-1 text-[9px] font-semibold ${indexed ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                  {indexed ? "Ready" : f.status === "failed" ? "Failed" : "Indexing"}
+                </span>
               </button>
             );
           })
         )}
       </div>
-      {files.length > 0 && (
-        <div className="px-3 py-2 border-t border-stone-100 flex items-center justify-between bg-stone-50/50">
-          <span className="text-[11.5px] text-stone-400">
-            {selectedIds.length === 0
-              ? "General knowledge (no documents attached)"
-              : `${selectedIds.length} of ${files.length} selected`}
-          </span>
-          <div className="flex items-center gap-2">
-            <input ref={fileInputRef} type="file" accept=".pdf,.csv,.xlsx,.xls,.docx,.json" className="hidden" onChange={handleUpload} />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              className="text-[11.5px] text-stone-600 hover:text-stone-800 flex items-center gap-1 disabled:opacity-50 cursor-pointer font-medium"
-            >
-              {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <UploadCloud className="w-3 h-3" />}
-              {uploading ? "Uploading…" : "Upload"}
-            </button>
-          </div>
+
+      <div className="flex items-center justify-between gap-2 border-t border-stone-100 bg-stone-50/80 px-3.5 py-3">
+        <div className="min-w-0">
+          {selectedIds.length > 0 ? (
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-indigo-700"><CheckCircle2 className="size-3.5" />{selectedIds.length} source{selectedIds.length === 1 ? "" : "s"} selected</span>
+          ) : (
+            <span className="text-[10.5px] leading-4 text-stone-500">General knowledge · no sources attached</span>
+          )}
         </div>
-      )}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {selectedIds.length > 0 && <button type="button" onClick={onClear} className="rounded-lg px-2 py-1.5 text-[10.5px] font-medium text-stone-500 transition hover:bg-white hover:text-stone-800">Clear</button>}
+          <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploading} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 text-[10.5px] font-semibold text-stone-600 shadow-sm transition hover:border-indigo-200 hover:text-indigo-700 disabled:opacity-50">
+            {uploading ? <Loader2 className="size-3.5 animate-spin" /> : <UploadCloud className="size-3.5" />}
+            {uploading ? "Uploading…" : "Upload"}
+          </button>
+          <button type="button" onClick={onConfirm} className="inline-flex h-8 items-center gap-1 rounded-lg bg-indigo-600 px-3 text-[10.5px] font-semibold text-white shadow-sm transition hover:bg-indigo-700">
+            Done <ChevronRight className="size-3.5" />
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1092,6 +1071,7 @@ function ChatInboxDashboard({
   usageData,
   refreshFiles,
   refreshUsage,
+  onOpenWebChatModal,
 }) {
   const queryClient = useQueryClient();
   const conversationKey = useMemo(() => ['rag', 'conversations', ownerKey], [ownerKey]);
@@ -1504,12 +1484,12 @@ function ChatInboxDashboard({
         className={`fixed inset-y-0 left-0 z-40 bg-stone-50 border-r border-stone-200 flex flex-col transition-all duration-300 ease-in-out md:static ${
           sidebarCollapsed
             ? "w-0 md:w-0 border-r-0 overflow-hidden opacity-0 pointer-events-none -translate-x-full md:translate-x-0"
-            : "w-[85vw] max-w-[300px] md:w-[300px] md:translate-x-0 opacity-100"
+            : "w-[85vw] max-w-[280px] md:w-[272px] md:translate-x-0 opacity-100"
         } ${mobileShowSidebar ? "translate-x-0 shadow-2xl opacity-100 pointer-events-auto" : "-translate-x-full md:translate-x-0"}`}
       >
-        <div className="flex items-center justify-between px-4 pt-4 pb-3">
+        <div className="flex items-center justify-between px-3.5 pt-3 pb-2">
           <div className="flex items-center gap-2">
-            <h2 className="text-[15px] font-semibold tracking-tight">Conversations</h2>
+            <h2 className="text-[14px] font-semibold tracking-tight">Conversations</h2>
           </div>
           <div className="flex items-center gap-1.5">
             <button
@@ -1518,15 +1498,25 @@ function ChatInboxDashboard({
                 setMobileShowSidebar(false);
               }}
               title="New chat"
-              className="w-8 h-8 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center transition-colors cursor-pointer shadow-xs"
+              className="w-7 h-7 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center transition-colors cursor-pointer"
             >
               <Plus className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => {
+                onOpenWebChatModal?.();
+                setMobileShowSidebar(false);
+              }}
+              title="Export Web AI Chat to PDF (ChatGPT, Claude, Gemini)"
+              className="w-7 h-7 rounded-md bg-stone-100 hover:bg-indigo-50 text-stone-600 hover:text-indigo-600 border border-stone-200 flex items-center justify-center transition-colors cursor-pointer"
+            >
+              <FileDown className="w-4 h-4" />
             </button>
             <button
               type="button"
               onClick={() => setSidebarCollapsed(true)}
               title="Collapse sidebar"
-              className="hidden md:flex w-8 h-8 rounded-lg hover:bg-stone-200/70 items-center justify-center text-stone-500 hover:text-stone-800 transition-colors cursor-pointer"
+              className="hidden md:flex w-7 h-7 rounded-md hover:bg-stone-200/70 items-center justify-center text-stone-500 hover:text-stone-800 transition-colors cursor-pointer"
             >
               <PanelLeftClose className="w-4 h-4" />
             </button>
@@ -1539,20 +1529,20 @@ function ChatInboxDashboard({
           </div>
         </div>
 
-        <div className="px-4 pb-3">
-          <div className="flex items-center gap-2 bg-stone-200/60 rounded-lg px-3 py-2">
-            <Search className="w-4 h-4 text-stone-400 shrink-0" />
+        <div className="px-3.5 pb-2.5">
+          <div className="flex items-center gap-2 bg-stone-100 rounded-md px-2.5 py-1.5">
+            <Search className="w-3.5 h-3.5 text-stone-400 shrink-0" />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Find a query"
-              className="bg-transparent text-[13px] outline-none w-full placeholder:text-stone-400"
+              className="bg-transparent text-[12px] outline-none w-full placeholder:text-stone-400"
             />
-            <SlidersHorizontal className="w-4 h-4 text-stone-400 shrink-0" />
+            <SlidersHorizontal className="w-3.5 h-3.5 text-stone-400 shrink-0" />
           </div>
         </div>
 
-        <div className="px-4 pb-2 text-[12px] font-medium text-stone-400">History</div>
+        <div className="px-3.5 pb-1.5 text-[11px] font-medium text-stone-400">History</div>
 
         <div className="flex-1 overflow-y-auto">
           {loadingConversations ? (
@@ -1599,14 +1589,14 @@ function ChatInboxDashboard({
       </aside>
 
       <main className="flex-1 flex flex-col min-w-0 bg-white">
-        <header className="flex items-center justify-between px-4 sm:px-8 pt-4 sm:pt-5 pb-3 sm:pb-4 border-b border-stone-100 gap-2">
+        <header className="flex h-12 shrink-0 items-center justify-between border-b border-stone-100 px-4 sm:px-6 gap-2">
           <div className="flex items-center gap-2 min-w-0 flex-1">
             {sidebarCollapsed && (
               <button
                 type="button"
                 onClick={() => setSidebarCollapsed(false)}
                 title="Expand sidebar"
-                className="hidden md:flex shrink-0 items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-lg border border-stone-200 text-stone-700 bg-stone-50 hover:bg-stone-100 hover:text-stone-900 transition-colors cursor-pointer shadow-2xs"
+                className="hidden md:flex shrink-0 items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-md border border-stone-200 text-stone-700 bg-stone-50 hover:bg-stone-100 hover:text-stone-900 transition-colors cursor-pointer"
               >
                 <PanelLeftOpen className="w-4 h-4 text-indigo-600" />
                 <span>Conversations</span>
@@ -1614,7 +1604,7 @@ function ChatInboxDashboard({
             )}
             <button
               onClick={() => setMobileShowSidebar(true)}
-              className="md:hidden shrink-0 flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-lg border border-stone-200 text-stone-700 bg-stone-50 hover:bg-stone-100 cursor-pointer"
+                className="md:hidden shrink-0 flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-md border border-stone-200 text-stone-700 bg-stone-50 hover:bg-stone-100 cursor-pointer"
             >
               <MessageSquare className="w-3.5 h-3.5 text-indigo-600" />
               <span>Chats</span>
@@ -1629,11 +1619,11 @@ function ChatInboxDashboard({
                   if (e.key === "Enter") commitTitle();
                   if (e.key === "Escape") setEditingTitle(false);
                 }}
-                className="text-[15px] sm:text-[17px] font-semibold text-stone-900 bg-stone-50 border border-indigo-300 rounded-md px-2 py-0.5 outline-none min-w-0 flex-1"
+                className="text-[14px] sm:text-[15px] font-semibold text-stone-900 bg-stone-50 border border-indigo-300 rounded-md px-2 py-0.5 outline-none min-w-0 flex-1"
               />
             ) : (
               <>
-                <h2 className="text-[15px] sm:text-[17px] font-semibold text-stone-900 truncate">
+                <h2 className="text-[14px] sm:text-[15px] font-semibold text-stone-900 truncate">
                   {activeChat?.title || "Study Assistant"}
                 </h2>
                 {activeChat && (
@@ -1644,9 +1634,21 @@ function ChatInboxDashboard({
               </>
             )}
           </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onOpenWebChatModal?.()}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-stone-200 text-stone-700 bg-stone-50 hover:bg-stone-100 hover:text-stone-900 text-[12px] font-medium transition-colors cursor-pointer"
+              title="Export a ChatGPT, Claude, or Gemini chat link to PDF"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+              <span className="hidden sm:inline">Export Web Chat</span>
+              <span className="sm:hidden">Export Chat</span>
+            </button>
+          </div>
         </header>
 
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 sm:px-8">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 sm:px-6">
           {!activeId || turns.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center py-12 max-w-lg mx-auto">
               <div className="w-12 h-12 rounded-2xl bg-indigo-50 flex items-center justify-center mb-3">
@@ -1688,7 +1690,7 @@ function ChatInboxDashboard({
               </div>
             </div>
           ) : (
-            <div className="divide-y divide-stone-100 pb-6">
+            <div className="mx-auto w-full max-w-[1120px] divide-y divide-stone-100 pb-6">
               {turns.map((t, i) =>
                 t.role === "user" ? (
                   <UserTurn key={i} text={t.text} />
@@ -1710,7 +1712,7 @@ function ChatInboxDashboard({
           {pipeline && <PipelineRunning stageIndex={pipeline.stageIndex} generalKnowledge={pipeline.generalKnowledge} />}
         </div>
 
-        <div className="px-8 pb-6 pt-2 relative">
+        <div className="relative mx-auto w-full max-w-[1120px] px-4 pb-4 pt-2 sm:px-6">
           {queryLimitReached ? (
             <UpgradeLockBar
               icon={MessageSquare}
@@ -2513,10 +2515,13 @@ function RagFileManager({
                   }}
                   onDragLeave={() => setIsDragging(false)}
                   onDrop={onDrop}
-                  className={`rounded-xl border-2 border-dashed flex flex-col items-center justify-center py-6 sm:py-7 px-4 text-center transition-colors ${
-                    isDragging ? "border-indigo-400 bg-indigo-50/60" : "border-stone-200 hover:border-stone-300"
+                  className={`group relative overflow-hidden rounded-2xl border transition-all duration-200 ${
+                    isDragging
+                      ? "border-indigo-400 bg-indigo-50/80 shadow-[0_0_0_4px_rgba(99,102,241,0.08)]"
+                      : "border-stone-200 bg-gradient-to-br from-white via-white to-indigo-50/40 hover:border-indigo-200 hover:shadow-[0_12px_35px_-24px_rgba(79,70,229,0.35)]"
                   }`}
                 >
+                  <div className={`pointer-events-none absolute inset-x-0 top-0 h-1 transition-colors ${isDragging ? "bg-indigo-500" : "bg-gradient-to-r from-indigo-400/0 via-indigo-300/70 to-violet-400/0"}`} />
                   <input
                     ref={inputRef}
                     type="file"
@@ -2525,46 +2530,54 @@ function RagFileManager({
                     className="hidden"
                     onChange={(e) => e.target.files?.length && addFiles(e.target.files)}
                   />
-                  <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-indigo-50 flex items-center justify-center mb-3 shrink-0">
-                    {uploading || syncingGcr ? (
-                      <Loader2 className="w-5 h-5 text-indigo-500 animate-spin" />
-                    ) : (
-                      <UploadCloud className="w-5 h-5 text-indigo-500" />
-                    )}
-                  </div>
-                  <p className="text-[13.5px] sm:text-[14px] font-medium text-stone-700">
-                    {uploading
-                      ? "Uploading and indexing files…"
-                      : syncingGcr
-                      ? "Fetching and indexing Google Classroom materials…"
-                      : "Add materials or sync Google Classroom directly"}
-                  </p>
-                  <p className="text-[12px] sm:text-[12.5px] text-stone-400 mt-1 mb-3 sm:mb-4">
-                    PDF, DOCX, PPTX, CSV, Excel, or JSON · synced automatically or uploaded locally
-                  </p>
+                  <div className="flex flex-col items-center justify-center px-4 py-5 text-center sm:px-6 sm:py-6">
+                    <div className={`mb-3 grid size-12 place-items-center rounded-2xl border shadow-sm transition-all duration-200 ${
+                      isDragging ? "scale-105 border-indigo-200 bg-white text-indigo-700" : "border-indigo-100 bg-indigo-50/80 text-indigo-600 group-hover:-translate-y-0.5 group-hover:bg-white"
+                    }`}>
+                      {uploading || syncingGcr ? <Loader2 className="size-5 animate-spin" /> : <UploadCloud className="size-5" />}
+                    </div>
+                    <p className="text-[13.5px] font-semibold text-stone-800 sm:text-sm">
+                      {uploading
+                        ? "Uploading and indexing your files…"
+                        : syncingGcr
+                        ? "Fetching your Classroom materials…"
+                        : isDragging
+                        ? "Drop your files to add them"
+                        : "Bring your study materials together"}
+                    </p>
+                    <p className="mt-1 max-w-lg text-[11px] leading-5 text-stone-500 sm:text-xs">
+                      {uploading || syncingGcr
+                        ? "You can keep working while your materials are being prepared."
+                        : "Upload your own files or sync your course materials from Google Classroom."}
+                    </p>
 
-                  <div className="flex items-center gap-2.5 flex-wrap justify-center">
-                    <button
-                      type="button"
-                      onClick={() => inputRef.current?.click()}
-                      disabled={uploading || syncingGcr}
-                      className="text-[12.5px] font-medium bg-stone-900 text-white rounded-lg px-3.5 py-1.5 hover:bg-stone-800 cursor-pointer disabled:opacity-50 transition-colors shadow-2xs"
-                    >
-                      Browse files
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleSyncClassroom}
-                      disabled={uploading || syncingGcr}
-                      className="inline-flex items-center gap-1.5 text-[12.5px] font-medium bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg px-3.5 py-1.5 cursor-pointer disabled:opacity-50 transition-colors shadow-2xs"
-                    >
-                      {syncingGcr ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <GraduationCap className="w-3.5 h-3.5 text-indigo-600" />
-                      )}
-                      <span>{syncingGcr ? "Syncing GCR…" : "Sync Google Classroom"}</span>
-                    </button>
+                    <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5">
+                      {["PDF", "DOCX", "PPTX", "CSV", "Excel", "JSON"].map((format) => (
+                        <span key={format} className="rounded-md border border-stone-200/80 bg-white/80 px-1.5 py-0.5 text-[9px] font-semibold tracking-wide text-stone-400">{format}</span>
+                      ))}
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => inputRef.current?.click()}
+                        disabled={uploading || syncingGcr}
+                        className="inline-flex h-9 items-center gap-2 rounded-xl bg-stone-900 px-4 text-[11.5px] font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <UploadCloud className="size-3.5" />
+                        {uploading ? "Uploading…" : "Browse files"}
+                      </button>
+                      <span className="text-[10px] font-medium text-stone-300">or</span>
+                      <button
+                        type="button"
+                        onClick={handleSyncClassroom}
+                        disabled={uploading || syncingGcr}
+                        className="inline-flex h-9 items-center gap-2 rounded-xl border border-indigo-200 bg-white px-3.5 text-[11.5px] font-semibold text-indigo-700 shadow-sm transition hover:-translate-y-0.5 hover:border-indigo-300 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {syncingGcr ? <Loader2 className="size-3.5 animate-spin" /> : <GraduationCap className="size-3.5" />}
+                        {syncingGcr ? "Syncing…" : "Sync Classroom"}
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -2719,6 +2732,7 @@ export default function RagAssistantPage() {
   const [route, setRoute] = useState("inbox");
   const [plan, setPlan] = useState("free");
   const [sourcesView, setSourcesView] = useState("sources");
+  const [isWebChatModalOpen, setIsWebChatModalOpen] = useState(false);
   const files = documentsQuery.data || [];
   const [pendingDocTag, setPendingDocTag] = useState(null);
   const usageData = usageQuery.data || null;
@@ -2753,7 +2767,7 @@ export default function RagAssistantPage() {
 
   return (
     <div
-      className={`h-screen w-full flex flex-col bg-white text-stone-900 font-[system-ui] transition-opacity duration-300 ${
+      className={`h-full min-h-0 w-full flex flex-col overflow-hidden bg-white text-stone-900 font-[system-ui] transition-opacity duration-300 ${
         mounted ? "opacity-100" : "opacity-0"
       }`}
     >
@@ -2791,6 +2805,7 @@ export default function RagAssistantPage() {
           usageData={usageData}
           refreshFiles={refreshFiles}
           refreshUsage={refreshUsage}
+          onOpenWebChatModal={() => setIsWebChatModalOpen(true)}
         />
       </div>
       <div className={`flex-1 min-h-0 ${route === "sources" ? "" : "hidden"}`}>
@@ -2808,6 +2823,19 @@ export default function RagAssistantPage() {
           refreshUsage={refreshUsage}
         />
       </div>
+      <div className={`flex-1 min-h-0 ${route === "web_chats" ? "" : "hidden"}`}>
+        <ExportedChatsLibrary
+          onOpenImportModal={() => setIsWebChatModalOpen(true)}
+        />
+      </div>
+
+      <WebChatImportModal
+        isOpen={isWebChatModalOpen}
+        onClose={() => setIsWebChatModalOpen(false)}
+        onViewLibrary={() => {
+          goToRoute("web_chats");
+        }}
+      />
     </div>
   );
 }

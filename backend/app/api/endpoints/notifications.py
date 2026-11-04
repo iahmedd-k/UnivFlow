@@ -576,7 +576,7 @@ def send_test_email(
     if not target_email:
         raise HTTPException(status_code=400, detail="No notification email found. Please configure an alert email in Settings.")
 
-    subject = "Uniflow | Test Alert: Email Delivery Verified"
+    subject = "Uniflow | Email Delivery Test"
     html = f"""<!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
@@ -683,7 +683,7 @@ def send_test_email(
 </head>
 <body>
   <div style="display:none;font-size:1px;color:#ffffff;line-height:1px;max-height:0px;max-width:0px;opacity:0;overflow:hidden;mso-hide:all;">
-    Alert System Verification: Email delivery verified for {escape(target_email)}.
+    This is a test message sent to {escape(target_email)}.
     &#847; &zwnj; &nbsp; &#8199; &shy; &#847; &zwnj; &nbsp; &#8199; &shy;
   </div>
   <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color:#f1f5f9; padding:0; margin:0;">
@@ -692,24 +692,21 @@ def send_test_email(
         <div class="email-container">
           <div class="accent-bar"></div>
           <div class="header-bar">
-            <div class="brand-title">Uniflow Academic Alerts · Verified</div>
-            <h1 class="header-title">Alert System Verification Successful</h1>
+            <div class="brand-title">Uniflow Academic Alerts</div>
+            <h1 class="header-title">Email delivery test</h1>
           </div>
           <div class="content-body">
-            <div class="status-badge">DELIVERY CHANNEL · SENDGRID VERIFIED</div>
+            <div class="status-badge">DELIVERY TEST</div>
             <p style="color:#334155; font-size:14px; line-height:1.6; margin:0 0 16px 0;">
-              This email confirms that your alert settings are active and that Uniflow is delivering notifications to: <strong>{escape(target_email)}</strong>.
+              This test message was submitted to: <strong>{escape(target_email)}</strong>.
             </p>
             <div class="details-card">
-              ✓ <strong>Primary Delivery Channel:</strong> SendGrid Transactional API<br>
-              ✓ <strong>Configured Recipient:</strong> {escape(target_email)}<br>
-              ✓ <strong>Morning Academic Briefing:</strong> Active (Daily morning dispatch)<br>
-              ✓ <strong>Class Timetable Reminders:</strong> Active (20m &amp; 5m advance notices)<br>
-              ✓ <strong>Google Classroom Deadlines:</strong> Active (Synchronized coursework tracking)
+              This test confirms that Uniflow could submit a message to the configured recipient at the time it was sent.<br>
+              Scheduled alerts depend on your saved preferences and the availability of the relevant schedule or coursework data.
             </div>
           </div>
           <div class="footer-bar">
-            Automated verification dispatched by Uniflow Academic Suite.<br>
+            You requested this one-time email test from Uniflow Academic Suite.<br>
             Air University Student Intelligence &amp; Schedule Synchronization.
           </div>
         </div>
@@ -725,12 +722,12 @@ def send_test_email(
         categories=["test-notification", "verification"]
     )
     if not success:
-        raise HTTPException(status_code=500, detail="Failed to deliver test email via SendGrid.")
+        raise HTTPException(status_code=500, detail="Could not submit the test email using the configured email provider.")
 
     return {
         "status": "sent",
         "recipient": target_email,
-        "message": f"Test alert email successfully delivered to {target_email} via SendGrid!"
+        "message": f"Test email successfully submitted to {target_email}."
     }
 
 
@@ -752,7 +749,7 @@ def trigger_daily_digest(
     return {
         "status": "sent",
         "digest": digest,
-        "message": f"Daily morning briefing successfully dispatched to {digest.get('recipient')} via SendGrid!"
+        "message": f"Daily morning briefing successfully dispatched to {digest.get('recipient')}."
     }
 
 
@@ -774,7 +771,7 @@ def trigger_daily_class_schedule(
     return {
         "status": "sent",
         "result": result,
-        "message": f"Daily class schedule successfully dispatched to {result.get('recipient')} via SendGrid!"
+        "message": f"Daily class schedule successfully dispatched to {result.get('recipient')}."
     }
 
 
@@ -783,23 +780,17 @@ def check_and_send_alerts(
     db: Session = Depends(get_db),
     clerk_user: Optional[dict] = Depends(get_current_user_optional)
 ):
-    """Trigger on-demand check for morning digest, low-attendance class-day warnings, 20m/5m class reminders, and GCR deadlines."""
+    """Send the daily briefing and a class reminder only when their normal rules match."""
     from app.services.alert_service import AlertService
     user_id = require_user_id(clerk_user)
     service = AlertService(db)
     digest = service.generate_daily_morning_digest(user_id=user_id, send_immediately=True)
-    att_alerts = service.generate_daily_attendance_warnings(user_id=user_id, send_immediately=True)
     tt_reminders = service.generate_upcoming_class_reminders(user_id=user_id, send_immediately=True)
-    gcr_alerts = service.generate_upcoming_assignment_reminders(user_id=user_id, send_immediately=True)
     return {
         "status": "success",
         "daily_digest": digest,
-        "attendance_warnings_generated": len(att_alerts),
-        "attendance_warnings": att_alerts,
         "timetable_reminders_generated": len(tt_reminders),
         "timetable_reminders": tt_reminders,
-        "assignment_deadlines_generated": len(gcr_alerts),
-        "assignment_deadlines": gcr_alerts,
     }
 
 

@@ -31,7 +31,7 @@ export default function QuizDetailPage() {
   const isPast = quiz.date && new Date(quiz.date) < new Date();
 
   return (
-    <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-10 text-ink">
+    <main className="mx-auto flex w-full max-w-none flex-col gap-4 pb-8 text-ink">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-4">
           <Link href="/dashboard/quizzes" className="grid size-10 shrink-0 place-items-center rounded-lg border border-line bg-white text-muted transition hover:bg-paper hover:text-ink" aria-label="Back to quizzes"><Icon name="arrowLeft" size={16}/></Link>

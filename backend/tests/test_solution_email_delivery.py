@@ -61,7 +61,7 @@ def test_send_solution_delivery_email_includes_google_drive_link():
             call_kwargs = mock_send_email.call_args[1]
             html_body = call_kwargs["html_content"]
             assert "https://docs.google.com/document/d/gdoc_test_12345/edit" in html_body
-            assert "Google Drive Solved Report" in html_body
+            assert "Solved Report (Google Drive)" in html_body
             assert "Open Solved Report in Google Drive" in html_body
 
             # Check ZIP attachments

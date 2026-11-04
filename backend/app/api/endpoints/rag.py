@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import List, Optional, Union
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, Security, UploadFile, status
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, load_only
 from starlette.concurrency import run_in_threadpool
@@ -20,11 +21,11 @@ from app.api.endpoints.rag_helpers import (
     _retrieve_passages,
     upload_study_material,
 )
-from app.auth.clerk_auth import require_current_user
+from app.auth.clerk_auth import get_current_user_optional, require_current_user, security, verify_clerk_token
 from app.auth.ownership import user_owner_ids
 from app.core.config import settings
 from app.db.database import get_db
-from app.db.models import Assignment, AssignmentMaterial, Course, Setting
+from app.db.models import Assignment, AssignmentMaterial, Course, ExportedChat, Setting
 from app.models.document import Document, DocumentStatus
 from app.models.message import Message, MessageRole
 from app.models.user import User, UserRole
@@ -47,6 +48,15 @@ from app.schemas.rag_new.rag import ChatResponse, RagRequest, SourceChunk, Sourc
 from app.schemas.rag_new.response import ApiResponse
 from app.schemas.rag_new.retrieval import ChunkResult, SearchApiResponse
 from app.schemas.rag_new.usage import UsageResponse
+from app.schemas.rag_new.exported_chat import (
+    ExportWebChatRequest,
+    ExportedChatListResponse,
+    ExportedChatResponse,
+    ExportedChatUpdateRequest,
+)
+from app.services.web_chat_pdf_service import WebChatPdfService
+from app.integrations.google_drive import upload_pdf_to_drive
+
 from app.services.gemini import generate_study_answer
 from app.services.rag_new.chat_service import ChatService
 from app.services.rag_new.chunking_service import ChunkingService
@@ -201,6 +211,118 @@ def get_chat_service() -> ChatService:
 
 def get_conversation_service(db: Session = Depends(get_db)) -> ConversationService:
     return ConversationService(db)
+
+
+def _study_index_sections(source_parts: list[tuple[str, str]], max_chars: int = 14_000) -> list[str]:
+    """Keep source order and page/slide labels while fitting each LLM pass."""
+    sections: list[str] = []
+    current: list[str] = []
+    current_size = 0
+    for label, content in source_parts:
+        block = f"\n\n## {label}\n{content.strip()}"
+        if current and current_size + len(block) > max_chars:
+            sections.append("".join(current))
+            current, current_size = [], 0
+        current.append(block)
+        current_size += len(block)
+    if current:
+        sections.append("".join(current))
+    return sections
+
+
+@router.post("/study-material-index/{document_id}", response_model=ApiResponse[dict])
+async def generate_study_material_index(
+    document_id: str,
+    current_user: dict = Depends(require_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a detailed, source-wide study index instead of a top-K RAG answer."""
+    db_user_id, clerk_user_id = resolve_user_context(db, current_user)
+    source_parts: list[tuple[str, str]] = []
+    title = "Course material"
+
+    if document_id.isdigit():
+        document = db.query(Document).filter(Document.id == int(document_id), Document.user_id == db_user_id).first()
+        if not document:
+            raise HTTPException(status_code=404, detail="Study material was not found.")
+        title = document.original_filename or title
+        chunks = DocumentChunkRepository(db).list_by_document(document.id)
+        source_parts = [
+            (f"Page or slide {chunk.page_number}", chunk.content)
+            for chunk in chunks
+            if (chunk.content or "").strip()
+        ]
+    else:
+        if not (document_id.startswith("mat_") or document_id.startswith("asg_")):
+            raise HTTPException(status_code=422, detail="Unsupported study material identifier.")
+        try:
+            _cache_classroom_materials_for_ai(db, [document_id], clerk_user_id)
+        except Exception as exc:
+            logger.warning("Could not refresh study material %s before indexing: %s", document_id, exc)
+        material = _read_materials(db, [document_id], max_chars=180_000, user_id=clerk_user_id)
+        if material:
+            title = material[0]["title"] or title
+            raw = material[0].get("content") or ""
+            source_parts = [("Source content", raw)] if raw.strip() else []
+
+    if not source_parts:
+        raise HTTPException(status_code=409, detail="This material is still being indexed or has no readable text yet.")
+
+    sections = _study_index_sections(source_parts)
+    if len(sections) > 20:
+        sections = sections[:20]
+    system_prompt = (
+        "You build precise, useful study indexes from academic source material. "
+        "Only use the supplied source. Preserve its page or slide labels. Do not answer exercises."
+    )
+    indexed_sections: list[str] = []
+    for number, section in enumerate(sections, start=1):
+        prompt = f"""Create a detailed study index for part {number} of {len(sections)} of '{title}'.
+
+For every page or slide in this source portion, write a section headed with its page/slide label. Under it include:
+1. Topic(s) discussed.
+2. A clear 2-5 sentence explanation of each topic: definition, purpose, mechanism, relationships, formulas or terms stated in the source.
+3. Examples, scenarios, diagrams, or cases mentioned, described faithfully.
+4. Questions, exercises, or prompts exactly as stated where possible, without answers.
+
+Do not skip slides that contain meaningful text. If a page is unreadable or only decorative, say so briefly. This must be detailed enough for a student to paste into another AI and request notes or answers later.
+
+SOURCE:\n{section}"""
+        answer = await run_in_threadpool(
+            generate_study_answer,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            model="gemini-3.6-flash",
+            max_output_tokens=5000,
+            general_knowledge=False,
+        )
+        indexed_sections.append(answer)
+
+    index_content = "\n\n---\n\n".join(indexed_sections)
+    index_key = f"study_material_index:{clerk_user_id}:{document_id}"
+    stored_index = {
+        "title": title,
+        "course": "",
+        "content": index_content,
+        "status": "complete",
+    }
+    row = db.query(Setting).filter(Setting.key == index_key).first()
+    if row:
+        row.value = json.dumps(stored_index, ensure_ascii=False)
+        row.description = "RAG generated study material index"
+    else:
+        db.add(Setting(
+            key=index_key,
+            value=json.dumps(stored_index, ensure_ascii=False),
+            description="RAG generated study material index",
+        ))
+    db.commit()
+
+    return ApiResponse(
+        success=True,
+        data={"title": title, "content": index_content, "sections": len(indexed_sections), "saved": True},
+        message="Detailed study index created from the full available source.",
+    )
 
 
 @router.get("/materials")
@@ -682,6 +804,15 @@ def sync_classroom_materials(
     """Sync all Google Classroom courses, coursework, materials, and announcements on demand."""
     from app.services.classroom_sync import get_classroom_service
     _, clerk_user_id = resolve_user_context(db, current_user)
+    from app.services.classroom_sync import get_classroom_sync_lock
+    sync_lock = get_classroom_sync_lock(clerk_user_id)
+    if not sync_lock.acquire(blocking=False):
+        return ApiResponse(
+            success=True,
+            data={"synced": False, "status": "already_running"},
+            message="A Google Classroom sync is already running for this account.",
+        )
+
     try:
         service = get_classroom_service(db, user_id=clerk_user_id)
         if not service:
@@ -710,6 +841,8 @@ def sync_classroom_materials(
     except Exception as e:
         logger.error("Error in on-demand classroom sync: %s", e)
         return ApiResponse(success=False, data={"error": str(e)}, message=f"Sync failed: {str(e)}")
+    finally:
+        sync_lock.release()
 
 
 @router.get(
@@ -1310,6 +1443,343 @@ def get_usage(
         query_quota=-1,
     )
     return ApiResponse(success=True, data=result, message="Usage information retrieved.")
+
+
+
+
+# --- Helper: User Chat Cookies ---
+
+def get_user_chat_cookies(db: Session, clerk_user_id: str, db_user_id: int, platform: str) -> list[dict]:
+    cookies = []
+    # 1. Claude session key
+    if platform in ("claude", "generic"):
+        setting = db.query(Setting).filter(
+            Setting.key.in_([
+                f"classroom:{clerk_user_id}:claude_session_key",
+                f"classroom:{db_user_id}:claude_session_key",
+            ])
+        ).first()
+        if setting and setting.value and setting.value.strip():
+            raw_key = setting.value.strip()
+            try:
+                from app.core.security import decrypt_token_if_encrypted
+                key_val = decrypt_token_if_encrypted(raw_key)
+            except Exception:
+                key_val = raw_key
+            if key_val:
+                cookies.append({
+                    "name": "sessionKey",
+                    "value": key_val,
+                    "domain": ".claude.ai",
+                    "path": "/",
+                    "secure": True,
+                    "httpOnly": True,
+                })
+    
+    # 2. Sync companion cookies JSON
+    companion_setting = db.query(Setting).filter(
+        Setting.key.in_([
+            f"companion_cookies:{clerk_user_id}",
+            f"companion_cookies:{db_user_id}",
+            f"classroom:{clerk_user_id}:cookies",
+        ])
+    ).first()
+    if companion_setting and companion_setting.value:
+        try:
+            import json
+            parsed = json.loads(companion_setting.value)
+            if isinstance(parsed, list):
+                cookies.extend(parsed)
+            elif isinstance(parsed, dict) and "cookies" in parsed:
+                cookies.extend(parsed["cookies"])
+        except Exception:
+            pass
+
+    return cookies
+
+
+def _safe_exported_chat_filename(title: str) -> str:
+    safe_title = re.sub(r"[^a-zA-Z0-9_\- ]", "_", title).strip() or "exported_chat"
+    return f"{safe_title}.pdf"
+
+
+def _save_exported_chat_to_drive(db: Session, chat: ExportedChat, clerk_user_id: str) -> ExportedChat:
+    """Create the user's Drive copy once, then reuse it for later opens."""
+    if chat.google_drive_file_id:
+        return chat
+
+    file_path = Path(chat.file_path)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="The exported PDF is no longer available to upload to Google Drive.")
+
+    drive_file_id, _ = upload_pdf_to_drive(
+        db=db,
+        user_id=clerk_user_id,
+        filename=_safe_exported_chat_filename(chat.title),
+        content=file_path.read_bytes(),
+    )
+    chat.google_drive_file_id = drive_file_id
+    db.commit()
+    db.refresh(chat)
+    return chat
+
+
+# --- Web AI Chat PDF Export Endpoints ---
+
+@router.post(
+    "/export-web-chat",
+    response_model=ApiResponse[ExportedChatResponse],
+    summary="Export a ChatGPT, Claude, or Gemini chat to an organized academic PDF",
+)
+async def export_web_chat(
+    request: ExportWebChatRequest,
+    current_user: dict = Depends(require_current_user),
+    db: Session = Depends(get_db),
+):
+    db_user_id, clerk_user_id = resolve_user_context(db, current_user)
+    platform = WebChatPdfService.detect_platform(request.url)
+    is_public = WebChatPdfService.is_public_url(request.url)
+
+    cookies = []
+    if not is_public:
+        cookies = get_user_chat_cookies(db, clerk_user_id, db_user_id, platform)
+
+    try:
+        result = await WebChatPdfService.export_chat_to_pdf(
+            url=request.url,
+            cookies=cookies,
+            custom_title=request.custom_title,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Error exporting web chat to PDF: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate PDF from chat. Please verify the link is accessible. Details: {str(e)[:200]}"
+        )
+
+    # Save PDF to local data storage
+    export_dir = Path("data/exported_chats")
+    export_dir.mkdir(parents=True, exist_ok=True)
+    file_id = uuid4().hex
+    file_path = export_dir / f"{file_id}.pdf"
+    file_path.write_bytes(result["pdf_bytes"])
+
+    # Attempt cloud storage upload (Supabase Storage) if configured
+    file_url = None
+    try:
+        storage = StorageService()
+        storage_path, public_url = storage._upload_supabase(
+            file_bytes=result["pdf_bytes"],
+            filename=f"{file_id}.pdf",
+            user_id=db_user_id,
+            public_id=f"exported_chats/{clerk_user_id}/{file_id}.pdf"
+        )
+        file_url = public_url
+    except Exception as e:
+        logger.info("Cloud storage upload skipped, using direct endpoint serving: %s", e)
+
+    exported_chat = ExportedChat(
+        user_id=clerk_user_id,
+        title=result["title"],
+        source_platform=result["source_platform"],
+        source_url=request.url,
+        is_public=result["is_public"],
+        turn_count=result["turn_count"],
+        has_images=result["has_images"],
+        has_diagrams=result["has_diagrams"],
+        file_path=str(file_path),
+        file_url=file_url or f"/api/v1/rag/exported-chats/{file_id}/download",
+        file_size_bytes=result["file_size_bytes"],
+    )
+    db.add(exported_chat)
+    db.commit()
+    db.refresh(exported_chat)
+
+    if not exported_chat.file_url or not exported_chat.file_url.startswith("http"):
+        exported_chat.file_url = f"/api/v1/rag/exported-chats/{exported_chat.id}/download"
+        db.commit()
+        db.refresh(exported_chat)
+
+    try:
+        _save_exported_chat_to_drive(db, exported_chat, clerk_user_id)
+    except HTTPException as exc:
+        logger.info("Google Drive upload skipped for exported chat %s: %s", exported_chat.id, exc.detail)
+
+    return ApiResponse(
+        success=True,
+        data=ExportedChatResponse.model_validate(exported_chat),
+        message="AI chat successfully exported to PDF",
+    )
+
+
+@router.get(
+    "/exported-chats",
+    response_model=ApiResponse[ExportedChatListResponse],
+    summary="List all exported AI chat PDFs for the authenticated user",
+)
+def list_exported_chats(
+    current_user: dict = Depends(require_current_user),
+    db: Session = Depends(get_db),
+):
+    db_user_id, clerk_user_id = resolve_user_context(db, current_user)
+    chats = (
+        db.query(ExportedChat)
+        .filter(ExportedChat.user_id.in_([clerk_user_id, str(db_user_id)]))
+        .order_by(ExportedChat.created_at.desc())
+        .all()
+    )
+    # Ensure download URLs are set
+    for c in chats:
+        if not c.file_url or not c.file_url.startswith("http"):
+            c.file_url = f"/api/v1/rag/exported-chats/{c.id}/download"
+
+    return ApiResponse(
+        success=True,
+        data=ExportedChatListResponse(
+            items=[ExportedChatResponse.model_validate(c) for c in chats],
+            total=len(chats),
+        ),
+        message="Exported chats retrieved successfully",
+    )
+
+
+@router.post(
+    "/exported-chats/{chat_id}/open-in-drive",
+    response_model=ApiResponse[ExportedChatResponse],
+    summary="Save an exported chat PDF to Google Drive and return its viewer URL",
+)
+def open_exported_chat_in_drive(
+    chat_id: int,
+    current_user: dict = Depends(require_current_user),
+    db: Session = Depends(get_db),
+):
+    db_user_id, clerk_user_id = resolve_user_context(db, current_user)
+    chat = db.query(ExportedChat).filter(ExportedChat.id == chat_id).first()
+    if not chat:
+        raise HTTPException(status_code=404, detail="Exported chat not found.")
+    if chat.user_id not in (clerk_user_id, str(db_user_id)):
+        raise HTTPException(status_code=403, detail="Not authorized to access this exported chat.")
+
+    chat = _save_exported_chat_to_drive(db, chat, clerk_user_id)
+    return ApiResponse(
+        success=True,
+        data=ExportedChatResponse.model_validate(chat),
+        message="PDF is ready in Google Drive.",
+    )
+
+
+@router.get(
+    "/exported-chats/{chat_id}/download",
+    summary="Download an exported chat PDF file",
+)
+async def download_exported_chat(
+    chat_id: int,
+    token: Optional[str] = Query(None),
+    auth: Optional[HTTPAuthorizationCredentials] = Security(security),
+    db: Session = Depends(get_db),
+):
+    user_id = None
+    if auth and auth.credentials:
+        user = await get_current_user_optional(auth, db)
+        if user:
+            user_id = user.get("id")
+    elif token:
+        try:
+            payload = verify_clerk_token(token)
+            user_id = payload.get("sub")
+        except Exception:
+            pass
+
+    if not user_id and settings.is_production:
+        raise HTTPException(status_code=401, detail="Authentication required to download chat.")
+    if not user_id:
+        user_id = "dev_student_user"
+
+    chat = db.query(ExportedChat).filter(ExportedChat.id == chat_id).first()
+    if not chat:
+        raise HTTPException(status_code=404, detail="Exported chat not found.")
+
+    db_user_id, clerk_user_id = resolve_user_context(db, {"id": user_id})
+    if chat.user_id not in (clerk_user_id, str(db_user_id), user_id):
+        raise HTTPException(status_code=403, detail="Not authorized to access this exported chat.")
+
+    file_path = Path(chat.file_path)
+    if file_path.is_file():
+        return FileResponse(
+            path=str(file_path),
+            media_type="application/pdf",
+            filename=_safe_exported_chat_filename(chat.title),
+        )
+    elif chat.file_url and chat.file_url.startswith("http"):
+        return RedirectResponse(url=chat.file_url)
+    else:
+        raise HTTPException(status_code=404, detail="Exported PDF file is missing on server.")
+
+
+@router.patch(
+    "/exported-chats/{chat_id}",
+    response_model=ApiResponse[ExportedChatResponse],
+    summary="Update exported chat metadata (title)",
+)
+def update_exported_chat(
+    chat_id: int,
+    request: ExportedChatUpdateRequest,
+    current_user: dict = Depends(require_current_user),
+    db: Session = Depends(get_db),
+):
+    db_user_id, clerk_user_id = resolve_user_context(db, current_user)
+    chat = db.query(ExportedChat).filter(ExportedChat.id == chat_id).first()
+    if not chat:
+        raise HTTPException(status_code=404, detail="Exported chat not found.")
+    if chat.user_id not in (clerk_user_id, str(db_user_id)):
+        raise HTTPException(status_code=403, detail="Not authorized to modify this chat.")
+
+    chat.title = request.title.strip()
+    db.commit()
+    db.refresh(chat)
+
+    return ApiResponse(
+        success=True,
+        data=ExportedChatResponse.model_validate(chat),
+        message="Chat title updated successfully",
+    )
+
+
+@router.delete(
+    "/exported-chats/{chat_id}",
+    response_model=ApiResponse[dict],
+    summary="Delete an exported chat and its stored PDF file",
+)
+def delete_exported_chat(
+    chat_id: int,
+    current_user: dict = Depends(require_current_user),
+    db: Session = Depends(get_db),
+):
+    db_user_id, clerk_user_id = resolve_user_context(db, current_user)
+    chat = db.query(ExportedChat).filter(ExportedChat.id == chat_id).first()
+    if not chat:
+        raise HTTPException(status_code=404, detail="Exported chat not found.")
+    if chat.user_id not in (clerk_user_id, str(db_user_id)):
+        raise HTTPException(status_code=403, detail="Not authorized to delete this chat.")
+
+    # Clean up physical file
+    try:
+        p = Path(chat.file_path)
+        if p.is_file():
+            p.unlink()
+    except Exception as e:
+        logger.warning("Could not remove local file %s: %s", chat.file_path, e)
+
+    db.delete(chat)
+    db.commit()
+
+    return ApiResponse(
+        success=True,
+        data={"id": chat_id},
+        message="Exported chat deleted successfully",
+    )
 
 
 # --- Health Endpoints ---

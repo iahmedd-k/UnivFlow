@@ -1,6 +1,9 @@
 import json
+import io
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaIoBaseUpload
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -33,3 +36,26 @@ def get_drive_service(db: Session, user_id: str):
         db.commit()
     # Build Drive service
     return build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+
+def upload_pdf_to_drive(db: Session, user_id: str, filename: str, content: bytes) -> tuple[str, str]:
+    """Upload a PDF to the connected user's Drive and return its ID and view URL."""
+    drive = get_drive_service(db, user_id)
+    try:
+        uploaded = drive.files().create(
+            body={"name": filename, "mimeType": "application/pdf"},
+            media_body=MediaIoBaseUpload(io.BytesIO(content), mimetype="application/pdf", resumable=True),
+            fields="id,webViewLink",
+        ).execute()
+    except HttpError as error:
+        if error.resp.status in (401, 403):
+            raise HTTPException(
+                status_code=409,
+                detail="Reconnect Google Classroom to let Uniflow save PDFs to your Google Drive.",
+            ) from error
+        raise HTTPException(status_code=502, detail="Google Drive could not save this PDF right now.") from error
+
+    file_id = uploaded.get("id")
+    if not file_id:
+        raise HTTPException(status_code=502, detail="Google Drive did not return a file ID for this PDF.")
+    return file_id, uploaded.get("webViewLink") or f"https://drive.google.com/file/d/{file_id}/view"

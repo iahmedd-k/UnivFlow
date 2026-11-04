@@ -68,14 +68,13 @@ export default function DashboardOverview() {
   const name = user?.firstName || user?.username;
 
   return (
-    <main className="mx-auto w-full max-w-7xl space-y-6 pb-10 font-sans">
+    <main className="mx-auto w-full max-w-none space-y-4 pb-8 font-sans">
       <header className="flex flex-col justify-between gap-4 border-b border-border-light pb-5 sm:flex-row sm:items-end">
         <div>
           <p suppressHydrationWarning className="text-sm font-medium text-muted">{formatDate(new Date(), { weekday: 'long', month: 'long', day: 'numeric' })}</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-heading sm:text-3xl">
             Welcome back{name ? `, ${name}` : ''}
           </h1>
-          <p className="mt-1.5 text-sm leading-6 text-muted">Your academic work, upcoming deadlines, and today&apos;s schedule.</p>
         </div>
         <nav aria-label="Overview shortcuts" className="flex flex-wrap gap-2">
           <Link href="/dashboard/classroom" className="inline-flex h-10 items-center gap-2 rounded-lg border border-line bg-surface px-3.5 text-sm font-medium text-body no-underline hover:bg-surface-secondary">
@@ -96,12 +95,11 @@ export default function DashboardOverview() {
         <MetricCard label="Average attendance" value={attendance != null ? `${Number(attendance).toFixed(1)}%` : '—'} detail={attendance != null ? 'recorded so far' : 'no records yet'} icon="clipboardCheck" href="/dashboard/attendance" tone="green" />
       </section>
 
-      <section className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.45fr)_minmax(300px,0.85fr)]">
+      <section className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.45fr)_minmax(300px,0.85fr)]">
         <article className={cardClass}>
-          <header className="flex items-start justify-between gap-3 border-b border-border-light pb-4">
+          <header className="flex items-start justify-between gap-3 border-b border-border-light pb-3">
             <div>
-              <p className="text-sm font-medium text-muted">Deadlines and unfinished work</p>
-              <h2 className="mt-0.5 text-lg font-semibold tracking-tight text-heading">Assignments to review</h2>
+              <h2 className="text-lg font-semibold tracking-tight text-heading">Assignments to review</h2>
             </div>
             <Link href="/dashboard/assignments" className="shrink-0 text-sm font-medium text-violet no-underline hover:text-violet-dark">All assignments →</Link>
           </header>
@@ -111,7 +109,6 @@ export default function DashboardOverview() {
             <div className="py-9 text-center">
               <span className="mx-auto grid size-10 place-items-center rounded-full bg-success-bg text-success"><Icon name="checkCircle" size={19} /></span>
               <p className="mt-3 text-sm font-medium text-heading">No upcoming assignments</p>
-                <p className="mt-1 text-sm text-muted">Assignments due soon or still awaiting completion will appear here.</p>
             </div>
           ) : (
             <ul className="divide-y divide-border-light">
@@ -139,8 +136,7 @@ export default function DashboardOverview() {
         <article className={cardClass}>
           <header className="flex items-start justify-between gap-3 border-b border-border-light pb-4">
             <div>
-              <p className="text-sm font-medium text-muted">Your timetable</p>
-              <h2 className="mt-0.5 text-lg font-semibold tracking-tight text-heading">Today&apos;s classes</h2>
+              <h2 className="text-lg font-semibold tracking-tight text-heading">Today&apos;s classes</h2>
             </div>
             <Link href="/dashboard/timetable" className="shrink-0 text-sm font-medium text-violet no-underline hover:text-violet-dark">Timetable →</Link>
           </header>
@@ -150,7 +146,6 @@ export default function DashboardOverview() {
             <div className="py-9 text-center">
               <span className="mx-auto grid size-10 place-items-center rounded-full bg-surface-secondary text-muted"><Icon name="calendar" size={19} /></span>
               <p className="mt-3 text-sm font-medium text-heading">No classes scheduled today</p>
-              <p className="mt-1 text-sm text-muted">Your synced or added classes will show up here.</p>
             </div>
           ) : (
             <ul className="divide-y divide-border-light">

@@ -2818,14 +2818,8 @@ def solve_assignment_via_claude_browser(
 
         db.commit()
 
-        # 13. Immediately deliver generated solution and deliverables to user's selected email
-        try:
-            from app.services.email import send_solution_delivery_email
-            send_solution_delivery_email(db, assignment_id, user_id)
-        except Exception as mail_err:
-            logger.warning("Could not dispatch auto-solution email for assignment %s: %s", assignment_id, mail_err)
-
-        # 14. Check if student opted in to auto-submission/attachment on dashboard
+        # Email delivery remains an explicit user action from the solution panel.
+        # Check if student opted in to auto-submission/attachment on dashboard.
         try:
             from app.api.endpoints.classroom import auto_turn_in_completed_solution
             submission_result = auto_turn_in_completed_solution(db, assignment_id, user_id)

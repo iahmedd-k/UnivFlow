@@ -9,7 +9,6 @@ import { api } from '@/app/lib/api';
 import { getManualSession, getQueryOwnerKey, clearManualSession } from '@/app/lib/manual-auth';
 import { isExtensionInstalled, EXTENSION_VERSION } from '@/app/lib/extensionBridge';
 import Icon from '@/app/dashboard/Icon';
-import FirebaseAlertsBanner from '@/app/dashboard/FirebaseAlertsBanner';
 import OnboardingModal from '@/app/dashboard/OnboardingModal';
 import CompanionExtensionModal from '@/app/dashboard/CompanionExtensionModal';
 import ServiceConnectionPopup from '@/app/dashboard/ServiceConnectionPopup';
@@ -19,6 +18,7 @@ const navGroups = [
     label: 'Workspace',
     items: [
       { href: '/dashboard', label: 'Overview', icon: 'dashboard' },
+      { href: '/dashboard/planner', label: 'My Planner', icon: 'calendar' },
       { href: '/dashboard/assignments', label: 'Assignments Studio', icon: 'listChecks' },
       { href: '/dashboard/rag-assistant', label: 'Study Assistant', icon: 'brain' },
     ],
@@ -26,6 +26,7 @@ const navGroups = [
   {
     label: 'Academics',
     items: [
+      { href: '/dashboard/exams', label: 'Exams', icon: 'clipboardCheck' },
       { href: '/dashboard/timetable', label: 'Timetable', icon: 'calendar' },
       { href: '/dashboard/attendance', label: 'Attendance', icon: 'clipboardCheck' },
       { href: '/dashboard/classroom', label: 'Google Classroom', icon: 'school' },
@@ -41,7 +42,6 @@ const navGroups = [
   {
     label: 'Preferences',
     items: [
-      { href: '/dashboard/activity', label: 'Activity Log', icon: 'history' },
       { href: '/dashboard/settings', label: 'Settings', icon: 'settings' },
     ],
   },
@@ -64,6 +64,7 @@ export default function DashboardLayout({ children }) {
   const { user } = useUser();
   const pathname = usePathname();
   const router = useRouter();
+  const isStudyAssistant = pathname === '/dashboard/rag-assistant';
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [syncMenuOpen, setSyncMenuOpen] = useState(false);
@@ -253,18 +254,18 @@ export default function DashboardLayout({ children }) {
   }
 
   return (
-    <div className="min-h-screen bg-paper flex">
+    <div className={`${isStudyAssistant ? 'h-dvh overflow-hidden' : 'min-h-screen'} bg-paper flex`}>
       <OnboardingModal />
       <CompanionExtensionModal isOpen={extensionModalOpen} onClose={() => setExtensionModalOpen(false)} />
-      <ServiceConnectionPopup />
+      {!isStudyAssistant && <ServiceConnectionPopup />}
 
       {/* Mobile Backdrop */}
-      {sidebarOpen && (
+      {!isStudyAssistant && sidebarOpen && (
         <button aria-label="Close navigation" className="fixed inset-0 z-40 bg-black/40 backdrop-blur-xs lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
       {/* Redesigned Sidebar */}
-      <aside className={`fixed inset-y-0 left-0 z-50 w-64 flex flex-col bg-surface border-r border-line lg:translate-x-0 transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
+      {!isStudyAssistant && <aside className={`fixed inset-y-0 left-0 z-50 w-64 flex flex-col bg-surface border-r border-line lg:translate-x-0 transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         {/* Brand Header */}
         <div className="px-5 pt-5 pb-4 border-b border-border-light flex items-center justify-between">
           <Link href="/dashboard" className="flex items-center gap-2.5 no-underline group" onClick={() => setSidebarOpen(false)}>
@@ -346,12 +347,12 @@ export default function DashboardLayout({ children }) {
             <Icon name="logout" size={15} />
           </button>
         </div>
-      </aside>
+      </aside>}
 
       {/* Main App Container */}
-      <div className="flex-1 lg:ml-64 flex flex-col min-h-screen min-w-0">
+      <div className={`flex-1 flex flex-col min-w-0 ${isStudyAssistant ? 'h-dvh min-h-0 overflow-hidden' : 'lg:ml-64 min-h-screen'}`}>
         {/* Redesigned Navbar */}
-        <header className="sticky top-0 z-30 h-16 flex items-center justify-between px-4 sm:px-6 lg:px-8 bg-surface/85 border-b border-border/70 backdrop-blur-xl">
+        {!isStudyAssistant && <header className="sticky top-0 z-30 h-16 flex items-center justify-between px-4 sm:px-6 lg:px-8 bg-surface/85 border-b border-border/70 backdrop-blur-xl">
           <div className="flex items-center gap-3">
             <button
               type="button"
@@ -448,11 +449,12 @@ export default function DashboardLayout({ children }) {
               {new Intl.DateTimeFormat('en', { weekday: 'short', month: 'short', day: 'numeric' }).format(new Date())}
             </span>
           </div>
-        </header>
+        </header>}
 
         {/* Content View */}
-        <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <FirebaseAlertsBanner />
+        <main className={isStudyAssistant
+          ? 'flex-1 min-h-0 w-full overflow-hidden'
+          : 'flex-1 w-full max-w-screen-2xl mx-auto px-3 sm:px-4 lg:px-6 py-4'}>
           {children}
         </main>
       </div>

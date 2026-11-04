@@ -134,19 +134,10 @@ export default function MailDrivePage() {
   const visibleError = error || queryError;
 
   return (
-    <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-6 pb-10 text-heading">
+    <div className="mx-auto flex w-full max-w-none flex-col gap-4 pb-8 text-heading">
       <header className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
         <div>
-          <div className="mb-2 flex items-center gap-2">
-            <span className="grid size-8 place-items-center rounded-lg border border-border bg-surface text-google shadow-xs" aria-hidden="true">
-              <span className="text-base font-bold">G</span>
-            </span>
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-label">Your connected workspace</p>
-          </div>
-          <h1 className="text-3xl font-semibold tracking-tight text-heading sm:text-4xl">Mail & Drive</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
-            Find university messages and jump back into your latest files, all in one place.
-          </p>
+          <h1 className="text-2xl font-semibold tracking-tight text-heading sm:text-3xl">Mail & Drive</h1>
         </div>
 
         {connected && (

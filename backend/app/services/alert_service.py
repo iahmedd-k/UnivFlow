@@ -173,13 +173,7 @@ def get_user_recipient_email(db: Session, user_id: str = "") -> str:
     if g_email and g_email.value and g_email.value.strip() and "@" in g_email.value:
         return g_email.value.strip()
 
-    if getattr(settings, "notification_email", None) and "@" in settings.notification_email:
-        return settings.notification_email.strip()
-    if getattr(settings, "smtp_username", None) and "@" in settings.smtp_username:
-        return settings.smtp_username.strip()
-    if getattr(settings, "smtp_user", None) and "@" in settings.smtp_user:
-        return settings.smtp_user.strip()
-
+    # Never use shared service/provider addresses as a user's personal recipient.
     return ""
 
 
@@ -567,7 +561,7 @@ def build_timetable_reminder_email(
     minutes_left: int = 10,
     session_type: str = "Lecture",
 ) -> Tuple[str, str]:
-    """Generate institutional HTML and plain-text email for 10-minute prior class reminder."""
+    """Generate HTML and plain-text email for a class reminder."""
     raw_room = str(room or "").strip()
     raw_room_val = raw_room if (raw_room and raw_room.lower() not in ("none", "-", "main campus", "venue to be confirmed via portal")) else "Room to be announced"
     room_str = format_room_display(raw_room)
@@ -1638,7 +1632,7 @@ class AlertService:
     ) -> List[Dict]:
         """
         Scan classes starting today and dispatch:
-        - By default: 20-minute prior notice (17-24m window) AND 5-minute urgent notice (3-7m window)
+        - By default: one 15-minute prior notice (12-18m window)
         - If custom lookahead_minutes provided: alerts within lookahead_minutes +/- tolerance
         
         Edge cases:
@@ -1655,7 +1649,7 @@ class AlertService:
         weekday_int = today.weekday()
 
         # Active hours constraint: 7:00 AM (07:00) to 10:00 PM (22:00) only.
-        # Allow 06:35 AM onwards to catch 20m reminders for 07:00 AM morning classes.
+        # Start early enough to catch the reminder window for morning classes.
         cur_hour = target_dt.hour
         cur_min = target_dt.minute
         if cur_hour < 6 or (cur_hour == 6 and cur_min < 35) or cur_hour > 22 or (cur_hour == 22 and cur_min > 5):
@@ -1703,13 +1697,9 @@ class AlertService:
                 else:
                     continue
             else:
-                # Default hourly schedule check (e.g. running once an hour at :40 past the hour)
-                # Matches classes starting in ~20 minutes (window 12 to 28 minutes)
-                if (12 * 60) <= diff_seconds <= (28 * 60):
-                    milestone = "20m"
-                    minutes_label = max(1, int(round(diff_seconds / 60.0)))
-                elif (3 * 60) <= diff_seconds <= (7 * 60):
-                    milestone = "5m"
+                # One reminder avoids sending two emails for the same class.
+                if (12 * 60) <= diff_seconds <= (18 * 60):
+                    milestone = "15m"
                     minutes_label = max(1, int(round(diff_seconds / 60.0)))
                 else:
                     continue
@@ -1723,9 +1713,16 @@ class AlertService:
                     continue
 
             idempotency_key = f"tt-remind-{milestone}:{user_id}:{entry.id}:{today.isoformat()}"
+            reminder_keys = [idempotency_key]
+            if milestone == "15m":
+                # Avoid a duplicate during rollout if an older milestone was sent today.
+                reminder_keys.extend((
+                    f"tt-remind-20m:{user_id}:{entry.id}:{today.isoformat()}",
+                    f"tt-remind-5m:{user_id}:{entry.id}:{today.isoformat()}",
+                ))
             existing = (
                 self.db.query(Notification)
-                .filter(Notification.user_id.in_(user_owner_ids(user_id)), Notification.idempotency_key == idempotency_key)
+                .filter(Notification.user_id.in_(user_owner_ids(user_id)), Notification.idempotency_key.in_(reminder_keys))
                 .first()
             )
             if existing:
@@ -1735,11 +1732,7 @@ class AlertService:
             resolved_room = self._resolve_entry_room(entry)
             room_disp = format_room_display(resolved_room)
             room_suffix = f" - {room_disp}" if room_disp != "Room to be announced" else ""
-            subject_title = (
-                f"[Uniflow] Urgent Class Reminder: {entry.subject} at {entry.start_time}{room_suffix} (Starts in ~5m)"
-                if milestone == "5m"
-                else f"[Uniflow] Upcoming Class Reminder: {entry.subject} at {entry.start_time}{room_suffix}"
-            )
+            subject_title = f"[Uniflow] Class Reminder: {entry.subject} at {entry.start_time}{room_suffix} (Starts in ~{minutes_label}m)"
             payload_summary = (
                 f"Course: {entry.subject}\n"
                 f"Session Type: {session_type}\n"

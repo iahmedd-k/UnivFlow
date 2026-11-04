@@ -3,13 +3,11 @@
 import { useState } from 'react';
 import Icon from '@/app/dashboard/Icon';
 import { format, isValid, formatDistanceToNow } from 'date-fns';
-import TutorPanel from './TutorPanel';
 import TurnInPanel from './TurnInPanel';
 import SolutionPanel from './SolutionPanel';
 
 const TABS = [
   { id: 'overview', label: 'Overview & Rubric', icon: 'clipboard' },
-  { id: 'tutor', label: 'AI Tutor', icon: 'lightbulb' },
   { id: 'solver', label: 'Solver & Report', icon: 'code' },
   { id: 'turnin', label: 'Turn In', icon: 'upload' },
 ];
@@ -128,7 +126,6 @@ export default function AssignmentDetailModal({ assignment, initialTab = 'overvi
               onSwitchTab={setTab}
             />
           )}
-          {tab === 'tutor' && <TutorPanel assignment={assignment} />}
           {tab === 'solver' && <SolutionPanel assignment={assignment} />}
           {tab === 'turnin' && <TurnInPanel assignment={assignment} onTurnIn={onTurnIn} />}
         </div>
@@ -256,14 +253,6 @@ function OverviewTab({ assignment, dueDate, isOverdue, isSubmitted, onSwitchTab 
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap shrink-0">
-          <button
-            type="button"
-            onClick={() => onSwitchTab('tutor')}
-            className="px-3.5 py-2 bg-white hover:bg-gray-50 text-[#5142c1] font-bold text-xs rounded-xl border border-[#d6d0fb] shadow-2xs transition-all flex items-center gap-1.5"
-          >
-            <Icon name="lightbulb" size={15}/>
-            <span>Ask AI Tutor</span>
-          </button>
           <button
             type="button"
             onClick={() => onSwitchTab('solver')}

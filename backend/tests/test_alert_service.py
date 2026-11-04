@@ -400,7 +400,7 @@ def test_daily_morning_digest_generation_and_idempotency(mock_send, db_session):
 @patch("app.services.alert_service.send_email", return_value=True)
 def test_timetable_20m_and_5m_reminders(mock_send, db_session):
     tt = TimetableEntry(
-        id=1, external_id="tt1", subject="Operating Systems",
+        id=1, user_id="dev_student_user", external_id="tt1", subject="Operating Systems",
         weekday=0, start_time="10:00", end_time="11:00", room="Lab 2", teacher="Engr. Farooq"
     )
     db_session.add(tt)
@@ -410,20 +410,20 @@ def test_timetable_20m_and_5m_reminders(mock_send, db_session):
 
     # 1. At 09:40 (20 minutes before 10:00)
     sim_20m = datetime(2026, 10, 12, 9, 40, 0, tzinfo=ZoneInfo("Asia/Karachi"))
-    reminders_20m = service.generate_upcoming_class_reminders(user_id="dev_student_user", target_dt=sim_20m, send_immediately=True)
+    reminders_20m = service.generate_upcoming_class_reminders(user_id="dev_student_user", target_dt=sim_20m, lookahead_minutes=20, send_immediately=True)
     assert len(reminders_20m) == 1
     assert reminders_20m[0]["milestone"] == "20m"
     assert reminders_20m[0]["minutes_left"] == 20
     assert mock_send.call_count == 1
 
     # Idempotency check: second check within 20m window doesn't repeat
-    reminders_20m_dup = service.generate_upcoming_class_reminders(user_id="dev_student_user", target_dt=sim_20m, send_immediately=True)
+    reminders_20m_dup = service.generate_upcoming_class_reminders(user_id="dev_student_user", target_dt=sim_20m, lookahead_minutes=20, send_immediately=True)
     assert len(reminders_20m_dup) == 0
 
     # 2. At 09:55 (5 minutes before 10:00)
     mock_send.reset_mock()
     sim_5m = datetime(2026, 10, 12, 9, 55, 0, tzinfo=ZoneInfo("Asia/Karachi"))
-    reminders_5m = service.generate_upcoming_class_reminders(user_id="dev_student_user", target_dt=sim_5m, send_immediately=True)
+    reminders_5m = service.generate_upcoming_class_reminders(user_id="dev_student_user", target_dt=sim_5m, lookahead_minutes=5, send_immediately=True)
     assert len(reminders_5m) == 1
     assert reminders_5m[0]["milestone"] == "5m"
     assert reminders_5m[0]["minutes_left"] == 5
@@ -527,7 +527,7 @@ def test_timetable_reminder_includes_room_in_subject_and_body(mock_send, db_sess
 
     service = AlertService(db_session)
     sim_time = datetime(2026, 10, 12, 15, 40, 0, tzinfo=ZoneInfo("Asia/Karachi"))
-    reminders = service.generate_upcoming_class_reminders(user_id="dev_student_user", target_dt=sim_time, send_immediately=True)
+    reminders = service.generate_upcoming_class_reminders(user_id="dev_student_user", target_dt=sim_time, lookahead_minutes=20, send_immediately=True)
 
     assert len(reminders) == 1
     mock_send.assert_called_once()
@@ -560,4 +560,3 @@ def test_daily_digest_omits_gcr_sync_status(mock_send, db_session):
     assert "Sync issues" not in kwargs["html_content"]
     assert "GCR auth expired" not in kwargs["html_content"]
     assert "Room C-305" in kwargs["html_content"]
-

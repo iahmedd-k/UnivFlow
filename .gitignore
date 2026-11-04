@@ -46,6 +46,12 @@ frontend/.env
 *.sqlite
 *.sqlite3
 
+# Runtime PDF storage
+backend/data/
+data/
+*.pdf
+frontend/public/*_preview.png
+
 # Logs
 *.log
 logs/

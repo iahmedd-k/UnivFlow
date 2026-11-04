@@ -142,12 +142,10 @@ export default function PortalPage() {
   }
 
   return (
-    <main className="mx-auto max-w-6xl space-y-6 pb-12 text-heading">
+    <main className="mx-auto max-w-none space-y-4 pb-8 text-heading">
       <header className="flex flex-col gap-4 border-b border-border-light pb-6 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wider text-label">Academic integrations</p>
-          <h1 className="my-1 text-2xl sm:text-3xl font-semibold tracking-tight text-heading">University portal</h1>
-          <p className="mt-1 max-w-2xl text-sm font-normal text-muted leading-relaxed">Connect once to sync your attendance, class schedule, and academic results automatically.</p>
+          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-heading">University portal</h1>
         </div>
         <div className="inline-flex w-fit items-center gap-2 rounded-full border border-border bg-surface px-3 py-1.5 text-xs font-medium text-heading shadow-xs">
           <span className={`h-2 w-2 rounded-full ${connected ? 'bg-success' : reconnect ? 'bg-warning' : 'bg-muted'}`} />

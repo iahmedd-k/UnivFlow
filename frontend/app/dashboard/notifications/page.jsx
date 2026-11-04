@@ -99,12 +99,10 @@ export default function NotificationsPage() {
     }
   };
 
-  return <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 text-[#292d3a]">
+  return <div className="mx-auto flex w-full max-w-none flex-col gap-4 text-[#292d3a]">
     <header className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
       <div>
-        <p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">OUTBOUND UPDATES</p>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">Notifications & Alerts</h1>
-        <p className="mt-1 text-xs text-[#858998]">Real-time attendance warnings, 10-minute timetable reminders, and outbound delivery queue.</p>
+        <h1 className="text-2xl font-semibold tracking-tight">Notifications & Alerts</h1>
       </div>
       <div className="flex flex-wrap gap-2.5">
         <button className="inline-flex min-h-9 items-center justify-center rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb] disabled:opacity-55" type="button" onClick={checkAlerts} disabled={busy}>
@@ -115,9 +113,9 @@ export default function NotificationsPage() {
     </header>
     {(error || queryError) && <div role="alert" className="rounded-lg border border-[#f1dede] bg-[#fff8f8] px-3 py-2.5 text-xs text-[#a04a4a]">{error || queryError}<button type="button" className="ml-2 font-semibold underline" onClick={load}>Retry</button></div>}{notice && <div className="rounded-lg border border-[#d8eee4] bg-[#f3fbf7] px-3 py-2.5 text-xs text-[#43816b]">{notice}</div>}
     <section className="grid grid-cols-1 gap-3.5 md:grid-cols-3">{[['Total queued', loading ? '—' : stats?.total ?? 0], ['Pending', loading ? '—' : stats?.pending ?? 0], ['Sent / failed', loading ? '—' : `${stats?.sent ?? 0} / ${stats?.failed ?? 0}`]].map(([label, value]) => <article className="rounded-xl border border-[#ededf2] bg-white p-4" key={label}><span className="block text-xs text-[#858998]">{label}</span><strong className="mt-2 block text-[22px] font-semibold text-[#343746]">{value}</strong></article>)}</section>
-    <section className="rounded-xl border border-[#ebebf0] bg-white p-5 shadow-sm">
+    <section className="rounded-xl border border-[#ebebf0] bg-white p-4 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div><p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">PERSONAL AUTOMATION</p><h2 className="mt-1 text-sm font-semibold text-[#343746]">Daily academic briefing</h2><p className="mt-1 max-w-2xl text-xs leading-5 text-[#777b89]">Combines today&apos;s classes, attendance warnings, deadlines, and recent sync failures. The schedule uses your selected timezone.</p></div>
+        <div><h2 className="text-sm font-semibold text-[#343746]">Daily academic briefing</h2></div>
         <label className="flex items-center gap-2 text-xs font-semibold text-[#5c6070]"><input type="checkbox" checked={briefing.enabled} onChange={(event) => setBriefingDraft({ ...briefing, enabled: event.target.checked })} /> Enabled</label>
       </div>
       <div className="mt-4 flex flex-wrap items-end gap-3">
@@ -128,9 +126,8 @@ export default function NotificationsPage() {
       </div>
       <p className="mt-3 text-xs text-[#858998]">Last run: {briefing.last_run ? new Date(briefing.last_run).toLocaleString() : 'Never'} · Next run: {briefing.enabled && briefing.next_run ? new Date(briefing.next_run).toLocaleString() : 'Disabled'}</p>
     </section>
-    <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm"><header className="flex items-center justify-between gap-3.5 border-b border-[#f0f0f3] px-5 py-4"><div><p className="text-xs font-semibold uppercase tracking-[.12em] text-[#858998]">DELIVERY QUEUE</p><h2 className="text-[13px] font-semibold text-[#343746]">Recent notifications</h2></div><span className="inline-flex items-center rounded-full bg-[#f1f1f6] px-2 py-1 text-xs font-semibold text-[#6e7281]">{items.length}</span></header><nav className="flex gap-1.5 overflow-auto border-b border-[#efeff3] px-4 py-3" aria-label="Notification status">{filters.map((item) => <button key={item.key || 'all'} type="button" className={`whitespace-nowrap rounded-md border px-2.5 py-1.5 text-xs ${filter === item.key ? 'border-[#e9e5ff] bg-[#f2efff] font-semibold text-[#5e4fc5]' : 'border-transparent text-[#777b89]'}`} onClick={() => changeFilter(item.key)}>{item.label}</button>)}</nav>
+    <section className="min-w-0 rounded-xl border border-[#ebebf0] bg-white shadow-sm"><header className="flex items-center justify-between gap-3 border-b border-[#f0f0f3] px-4 py-3"><h2 className="text-[13px] font-semibold text-[#343746]">Recent notifications</h2><span className="inline-flex items-center rounded-full bg-[#f1f1f6] px-2 py-1 text-xs font-semibold text-[#6e7281]">{items.length}</span></header><nav className="flex gap-1.5 overflow-auto border-b border-[#efeff3] px-4 py-2" aria-label="Notification status">{filters.map((item) => <button key={item.key || 'all'} type="button" className={`whitespace-nowrap rounded-md border px-2.5 py-1.5 text-xs ${filter === item.key ? 'border-[#e9e5ff] bg-[#f2efff] font-semibold text-[#5e4fc5]' : 'border-transparent text-[#777b89]'}`} onClick={() => changeFilter(item.key)}>{item.label}</button>)}</nav>
       {loading ? <div className="px-5 py-8 text-center text-xs leading-relaxed text-[#9396a3]">Loading notifications…</div> : items.length ? <div className="flex flex-col">{items.map((item) => <article className="flex min-h-[60px] items-center gap-3 border-b border-[#f1f1f4] px-4 py-3 last:border-b-0 hover:bg-[#fafafd]" key={item.id}><span className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-lg bg-[#f0edff] text-[#6657d9]"><Icon name="messageText" size={15}/></span><span className="flex min-w-0 flex-1 flex-col gap-1"><strong className="overflow-hidden text-ellipsis whitespace-nowrap text-xs font-semibold text-[#414553]">{item.subject || 'Uniflow notification'}</strong><small className="overflow-hidden text-ellipsis whitespace-nowrap text-xs text-[#9295a2]">{item.recipient} · {item.notification_type || 'General'}{item.error ? ` · ${item.error}` : ''}</small><small className="overflow-hidden text-ellipsis whitespace-nowrap text-xs text-[#9295a2]">{item.payload}</small></span><span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold ${statusTone(item.status)}`}>{(item.status || 'PENDING').toLowerCase()}</span>{item.status === 'PENDING' && <button className="inline-flex min-h-9 shrink-0 items-center justify-center rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb] disabled:opacity-55" type="button" disabled={busy} onClick={() => sendOne(item.id)}>Send</button>}</article>)}</div> : <div className="px-5 py-8 text-center text-xs leading-relaxed text-[#9396a3]"><strong className="mb-1 block text-xs text-[#515563]">No notifications here</strong>New notifications appear when Uniflow queues an email for delivery.</div>}
     </section>
-    <p className="mt-1 rounded-lg bg-[#f6f5ff] px-3 py-2.5 text-xs leading-relaxed text-[#77729b]">This is the outbound email queue. Google Classroom sync runs every 30 minutes and a saved university portal session syncs hourly, but those syncs do not yet create student alert emails automatically. Emails shown here are sent when a user or an automation explicitly queues them.</p>
   </div>;
 }

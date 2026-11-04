@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { api } from '@/app/lib/api';
 import MarkdownRenderer from '../MarkdownRenderer';
+import WebChatImportModal from '../rag-assistant/WebChatImportModal';
 import { PanelLeft, PanelRight, RotateCw, Plus, Sparkles, ArrowUp } from 'lucide-react';
 
 const syncTime = (value) => {
@@ -59,6 +60,7 @@ export default function StudyAssistantPage() {
   const [notice, setNotice] = useState('');
   const [showSources, setShowSources] = useState(() => (typeof window !== 'undefined' ? window.innerWidth >= 1024 : true));
   const [showRecent, setShowRecent] = useState(false);    // right panel (UI only)
+  const [showWebChatModal, setShowWebChatModal] = useState(false);
   const listRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -198,6 +200,15 @@ export default function StudyAssistantPage() {
           {syncStatus?.google_connected === false
             ? <a href="/api/v1/auth/google?redirect_to=/dashboard/courses" className="hidden h-11 items-center rounded-xl border border-line px-3.5 text-sm font-semibold transition hover:bg-paper sm:inline-flex">Connect Classroom</a>
             : <button type="button" onClick={syncMaterials} disabled={syncing} className="hidden h-11 items-center gap-2 rounded-xl border border-line px-3.5 text-sm font-semibold transition hover:bg-paper disabled:opacity-60 sm:inline-flex"><RotateCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />{syncing ? 'Syncing…' : 'Sync courses'}</button>}
+          <button
+            type="button"
+            onClick={() => setShowWebChatModal(true)}
+            className="hidden sm:inline-flex items-center gap-1.5 h-11 rounded-xl border border-line px-3.5 text-sm font-semibold transition hover:bg-paper"
+            title="Export ChatGPT, Claude, or Gemini chat to PDF"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-violet" />
+            <span>Export Web Chat</span>
+          </button>
           <button type="button" onClick={startNewChat} className="inline-flex items-center gap-1.5 h-11 rounded-xl bg-violet px-4 text-sm font-semibold text-white transition hover:bg-violet-dark"><Plus className="w-4 h-4" /> New chat</button>
           <button type="button" onClick={() => setShowRecent((v) => !v)} aria-pressed={showRecent} aria-label="Toggle recent chats" className={toggleBtn(showRecent)}><PanelIcon side="right" /></button>
         </div>
@@ -284,6 +295,16 @@ export default function StudyAssistantPage() {
           </aside>
         )}
       </div>
+
+      <WebChatImportModal
+        isOpen={showWebChatModal}
+        onClose={() => setShowWebChatModal(false)}
+        onViewLibrary={() => {
+          if (typeof window !== 'undefined') {
+            window.location.href = '/dashboard/rag-assistant';
+          }
+        }}
+      />
     </main>
   );
 }

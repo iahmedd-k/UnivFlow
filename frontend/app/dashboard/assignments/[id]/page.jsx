@@ -9,13 +9,11 @@ import { format, isValid, formatDistanceToNow } from 'date-fns';
 import { api } from '@/app/lib/api';
 import { getQueryOwnerKey } from '@/app/lib/manual-auth';
 import Icon from '@/app/dashboard/Icon';
-import TutorPanel from '../TutorPanel';
 import TurnInPanel from '../TurnInPanel';
 import SolutionPanel from '../SolutionPanel';
 
 const TABS = [
   { id: 'overview', label: 'Overview & Rubric', icon: 'clipboard' },
-  { id: 'tutor', label: 'AI Tutor', icon: 'lightbulb' },
   { id: 'solver', label: 'Solver & Report', icon: 'code' },
   { id: 'turnin', label: 'Turn In', icon: 'upload' },
 ];
@@ -75,7 +73,7 @@ export default function AssignmentDetailPage() {
 
   if (loading) {
     return (
-      <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5">
+      <main className="mx-auto flex w-full max-w-none flex-col gap-4">
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Link href="/dashboard/assignments" className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md border border-neutral-200 bg-white px-3 text-xs font-semibold text-neutral-700 no-underline hover:bg-neutral-50">
             <Icon name="arrowLeft" size={13}/> Back to assignments
@@ -91,7 +89,7 @@ export default function AssignmentDetailPage() {
 
   if (error || queryError || !assignment) {
     return (
-      <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5">
+      <main className="mx-auto flex w-full max-w-none flex-col gap-4">
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Link href="/dashboard/assignments" className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md border border-neutral-200 bg-white px-3 text-xs font-semibold text-neutral-700 no-underline hover:bg-neutral-50">
           <Icon name="arrowLeft" size={13}/> Back to assignments
@@ -119,7 +117,7 @@ export default function AssignmentDetailPage() {
   const materials = assignment.materials || [];
 
   return (
-    <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-5 pb-12">
+    <main className="mx-auto flex w-full max-w-none flex-col gap-4 pb-8">
       {/* Top Back and Navigation Bar */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <Link
@@ -327,17 +325,10 @@ export default function AssignmentDetailPage() {
                     Work on this assignment with Uniflow
                   </strong>
                   <span style={{ fontSize: 11, color: '#7f7aab' }}>
-                    Ask the Socratic AI tutor, run the code solver in sandbox, or turn in directly to Google Classroom.
+                    Run the code solver in sandbox, or turn in directly to Google Classroom.
                   </span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <button
-                    type="button"
-                    onClick={() => setTab('tutor')}
-                    className="inline-flex min-h-9 cursor-pointer items-center justify-center gap-2 rounded-md border border-[#e5e5ec] bg-white px-3 text-xs font-semibold text-[#5c6070] hover:bg-[#f8f8fb]"
-                  >
-                    <span><Icon name="lightbulb" size={14}/> Ask AI Tutor</span>
-                  </button>
                   <button
                     type="button"
                     onClick={() => setTab('solver')}
@@ -357,7 +348,6 @@ export default function AssignmentDetailPage() {
             </div>
           )}
 
-          {tab === 'tutor' && <TutorPanel assignment={assignment} />}
           {tab === 'solver' && <SolutionPanel assignment={assignment} />}
           {tab === 'turnin' && (
             <TurnInPanel

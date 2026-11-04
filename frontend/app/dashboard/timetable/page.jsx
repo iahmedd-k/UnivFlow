@@ -265,12 +265,10 @@ export default function TimetablePage() {
   };
 
   return (
-    <main className="mx-auto w-full max-w-6xl space-y-6 pb-10 font-sans text-heading">
+    <main className="mx-auto w-full max-w-none space-y-4 pb-8 font-sans text-heading">
       <header className="flex flex-col justify-between gap-4 border-b border-border-light pb-5 sm:flex-row sm:items-end">
         <div>
-          <p className="text-sm font-medium text-muted">Your weekly schedule</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-heading sm:text-3xl">Timetable</h1>
-          <p className="mt-1.5 text-sm leading-6 text-muted">See when and where each class meets throughout the week. Portal updates only run when you start them here.</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-heading sm:text-3xl">Timetable</h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" onClick={() => setShowImportModal(true)} className="inline-flex h-10 items-center gap-2 rounded-lg border border-border-input bg-surface px-3.5 text-sm font-medium text-nav hover:bg-surface-secondary">
@@ -306,10 +304,9 @@ export default function TimetablePage() {
       </section>
 
       <section aria-labelledby="weekly-schedule-heading" className="overflow-hidden rounded-xl border border-line bg-surface">
-        <header className="flex items-center justify-between gap-3 border-b border-border-light px-5 py-4">
+        <header className="flex items-center justify-between gap-3 border-b border-border-light px-4 py-3">
           <div>
             <h2 id="weekly-schedule-heading" className="text-base font-semibold text-heading">Weekly schedule</h2>
-            <p className="mt-0.5 text-sm text-muted">Classes are listed by day and start time.</p>
           </div>
           {!loading && <span className="rounded-md bg-surface-secondary px-2.5 py-1 text-xs font-medium text-muted tabular-nums">{classes.length} total</span>}
         </header>
