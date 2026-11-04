@@ -1594,6 +1594,7 @@ def execute_quick_turn_in(db: Session, assignment_id: int, user_id: str, action:
     reusable_drive_pair = bool(
         same_content_as_previous and existing_sub and existing_sub.google_doc_id
         and existing_sub.google_drive_file_id
+        and existing_sub.google_doc_id != existing_sub.google_drive_file_id
     )
     existing_state = getattr(existing_sub.submission_state, "value", existing_sub.submission_state) if existing_sub else None
 
