@@ -560,3 +560,54 @@ def test_daily_digest_omits_gcr_sync_status(mock_send, db_session):
     assert "Sync issues" not in kwargs["html_content"]
     assert "GCR auth expired" not in kwargs["html_content"]
     assert "Room C-305" in kwargs["html_content"]
+
+
+def test_recipient_email_strictly_isolated(db_session):
+    from app.services.alert_service import get_user_recipient_email
+    from app.db.models import Setting
+
+    user_a = "user_alpha_123"
+    user_b = "user_beta_456"
+
+    # User A has configured an email in Dashboard Settings
+    db_session.add(Setting(key=f"notification_email_{user_a}", value="alpha.alerts@example.com"))
+
+    # User B has only Clerk, Google, and portal profiles, but NO dashboard notification_email
+    db_session.add(Setting(key=f"clerk_user_{user_b}", value='{"email": "beta.clerk@example.com"}'))
+    db_session.add(Setting(key=f"google_connected_email_{user_b}", value="beta.google@example.com"))
+    db_session.add(Setting(key=f"portal:{user_b}:university_portal_login_email", value="beta.portal@example.com"))
+    db_session.commit()
+
+    # User A gets their dashboard alert email
+    assert get_user_recipient_email(db_session, user_a) == "alpha.alerts@example.com"
+
+    # User B gets EMPTY STRING because they never configured an email in Dashboard Settings
+    assert get_user_recipient_email(db_session, user_b) == ""
+
+
+@patch("app.services.alert_service.send_email", return_value=True)
+def test_daily_class_list_skipped_when_no_classes(mock_send, db_session):
+    from app.db.models import Setting
+    db_session.add(Setting(key="notification_email_dev_student_user", value="student@au.edu.pk"))
+    db_session.commit()
+
+    service = AlertService(db_session)
+    sunday = date(2026, 10, 18)  # Sunday - no classes in db
+    res = service.generate_daily_class_list_email(user_id="dev_student_user", target_date=sunday, send_immediately=True)
+
+    assert res is None
+    mock_send.assert_not_called()
+
+
+@patch("app.services.alert_service.send_email", return_value=True)
+def test_daily_morning_digest_skipped_when_empty(mock_send, db_session):
+    from app.db.models import Setting
+    db_session.add(Setting(key="notification_email_dev_student_user", value="student@au.edu.pk"))
+    db_session.commit()
+
+    service = AlertService(db_session)
+    sunday = date(2026, 10, 18)  # Sunday - no classes, no tasks, no warnings
+    digest = service.generate_daily_morning_digest(user_id="dev_student_user", target_date=sunday, send_immediately=True)
+
+    assert digest is None
+    mock_send.assert_not_called()

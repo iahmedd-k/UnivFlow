@@ -103,26 +103,19 @@ class CreateNotificationForMeRequest(BaseModel):
 
 def _get_user_notification_email(db: Session, user_id: str = "") -> Optional[str]:
     """Resolve only this user's configured address; never borrow another account's email."""
-    if user_id:
-        setting = db.query(Setting).filter(Setting.key == f"notification_email_{user_id}").first()
-        if setting and setting.value and setting.value.strip() and "@" in setting.value:
-            return setting.value.strip()
-        if user_id == "dev_student_user" and not settings.is_production:
-            default_s = db.query(Setting).filter(Setting.key == "notification_email_default").first()
-            if default_s and default_s.value and "@" in default_s.value:
-                return default_s.value.strip()
+    if not user_id or user_id in ("legacy",):
+        return None
 
-    clerk_s = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first() if user_id else None
-    if clerk_s and clerk_s.value:
-        try:
-            import json
-            data = json.loads(clerk_s.value)
-            email = data.get("email") or data.get("emailAddress") or ""
-            if email and "@" in email:
-                return email.strip()
-        except Exception:
-            pass
+    setting = db.query(Setting).filter(Setting.key == f"notification_email_{user_id}").first()
+    if setting and setting.value and setting.value.strip() and "@" in setting.value:
+        return setting.value.strip()
 
+    if user_id == "dev_student_user" and not settings.is_production:
+        default_s = db.query(Setting).filter(Setting.key == "notification_email_default").first()
+        if default_s and default_s.value and "@" in default_s.value:
+            return default_s.value.strip()
+
+    # Strictly no fallback to clerk_user, google_connected_email, or portal login email.
     return None
 
 

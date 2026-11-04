@@ -91,9 +91,9 @@ def generate_study_answer(
         # Current free-tier models. Keep this short: retrying retired aliases burns
         # the request deadline before a usable model gets a chance to respond.
         gemini_candidates = (
-            [model, "gemini-3.1-flash-lite"]
+            [model, "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite"]
             if model
-            else [settings.study_assistant_model or "gemini-3.6-flash", "gemini-3.1-flash-lite"]
+            else [settings.study_assistant_model or "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite"]
         )
         seen_gemini = set()
         deadline = time.monotonic() + 55

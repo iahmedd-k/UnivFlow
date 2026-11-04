@@ -113,7 +113,7 @@ class Settings(BaseSettings):
         return self.google_scopes.split()
 
     # AI / LLM
-    ai_provider: str = "groq"
+    ai_provider: str = "gemini"
     groq_api_key: str = Field(
         default="",
         validation_alias=AliasChoices("groq_api_key", "GROQ_API_KEY"),
@@ -128,7 +128,7 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("gemini_api_key", "GEMINI_API_KEY", "Gemini_API_Key"),
     )
-    study_assistant_model: str = "gemini-3.6-flash"
+    study_assistant_model: str = "gemini-3.5-flash-lite"
     pollinations_api_key: str = ""
     pollinations_base_url: str = "https://gen.pollinations.ai"
     pollinations_image_model: str = "zimage"

@@ -263,6 +263,10 @@ def _run_exam_reminder_job():
         exams = db.query(Exam).filter(Exam.date.isnot(None)).all()
         for exam in exams:
             try:
+                if not exam.user_id or exam.user_id in ("legacy", "dev_student_user"):
+                    continue
+                if settings.is_production and not _has_private_access(db, exam.user_id):
+                    continue
                 raw_time = (exam.time or "").strip()
                 raw_time_lower = raw_time.lower()
                 for separator in ("–", "—", " to ", " - "):
@@ -401,30 +405,21 @@ def _run_daily_class_list_email():
 
 
 def _alert_user_ids(db):
-    """Enumerate exact account IDs with a user-owned email/profile setting."""
+    """Enumerate exact account IDs with an explicitly configured alert email."""
     user_ids = set()
-    for setting in db.query(Setting.key).filter(
-        (Setting.key.like("notification_email_%"))
-        | (Setting.key.like("clerk_user_%"))
-        | (Setting.key.like("google_connected_email_%"))
-        | (Setting.key.like("portal:%:university_portal_login_email"))
+    for setting in db.query(Setting).filter(
+        Setting.key.like("notification_email_%")
     ).all():
-        key = setting[0]
-        if key.startswith("notification_email_"):
-            user_id = key[len("notification_email_"):]
-            if user_id != "default":
-                user_ids.add(user_id)
-        elif key.startswith("clerk_user_") and not key.startswith("clerk_user_revoked_"):
-            user_ids.add(key[len("clerk_user_"):])
-        elif key.startswith("google_connected_email_"):
-            user_ids.add(key[len("google_connected_email_"):])
-        elif key.startswith("portal:"):
-            parts = key.split(":", 2)
-            if len(parts) == 3:
-                user_ids.add(parts[1])
+        key = setting.key
+        val = (setting.value or "").strip()
+        if not val or "@" not in val:
+            continue
+        user_id = key[len("notification_email_"):]
+        if user_id and user_id not in ("default", "legacy", "dev_student_user"):
+            user_ids.add(user_id)
     return sorted(
         user_id for user_id in user_ids
-        if user_id and user_id != "dev_student_user" and _has_private_access(db, user_id)
+        if user_id and _has_private_access(db, user_id)
     )
 
 

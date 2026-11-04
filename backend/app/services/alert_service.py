@@ -129,15 +129,17 @@ def calculate_safe_bunks(attended: int, total: int, threshold: float = 75.0) -> 
 
 def get_user_recipient_email(db: Session, user_id: str = "") -> str:
     """
-    Resolve the most accurate notification recipient email for a student.
-    Strictly prioritizes the email address the student saved in Dashboard -> Settings.
+    Resolve the notification recipient email for a student.
+    Strictly uses ONLY the email address the student saved in Dashboard -> Settings.
+    Does NOT fall back to general account or integration emails.
     """
-    if not user_id:
+    if not user_id or user_id in ("legacy",):
         return ""
 
     setting = db.query(Setting).filter(Setting.key == f"notification_email_{user_id}").first()
     if setting and setting.value and setting.value.strip() and "@" in setting.value:
         return setting.value.strip()
+
     if user_id == "dev_student_user" and not settings.is_production:
         local_default = db.query(Setting).filter(Setting.key == "notification_email_default").first()
         if local_default and local_default.value and "@" in local_default.value:
@@ -152,28 +154,8 @@ def get_user_recipient_email(db: Session, user_id: str = "") -> str:
         # configured. Keep alert generation deterministic.
         return "dev-student@localhost.invalid"
 
-    # Only use profile or integration emails associated with this exact user.
-    clerk_s = db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
-    if clerk_s and clerk_s.value:
-        try:
-            data = json.loads(clerk_s.value)
-            email = data.get("email") or data.get("emailAddress") or ""
-            if email and "@" in email:
-                return email.strip()
-        except Exception:
-            pass
-
-    portal_email = db.query(Setting).filter(
-        Setting.key == f"portal:{user_id}:university_portal_login_email"
-    ).first()
-    if portal_email and portal_email.value and portal_email.value.strip() and "@" in portal_email.value:
-        return portal_email.value.strip()
-
-    g_email = db.query(Setting).filter(Setting.key == f"google_connected_email_{user_id}").first()
-    if g_email and g_email.value and g_email.value.strip() and "@" in g_email.value:
-        return g_email.value.strip()
-
-    # Never use shared service/provider addresses as a user's personal recipient.
+    # Strictly do NOT fall back to clerk_user, google_connected_email, or portal login email.
+    # Email alerts must ONLY go to the email the user explicitly saved in Dashboard Settings.
     return ""
 
 
@@ -1447,6 +1429,11 @@ class AlertService:
                     "url": a.url or "https://classroom.google.com",
                 })
 
+        # Skip sending if student has no scheduled classes, no urgent attendance warnings, and no upcoming tasks
+        if not classes_data and not urgent_warnings and not upcoming_tasks:
+            logger.info(f"Daily morning digest skipped for {user_id}: no classes, warnings, or tasks today.")
+            return None
+
         profile_row = self.db.query(Setting).filter(Setting.key == f"student_profile_{user_id}").first()
         if not profile_row:
             profile_row = self.db.query(Setting).filter(Setting.key == f"clerk_user_{user_id}").first()
@@ -1551,6 +1538,11 @@ class AlertService:
             .order_by(TimetableEntry.start_time)
             .all()
         )
+
+        # Do not dispatch an email if there are no classes scheduled today
+        if not scheduled_today:
+            logger.info(f"Daily class list skipped for {user_id}: no classes scheduled today ({target_date}).")
+            return None
 
         profile_row = self.db.query(Setting).filter(Setting.key == f"student_profile_{user_id}").first()
         if not profile_row:
@@ -1939,6 +1931,9 @@ class AlertService:
         Send exactly ONE email notification when a new Google Classroom task arrives.
         Strictly deduplicated with key 'gcr-new-task:{user_id}:{assignment.id}'.
         """
+        if not user_id or user_id in ("legacy",):
+            return None
+
         idempotency_key = f"gcr-new-task:{user_id}:{assignment.id}"
         existing = (
             self.db.query(Notification)
