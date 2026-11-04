@@ -67,9 +67,8 @@ body:has(#univflow-print-document) > *:not(#univflow-print-document) {
 }
 
 .pdf-document-title {
-    border-bottom: 2px solid #dfe4ec;
-    margin: 0 0 22px;
-    padding: 0 0 14px;
+    margin: 0 0 28px;
+    padding: 0;
 }
 
 .pdf-document-title p {
@@ -92,11 +91,12 @@ body:has(#univflow-print-document) > *:not(#univflow-print-document) {
     box-sizing: border-box !important;
     width: 100% !important;
     max-width: none !important;
-    margin: 0 0 18px !important;
-    padding: 13px 17px !important;
-    border: 1px solid #e3e7ee !important;
-    border-left: 4px solid #d9deeb !important;
-    border-radius: 9px !important;
+    margin: 0 0 24px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
     break-inside: auto !important;
     page-break-inside: auto !important;
     orphans: 3;
@@ -104,17 +104,15 @@ body:has(#univflow-print-document) > *:not(#univflow-print-document) {
 }
 
 .pdf-turn-user {
-    background: #f4f6fb !important;
-    border-color: #e0e5f0 !important;
-    border-left-color: #5965c5 !important;
+    background: transparent !important;
 }
 
 .pdf-turn-assistant {
-    background: #ffffff !important;
+    background: transparent !important;
 }
 
 .pdf-turn-label {
-    color: #5965a5 !important;
+    color: #5f6368 !important;
     display: block !important;
     font-size: 9px !important;
     font-weight: 700 !important;
@@ -161,11 +159,14 @@ main [data-message-author-role] {
 
 #univflow-print-document [data-message-author-role] {
     box-sizing: border-box !important;
-    margin: 0 0 18px !important;
-    padding: 14px 18px !important;
-    border-radius: 10px !important;
+    margin: 0 0 24px !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
     font-size: 15px !important;
     line-height: 1.65 !important;
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
     break-inside: auto !important;
     page-break-inside: auto !important;
     orphans: 3;
@@ -173,15 +174,23 @@ main [data-message-author-role] {
 }
 
 #univflow-print-document [data-message-author-role="user"] {
-    background: #f3f5fb !important;
-    border: 1px solid #dfe4f1 !important;
-    border-left: 4px solid #5965c5 !important;
+    background: transparent !important;
 }
 
 #univflow-print-document [data-message-author-role="assistant"] {
-    background: #ffffff !important;
-    border: 1px solid #e8ebf0 !important;
-    border-left: 4px solid #d9deeb !important;
+    background: transparent !important;
+}
+
+/* Flatten copied site components so web-chat decoration cannot leak into print. */
+#univflow-print-document *,
+#univflow-print-document *::before,
+#univflow-print-document *::after {
+    box-shadow: none !important;
+}
+
+#univflow-print-document [data-message-author-role],
+#univflow-print-document [data-message-author-role] * {
+    background-image: none !important;
 }
 
 /* Expand the app's nested conversation scroller for complete print output */
@@ -231,13 +240,14 @@ img, svg, canvas, [class*="artifact"] {
 
 #univflow-print-document th,
 #univflow-print-document td {
-    border: 1px solid #d9dee8 !important;
+    border: 0 !important;
+    border-bottom: 1px solid #d9dee8 !important;
     padding: 7px 9px !important;
     vertical-align: top !important;
 }
 
 #univflow-print-document th {
-    background: #f1f4f9 !important;
+    background: transparent !important;
     font-weight: 650 !important;
 }
 
@@ -250,10 +260,10 @@ pre, code {
 }
 
 pre {
-    background: #f8fafc !important;
-    border: 1px solid #dfe4ec !important;
-    border-radius: 7px !important;
-    padding: 12px 14px !important;
+    background: transparent !important;
+    border: 1px solid #d9dee8 !important;
+    border-radius: 0 !important;
+    padding: 10px 12px !important;
     margin: 12px 0 !important;
 }
 
