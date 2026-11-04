@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { SignUp } from '@clerk/nextjs';
+import { SignUp, ClerkLoaded, ClerkLoading } from '@clerk/nextjs';
 import { manualSignup } from '@/app/lib/api';
 import { setManualSession, isManualAuthEnabled } from '@/app/lib/manual-auth';
 
@@ -137,13 +137,24 @@ export default function Page() {
           )}
 
           {authMode === 'clerk' ? (
-            <SignUp
-              routing="path"
-              path="/sign-up"
-              signInUrl="/sign-in"
-              fallbackRedirectUrl="/dashboard"
-              appearance={appearance}
-            />
+            <>
+              <ClerkLoading>
+                <div className="flex flex-col items-center justify-center py-12 px-6 rounded-2xl border border-stone-200/80 bg-white/70 shadow-xs backdrop-blur-xs min-h-[420px] w-full text-center">
+                  <div className="size-8 rounded-full border-2 border-indigo-600 border-t-transparent animate-spin mb-3" />
+                  <p className="text-xs font-semibold text-stone-700">Connecting to secure registration…</p>
+                  <span className="text-[11px] text-stone-400 mt-1">Initializing workspace authentication</span>
+                </div>
+              </ClerkLoading>
+              <ClerkLoaded>
+                <SignUp
+                  routing="path"
+                  path="/sign-up"
+                  signInUrl="/sign-in"
+                  fallbackRedirectUrl="/dashboard"
+                  appearance={appearance}
+                />
+              </ClerkLoaded>
+            </>
           ) : (
             <form onSubmit={handleManualSignup} className="space-y-4">
               {error && (

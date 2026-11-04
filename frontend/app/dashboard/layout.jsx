@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useAuth, useClerk, useUser, UserButton } from '@clerk/nextjs';
+import { useAuth, useClerk, useUser, UserButton, ClerkLoaded, ClerkLoading } from '@clerk/nextjs';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
@@ -327,7 +327,16 @@ export default function DashboardLayout({ children }) {
         <div className="px-4 py-3 border-t border-border-light flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
             {mounted && userId ? (
-              <UserButton afterSignOutUrl="/sign-in" appearance={{ elements: { avatarBox: 'size-7.5 rounded-lg' } }} />
+              <>
+                <ClerkLoading>
+                  <span className="size-7.5 rounded-lg bg-violet text-white grid place-items-center text-xs font-semibold shrink-0">
+                    {firstName.slice(0, 1).toUpperCase()}
+                  </span>
+                </ClerkLoading>
+                <ClerkLoaded>
+                  <UserButton afterSignOutUrl="/sign-in" appearance={{ elements: { avatarBox: 'size-7.5 rounded-lg' } }} />
+                </ClerkLoaded>
+              </>
             ) : (
               <span className="size-7.5 rounded-lg bg-violet text-white grid place-items-center text-xs font-semibold shrink-0">
                 {firstName.slice(0, 1).toUpperCase()}
