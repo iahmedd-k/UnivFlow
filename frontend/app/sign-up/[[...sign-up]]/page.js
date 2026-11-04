@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { SignUp, ClerkLoaded, ClerkLoading } from '@clerk/nextjs';
 import { manualSignup } from '@/app/lib/api';
 import { setManualSession, isManualAuthEnabled } from '@/app/lib/manual-auth';
@@ -23,14 +24,15 @@ const appearance = {
 };
 
 export default function Page() {
-  const [authMode, setAuthMode] = useState('clerk'); // 'clerk' (default) | 'manual'
+  const router = useRouter();
+  const [authMode, setAuthMode] = useState(() => isManualAuthEnabled() ? 'manual' : 'clerk'); // 'clerk' | 'manual'
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [manualAllowed, setManualAllowed] = useState(true);
+  const [manualAllowed, setManualAllowed] = useState(() => isManualAuthEnabled());
 
   useEffect(() => {
     setManualAllowed(isManualAuthEnabled());
@@ -53,7 +55,7 @@ export default function Page() {
       });
       if (res?.token && res?.user) {
         setManualSession(res.token, res.user);
-        window.location.href = '/dashboard';
+        router.replace('/dashboard');
       } else {
         throw new Error(res?.message || 'Registration failed.');
       }
