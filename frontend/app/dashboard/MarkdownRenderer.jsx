@@ -2,7 +2,9 @@
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
+import rehypeKatex from 'rehype-katex';
 
 const components = {
   code: ({ inline, className, children, ...props }) => (
@@ -58,7 +60,11 @@ export default function MarkdownRenderer({ content, className = '' }) {
 
   return (
     <div className={`min-w-0 text-sm text-slate-700 ${className}`}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeHighlight, rehypeKatex]}
+        components={components}
+      >
         {content}
       </ReactMarkdown>
     </div>

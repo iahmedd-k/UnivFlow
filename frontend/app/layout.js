@@ -2,6 +2,7 @@ import { ClerkProvider } from '@clerk/nextjs';
 import DashboardDataProvider from '@/app/dashboard/DashboardDataProvider';
 import { Inter, Plus_Jakarta_Sans } from 'next/font/google';
 import "./globals.css";
+import 'katex/dist/katex.min.css';
 
 const inter = Inter({
   subsets: ['latin'],
