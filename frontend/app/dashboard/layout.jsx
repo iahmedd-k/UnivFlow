@@ -267,17 +267,30 @@ export default function DashboardLayout({ children }) {
       {/* Redesigned Sidebar */}
       {!isStudyAssistant && <aside className={`fixed inset-y-0 left-0 z-50 w-64 flex flex-col bg-surface border-r border-line lg:translate-x-0 transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         {/* Brand Header */}
-        <div className="px-5 pt-5 pb-4 border-b border-border-light flex items-center justify-between">
-          <Link href="/dashboard" prefetch={false} className="flex items-center gap-2.5 no-underline group" onClick={() => setSidebarOpen(false)}>
-            <div className="size-8.5 rounded-xl bg-gradient-to-tr from-violet to-violet-dark text-white flex items-center justify-center shadow-md shadow-violet/20 font-semibold text-lg">
-              u
+        <div className="relative overflow-hidden border-b border-border-light bg-gradient-to-br from-violet-light/70 via-surface to-surface px-4 py-4">
+          <div className="pointer-events-none absolute -right-8 -top-10 size-28 rounded-full bg-violet/10 blur-2xl" />
+          <div className="relative flex items-center justify-between gap-3">
+            <Link href="/dashboard" prefetch={false} className="flex min-w-0 items-center gap-3 no-underline group" onClick={() => setSidebarOpen(false)}>
+              <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-gradient-to-tr from-violet to-violet-dark text-lg font-bold text-white shadow-md shadow-violet/25 transition-transform duration-150 group-hover:scale-105">
+                u
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate text-[15px] font-bold tracking-[-0.02em] text-heading">uniflow</span>
+                <span className="mt-0.5 block truncate text-[10px] font-medium uppercase tracking-[0.12em] text-muted">Academic workspace</span>
+              </span>
+            </Link>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <span className="rounded-full border border-violet/15 bg-white/70 px-2 py-1 text-[10px] font-bold tracking-wide text-violet-dark">v2.5</span>
+              <button
+                type="button"
+                className="grid size-8 place-items-center rounded-lg text-muted transition hover:bg-white hover:text-heading lg:hidden cursor-pointer"
+                aria-label="Close navigation"
+                onClick={() => setSidebarOpen(false)}
+              >
+                <Icon name="close" size={16} />
+              </button>
             </div>
-            <div>
-              <span className="text-base font-semibold tracking-tight text-heading block leading-none">uniflow</span>
-              <span className="text-xs text-muted font-normal tracking-wide">Academic Workspace</span>
-            </div>
-          </Link>
-          <span className="rounded-md bg-violet-light/60 px-2 py-0.5 text-xs font-semibold text-violet-dark">v2.5</span>
+          </div>
         </div>
 
         {/* Navigation Groups */}
