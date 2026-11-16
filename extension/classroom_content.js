@@ -1,4 +1,4 @@
-// Uniflow Academic Companion - Google Classroom Content Script (v1.3.7)
+// Uniflow Academic Companion - Google Classroom Content Script (v1.3.8)
 // Handles native Turn In & verification directly inside student's authentic session
 
 (function () {

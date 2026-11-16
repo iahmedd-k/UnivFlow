@@ -5,6 +5,7 @@ import { useAuth } from '@clerk/nextjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/app/lib/api';
 import { getQueryOwnerKey } from '@/app/lib/manual-auth';
+import { useHydrated } from '@/app/lib/use-hydrated';
 import Icon from '@/app/dashboard/Icon';
 import { ExtensionSetupBox } from '@/app/dashboard/CompanionExtensionModal';
 
@@ -19,6 +20,7 @@ function timeLabel(value) {
 export default function PortalPage() {
   const { getToken, userId } = useAuth();
   const queryClient = useQueryClient();
+  const mounted = useHydrated();
   const ownerKey = getQueryOwnerKey(userId);
   const portalSettingsKey = ['portal', ownerKey, 'settings'];
   const settingsQuery = useQuery({
@@ -66,6 +68,8 @@ export default function PortalPage() {
       const res = await api.syncPortalCookies(cookieInput.trim(), portalUrl.trim(), token);
       setNotice(res?.message || `Successfully synced ${res?.attendance_count || 0} course attendance records!`);
       setCookieInput('');
+      api.clearCache('dashboard/attendance-summary');
+      await queryClient.invalidateQueries({ queryKey: ['attendance', 'summary', ownerKey] });
       await loadSettings();
     } catch (err) {
       setError(err.message || 'Could not sync portal cookies. Check if the session is still active.');
@@ -132,6 +136,10 @@ export default function PortalPage() {
   useEffect(() => {
     if (jobId && ['success', 'partial', 'reconnect_required', 'session_expired'].includes(jobStatus)) {
       void queryClient.invalidateQueries({ queryKey: ['portal', ownerKey, 'settings'] });
+    }
+    if (jobId && ['success', 'partial'].includes(jobStatus)) {
+      api.clearCache('dashboard/attendance-summary');
+      void queryClient.invalidateQueries({ queryKey: ['attendance', 'summary', ownerKey] });
     }
   }, [jobId, jobStatus, ownerKey, queryClient]);
 
@@ -285,7 +293,7 @@ export default function PortalPage() {
               <button type="button" disabled={busy || syncingCookie} onClick={startSync} className="rounded-xl bg-violet px-4 py-2 text-sm font-medium text-white transition hover:bg-violet-dark disabled:opacity-50">
                 {isSyncing ? 'Syncing your portal…' : 'Sync All Portal Data'}
               </button>
-              <span className="text-xs font-normal text-subtle tabular-nums">Last synced {timeLabel(settings?.last_synced_at)}</span>
+              <span className="text-xs font-normal text-subtle tabular-nums">Last synced {mounted ? timeLabel(settings?.last_synced_at) : '—'}</span>
             </div>
           )}
         </div>
@@ -308,7 +316,7 @@ export default function PortalPage() {
           ['Cumulative GPA', report.cgpa == null ? '—' : Number(report.cgpa).toFixed(2)],
           ['Semester GPA', report.sgpa == null ? '—' : Number(report.sgpa).toFixed(2)],
           ['Credits earned', report.earned_credits == null ? '—' : `${report.earned_credits}`],
-          ['Last updated', settings?.last_synced_at ? new Date(settings?.last_synced_at).toLocaleDateString() : '—'],
+          ['Last updated', mounted && settings?.last_synced_at ? new Date(settings.last_synced_at).toLocaleDateString() : '—'],
         ].map(([label, value]) => (
           <div key={label} className="rounded-2xl border border-border bg-surface p-5 shadow-xs">
             <p className="text-xs font-medium uppercase tracking-wider text-muted">{label}</p>

@@ -1,4 +1,4 @@
-# Uniflow Academic Companion (Chrome Extension v1.3.0)
+# Uniflow Academic Companion (Chrome Extension v1.3.8)
 
 Connect your **Google Classroom**, **Claude.ai**, and **University Portal** accounts to Uniflow in **1 click** with zero VNC latency, zero Google bot blocks, and full autonomous background execution.
 

@@ -5,7 +5,7 @@
 
 import { API_BASE_URL } from '@/app/lib/api-config';
 
-export const EXTENSION_VERSION = '1.3.7';
+export const EXTENSION_VERSION = '1.3.8';
 
 export function isExtensionInstalled() {
   if (typeof window === 'undefined') return false;

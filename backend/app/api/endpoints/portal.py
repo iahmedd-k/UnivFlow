@@ -2498,9 +2498,16 @@ def _sync_portal_for_user(uid: str, *, sync_timetable: bool = False):
         summary = max(summaries, key=lambda item: sum(item.get(k) is not None for k in ("cgpa", "sgpa", "earned_credits", "semester_name", "semesters")), default={})
         _set_portal_setting(db, uid, "portal_session_status", "ACTIVE", "Portal session is usable")
         db.commit()
-        return {"status": "partial" if errors else "success", "attendance": attendance, "timetable": timetable,
+        attendance_missing = not attendance
+        message = (
+            f"Synced {len(pages)} portal pages, but no attendance records were found. "
+            "Existing attendance data was left unchanged."
+            if attendance_missing
+            else f"Synced {len(pages)} portal pages."
+        )
+        return {"status": "partial" if errors or attendance_missing else "success", "attendance": attendance, "timetable": timetable,
                 "summary": summary, "pages_synced": pages, "failed_pages": errors,
-                "last_synced_at": datetime.now(timezone.utc).isoformat(), "message": f"Synced {len(pages)} portal pages."}
+                "last_synced_at": datetime.now(timezone.utc).isoformat(), "message": message}
     finally:
         if redis_lock_acquired:
             try:

@@ -1,4 +1,4 @@
-// Uniflow Academic Companion - Background Service Worker (Manifest V3) (v1.3.7)
+// Uniflow Academic Companion - Background Service Worker (Manifest V3) (v1.3.8)
 
 const DEFAULT_PRODUCTION_API = "https://univlfow.koreacentral.cloudapp.azure.com/api/v1";
 
@@ -299,7 +299,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const token = payload?.token || state.uniflowAuthToken || "";
 
       if (action === "PING") {
-        sendResponse({ success: true, version: chrome.runtime.getManifest()?.version || "1.3.7" });
+        sendResponse({ success: true, version: chrome.runtime.getManifest()?.version || "1.3.8" });
       } else if (action === "DETECT_AUTH_TOKEN") {
         const detected = await detectFreshAuthToken(payload?.apiUrl || apiUrl);
         if (detected) {
@@ -322,7 +322,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         ]);
         sendResponse({
           success: true,
-          version: chrome.runtime.getManifest()?.version || "1.3.7",
+          version: chrome.runtime.getManifest()?.version || "1.3.8",
           status: {
             gcrCount: gcr.length,
             claudeConnected: Boolean(claude || state.claudeConnected),

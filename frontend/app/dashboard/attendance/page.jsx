@@ -6,10 +6,12 @@ import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { api } from '@/app/lib/api';
 import { getQueryOwnerKey } from '@/app/lib/manual-auth';
+import { useHydrated } from '@/app/lib/use-hydrated';
 import Icon from '@/app/dashboard/Icon';
 
 export default function AttendancePage() {
   const { getToken, userId } = useAuth();
+  const mounted = useHydrated();
   const ownerKey = getQueryOwnerKey(userId);
   const attendanceKey = ['attendance', 'summary', ownerKey];
   const portalSettingsKey = ['portal', ownerKey, 'settings'];
@@ -51,7 +53,7 @@ export default function AttendancePage() {
       } else if (res?.status === 'already_running') {
         setNotice('A university portal sync is already running. Wait for it to finish, then refresh attendance.');
       } else if (res?.status === 'partial') {
-        setNotice('Portal sync finished with some pages unavailable. Attendance was refreshed only if its report was read successfully.');
+        setNotice(res.message || 'Portal data synced partially; attendance may still show the last saved data.');
       } else if (res?.status === 'success') {
         setNotice('Attendance table successfully refreshed from University Portal.');
       } else {
@@ -183,7 +185,7 @@ export default function AttendancePage() {
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3.5 py-2.5 text-sm text-muted">
           <span className={`h-2 w-2 rounded-full ${portalSettings.session_status === 'ACTIVE' ? 'bg-success' : 'bg-muted'}`} />
           <span><strong className="font-semibold text-heading">University portal</strong> · {portalSettings.session_status?.replaceAll('_', ' ').toLowerCase() || 'status unavailable'}</span>
-          {portalSettings.last_synced_at && <span className="text-subtle tabular-nums">Synced {new Date(portalSettings.last_synced_at).toLocaleString()}</span>}
+          {mounted && portalSettings.last_synced_at && <span className="text-subtle tabular-nums">Synced {new Date(portalSettings.last_synced_at).toLocaleString()}</span>}
           <Link className="ml-auto font-medium text-violet hover:underline text-sm" href="/dashboard/portal">Portal settings <Icon name="arrowUpRight" size={13} /></Link>
         </div>
       ) : (
