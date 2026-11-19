@@ -158,3 +158,34 @@ def test_stale_and_draft_assignments_not_in_active_crew_runs(db_session):
     finally:
         fastapi_app.dependency_overrides.pop(require_current_user, None)
         fastapi_app.dependency_overrides.pop(get_db, None)
+
+
+def test_overview_only_returns_assignments_due_in_the_next_week(db_session):
+    from app.api.endpoints.dashboard import get_dashboard_overview
+
+    course = Course(name="Current Coursework", user_id="test_student_user", external_id="course-current")
+    db_session.add(course)
+    db_session.flush()
+
+    old_assignment = Assignment(
+        title="Last semester assignment",
+        course_id=course.id,
+        user_id="test_student_user",
+        external_id="assignment-old",
+        due_at=datetime.now(timezone.utc) - timedelta(days=30),
+        status=AssignmentStatus.PENDING,
+    )
+    upcoming_assignment = Assignment(
+        title="Current assignment",
+        course_id=course.id,
+        user_id="test_student_user",
+        external_id="assignment-upcoming",
+        due_at=datetime.now(timezone.utc) + timedelta(days=2),
+        status=AssignmentStatus.PENDING,
+    )
+    db_session.add_all([old_assignment, upcoming_assignment])
+    db_session.commit()
+
+    overview = get_dashboard_overview(since=None, db=db_session, user=fake_user())
+
+    assert [item["title"] for item in overview["upcoming_assignments"]] == ["Current assignment"]

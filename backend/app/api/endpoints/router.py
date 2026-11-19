@@ -13,6 +13,7 @@ from app.api.endpoints.portal import router as portal_router
 from app.api.endpoints.rag import router as rag_router
 from app.api.endpoints.timetable import router as timetable_router
 from app.api.endpoints.university import router as university_router
+from app.api.endpoints.planner import router as planner_router
 from app.auth.access_gate import require_access_grant
 from app.auth.clerk_auth import require_current_user
 
@@ -34,6 +35,7 @@ for router in (
     timetable_router,
     portal_router,
     rag_router,
+    planner_router,
 ):
     api_router.include_router(router, dependencies=authenticated)
 

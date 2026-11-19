@@ -4,7 +4,7 @@ from apscheduler.triggers.cron import CronTrigger
 from hashlib import sha256
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.core.config import settings
@@ -327,6 +327,77 @@ def _run_assignment_deadline_job():
         db.close()
 
 
+def _run_personal_planner_reminder_job():
+    """Deliver due-date reminders for opted-in personal planner tasks and bills."""
+    import json
+    from html import escape
+    from app.db.models import PlannerTask, PlannerBill, PlannerProfile, Notification
+    from app.db.models.enums import NotificationStatus
+    from app.services.alert_service import get_user_recipient_email
+    from app.services.email import send_email
+
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        window_end = now + timedelta(minutes=5)
+        records = [("task", item) for item in db.query(PlannerTask).filter(PlannerTask.due_at.isnot(None), PlannerTask.status != "completed").all()]
+        records += [("bill", item) for item in db.query(PlannerBill).filter(PlannerBill.due_at.isnot(None), PlannerBill.status != "paid").all()]
+        for kind, item in records:
+            profile = db.query(PlannerProfile).filter(PlannerProfile.user_id == item.user_id).first()
+            if not profile:
+                continue
+            due_at = item.due_at if item.due_at.tzinfo else item.due_at.replace(tzinfo=timezone.utc)
+            try:
+                offsets = json.loads(item.reminder_offsets or "[]")
+            except (TypeError, json.JSONDecodeError):
+                offsets = []
+            for minutes in {int(value) for value in offsets if str(value).lstrip("-").isdigit()}:
+                reminder_at = due_at - timedelta(minutes=max(0, minutes))
+                if not (now <= reminder_at < window_end):
+                    continue
+                idem = f"planner:{kind}:{item.id}:before:{minutes}:{due_at.isoformat()}"
+                if db.query(Notification).filter(Notification.idempotency_key == idem).first():
+                    continue
+                recipient = get_user_recipient_email(db, item.user_id)
+                if not recipient:
+                    continue
+                title = escape(item.title)
+                due_text = due_at.astimezone(ZoneInfo(profile.timezone or settings.timezone)).strftime("%A, %B %d at %I:%M %p")
+                subject = f"[Uniflow] Reminder: {item.title}"
+                sent = send_email(recipient, subject, f"<p><strong>{title}</strong> is due {due_text}.</p><p>Open your Personal Planner to complete, reschedule, or update it.</p>", f"{item.title} is due {due_text}.", categories=["personal-planner", f"planner-{kind}"])
+                db.add(Notification(user_id=item.user_id, notification_type=f"planner_{kind}_reminder", channel="email", recipient=recipient, subject=subject, payload=json.dumps({"item_id": item.id, "minutes_before": minutes}), status=NotificationStatus.SENT if sent else NotificationStatus.FAILED, idempotency_key=idem, sent_at=now if sent else None, error=None if sent else "Email provider rejected delivery"))
+                db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Personal planner reminder scan failed")
+    finally:
+        db.close()
+
+
+def _run_personal_planner_sheet_sync_job():
+    """Refresh each opted-in public planner sheet once per day."""
+    db = SessionLocal()
+    try:
+        import json
+        from app.services.personal_planner_sheet_sync import sync_sheet
+
+        sources = db.query(Setting).filter(Setting.key.like("planner:%:public_sheet_source")).all()
+        for setting in sources:
+            parts = setting.key.split(":")
+            if len(parts) != 3 or not parts[1]:
+                continue
+            try:
+                source = json.loads(setting.value or "{}")
+                if source.get("export_url"):
+                    result = sync_sheet(db, parts[1], source)
+                    logger.info("[Scheduler] Planner sheet sync for %s: %s", parts[1], result)
+            except Exception:
+                db.rollback()
+                logger.exception("[Scheduler] Planner sheet sync failed for %s.", parts[1])
+    finally:
+        db.close()
+
+
 def _run_course_auto_turn_in_job():
     """Check explicitly enabled, course-scoped auto-submit preferences every five minutes."""
     db = SessionLocal()
@@ -540,6 +611,28 @@ def start_scheduler():
             name="Explicitly enabled course auto turn-in (Every minute)",
             replace_existing=True,
             misfire_grace_time=60,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        scheduler.add_job(
+            _run_personal_planner_reminder_job,
+            IntervalTrigger(minutes=1),
+            id="personal_planner_reminders",
+            name="Personal planner reminders (Every minute)",
+            replace_existing=True,
+            misfire_grace_time=90,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        scheduler.add_job(
+            _run_personal_planner_sheet_sync_job,
+            CronTrigger(hour=3, minute=0),
+            id="personal_planner_sheet_daily_sync",
+            name="Personal planner public-sheet sync (Daily)",
+            replace_existing=True,
+            misfire_grace_time=3600,
             max_instances=1,
             coalesce=True,
         )

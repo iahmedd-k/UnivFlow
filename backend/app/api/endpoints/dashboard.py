@@ -233,14 +233,18 @@ def get_dashboard_overview(
             "teacher": entry.teacher or "",
             "room": entry.room or "",
         })
-    upcoming_cutoff = datetime.now(timezone.utc) + timedelta(days=7)
+    now_utc = datetime.now(timezone.utc)
+    upcoming_cutoff = now_utc + timedelta(days=7)
     upcoming_assignments = []
     for assignment in data["all_assignments"]:
         due_at = assignment.due_at or assignment.due_date
         if not due_at:
             continue
         comparable_due_at = due_at if due_at.tzinfo else due_at.replace(tzinfo=timezone.utc)
-        if comparable_due_at <= upcoming_cutoff and assignment.status not in (AssignmentStatus.SUBMITTED, AssignmentStatus.APPROVED):
+        if (
+            now_utc <= comparable_due_at <= upcoming_cutoff
+            and not is_submitted(assignment)
+        ):
             upcoming_assignments.append({
                 "id": assignment.id,
                 "title": assignment.title,
@@ -297,7 +301,6 @@ def get_dashboard_overview(
     ready_for_review_solutions = []
     stale_generating_ids = []
 
-    now_utc = datetime.now(timezone.utc)
     stale_threshold = timedelta(minutes=20)
 
     for a in candidate_assignments:

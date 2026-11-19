@@ -327,6 +327,21 @@ export const api = {
     return fetchFromApi('/dashboard/overview', token, { cacheTtlMs: 45_000, ...options, ...(noCache ? { noCache: true } : {}) });
   },
 
+  // Personal planner
+  getPlannerOverview: async (token = null, options = {}) => fetchFromApi('/planner/overview', token, { direct: true, noCache: true, ...options }),
+  createPlannerTask: async (data, token = null) => fetchFromApi('/planner/tasks', token, { method: 'POST', body: JSON.stringify(data), noCache: true }),
+  updatePlannerTask: async (id, data, token = null) => fetchFromApi(`/planner/tasks/${id}`, token, { method: 'PATCH', body: JSON.stringify(data), noCache: true }),
+  deletePlannerTask: async (id, token = null) => fetchFromApi(`/planner/tasks/${id}`, token, { method: 'DELETE', noCache: true }),
+  createPlannerGoal: async (data, token = null) => fetchFromApi('/planner/goals', token, { method: 'POST', body: JSON.stringify(data), noCache: true }),
+  updatePlannerGoal: async (id, data, token = null) => fetchFromApi(`/planner/goals/${id}`, token, { method: 'PATCH', body: JSON.stringify(data), noCache: true }),
+  createPlannerExpense: async (data, token = null) => fetchFromApi('/planner/expenses', token, { method: 'POST', body: JSON.stringify(data), noCache: true }),
+  deletePlannerExpense: async (id, token = null) => fetchFromApi(`/planner/expenses/${id}`, token, { method: 'DELETE', noCache: true }),
+  createPlannerBill: async (data, token = null) => fetchFromApi('/planner/bills', token, { method: 'POST', body: JSON.stringify(data), noCache: true }),
+  updatePlannerBill: async (id, data, token = null) => fetchFromApi(`/planner/bills/${id}`, token, { method: 'PATCH', body: JSON.stringify(data), noCache: true }),
+  updatePlannerProfile: async (data, token = null) => fetchFromApi('/planner/profile', token, { method: 'PATCH', body: JSON.stringify(data), noCache: true }),
+  savePlannerSheetSource: async (data, token = null) => fetchFromApi('/planner/sheet-source', token, { method: 'PUT', body: JSON.stringify(data), noCache: true }),
+  syncPlannerSheet: async (token = null) => fetchFromApi('/planner/sheet-source/sync', token, { method: 'POST', noCache: true }),
+
   getUpcoming: async (days = 7, token = null) => {
     return fetchFromApi(`/dashboard/upcoming?days=${days}`, token);
   },
